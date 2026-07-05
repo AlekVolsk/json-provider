@@ -1,0 +1,85 @@
+# Исключения и локализация
+
+Все исключения провайдера наследуют `AV\JsonProvider\Exception\JsonProviderException`. Конкретный класс для storage-ошибок — `StorageException`.
+
+```php
+use AV\JsonProvider\Exception\StorageException;
+
+try {
+    $db->table('users')->insertByArray(['email' => $existing]);
+} catch (StorageException $e) {
+    $e->getMessage();           // английский (для логов)
+    $e->getLocalizedMessage();  // текущая локаль (для пользователя)
+    $e->getErrorKey();          // например 'UNIQUE_VIOLATION' — для программной обработки
+}
+```
+
+## Установка локали
+
+```php
+use AV\JsonProvider\Exception\LangRuEnum;
+
+$db->setLocale(LangRuEnum);  // любой кейс — важен только класс
+```
+
+Локаль действует на весь процесс. `getMessage()` всегда остаётся английским (стабильные строки логов). `getLocalizedMessage()` отдаёт перевод; неизвестные ключи откатываются на английский.
+
+## Своя локаль
+
+```php
+use AV\JsonProvider\Exception\LocaleInterface;
+
+enum LangDeEnum: string implements LocaleInterface
+{
+    case TABLE_NOT_FOUND  = 'Tabelle "%s" nicht im Schema gefunden';
+    case UNIQUE_VIOLATION = 'Eindeutigkeitsverletzung in "%s" auf Feldern [%s]: %s';
+    // отсутствующие ключи откатываются на английский
+
+    public static function translate(string $key, string ...$params): string
+    {
+        foreach (self::cases() as $case) {
+            if ($case->name === $key) {
+                return $params !== [] ? \sprintf($case->value, ...$params) : $case->value;
+            }
+        }
+        return $key;   // вернуть ключ → fallback на английский
+    }
+}
+
+$db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
+```
+
+Класс кастомной локали может находиться в любом namespace.
+
+## Частые ключи ошибок
+
+| Ключ | Когда |
+| - | - |
+| `TABLE_NOT_FOUND` | неизвестное имя таблицы |
+| `TABLE_ALREADY_EXISTS` | `createTable` для уже зарегистрированного имени |
+| `COLUMN_NOT_FOUND` | comment-API вызван для несуществующей колонки |
+| `DATABASE_ALREADY_EXISTS` | `createDatabase` по уже существующему пути |
+| `UNIQUE_VIOLATION` | нарушение unique-ограничения на insert/update |
+| `FOREIGN_KEY_RESTRICT` | действие `restrict` заблокировало удаление/обновление |
+| `PK_CONTRACT_VIOLATED` | нарушение контракта PK или PK-индекса |
+| `META_ENTRY_MISSING` | нет записи в мете для зарегистрированной таблицы |
+| `INDEX_NOT_FOUND` | названного индекса нет в схеме таблицы |
+| `REORDER_COLUMNS_UNKNOWN` | reorderColumns: колонка не из схемы |
+| `REORDER_COLUMNS_DUPLICATE` | reorderColumns: дубликат имени колонки |
+| `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: пропущены колонки |
+| `BACKUP_ARCHIVE_EXISTS` | целевой путь бэкапа занят |
+| `BACKUP_DESTINATION_INSIDE_DB` | целевой путь бэкапа внутри каталога БД |
+| `BACKUP_ARCHIVE_CORRUPT` | restore: архив отсутствует/нечитаем/неверный формат |
+| `BACKUP_SCHEMA_MISMATCH` | restore: набор таблиц в архиве не совпадает со схемой |
+| `RESTORE_FAILED` | restore не удался (откачен, если возможно) |
+| `EXTENSION_REQUIRED` | кеш-адаптер не нашёл своё PHP-расширение |
+| `TYPE_MISMATCH` | значение не соответствует заявленному типу колонки |
+| `NULL_NOT_ALLOWED` | `null` для non-nullable-колонки |
+| `REQUIRED_COLUMN_MISSING` | insert пропустил non-nullable-колонку |
+| `INVALID_TEMPORAL_VALUE` | дата/время не в принятом системном формате |
+| `ZERO_DATE` | передана нулевая дата (`0000-00-00`) |
+| `NUMERIC_PART_OUT_OF_RANGE` | значение `month`/`day` вне допустимого диапазона |
+| `DTO_SCHEMA_MISMATCH` | зарегистрированный DTO не соответствует схеме таблицы |
+| `DTO_NOT_REGISTERED` | объектный метод на таблице без привязанного DTO |
+| `INVALID_ENUM_VALUE` | хранимое значение не является кейсом enum из DTO |
+| `DTO_HYDRATION_FAILED` | хранимое значение нельзя гидрировать в DTO |

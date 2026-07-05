@@ -1,0 +1,67 @@
+{
+    "name": "alekvolsk/json-provider",
+    "description": "A self-contained PHP data provider that turns a directory of NDJSON files into a small relational-style database.",
+    "type": "library",
+    "keywords": ["ndjson", "json", "database", "storage", "orm", "flat-file", "no-sql", "embedded"],
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "Aleksei Morozov (alekvolsk)",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": ">=8.4",
+        "ext-json": "*",
+        "ext-phar": "*",
+        "ext-zlib": "*"
+    },
+    "suggest": {
+        "ext-apcu": "Enables the APCu cache adapter (ApcuCache)",
+        "ext-memcached": "Enables the Memcached cache adapter (MemcachedCache)",
+        "ext-redis": "Enables the Redis cache adapter (RedisCache)"
+    },
+    "autoload": {
+        "psr-4": {
+            "AV\\JsonProvider\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "AV\\JsonProvider\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    },
+    "scripts": {
+        "test": "make test",
+        "test:testo": "make test-testo",
+        "test:bench": "make test-testo-bench",
+        "test:cs-fixer": "make test-phpcsfixer",
+        "cs-fixer:fix": "make test-phpcsfixer-fix",
+        "test:phpcs": "make test-phpcs",
+        "test:phpstan": "make test-phpstan"
+    },
+    "scripts-descriptions": {
+        "test": "Run the full check suite via the Makefile",
+        "test:testo": "Run testo unit tests",
+        "test:bench": "Run testo load benchmarks (50 x 100k)",
+        "test:cs-fixer": "Check code style with PHP-CS-Fixer",
+        "cs-fixer:fix": "Auto-fix code style with PHP-CS-Fixer",
+        "test:phpcs": "Check code with PHP_CodeSniffer",
+        "test:phpstan": "Run PHPStan static analysis"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "phpstan/phpstan": "^2.2",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "slevomat/coding-standard": "^8.30",
+        "spaze/phpstan-disallowed-calls": "^4.12",
+        "squizlabs/php_codesniffer": "^4.0",
+        "testo/testo": "^0.10.38"
+    }
+}

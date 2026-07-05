@@ -1,0 +1,16 @@
+includes:
+    - ./vendor/spaze/phpstan-disallowed-calls/extension.neon
+    - ./vendor/phpstan/phpstan-strict-rules/rules.neon
+
+parameters:
+  level: 10
+  tmpDir: build-dev/phpstan
+  reportUnmatchedIgnoredErrors: false
+  fileExtensions:
+    - php
+  paths:
+    - ./src
+    - ./tests
+  excludePaths:
+    - '*/build-dev/*'
+    - '*/vendor/*'
