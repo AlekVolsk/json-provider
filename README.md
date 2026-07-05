@@ -35,9 +35,23 @@ Designed for compact, low-traffic workloads where a real RDBMS would be overkill
 
 ## Quick taste
 
+Map a table to a typed, immutable DTO and let the provider hydrate rows into
+objects:
+
 ```php
 use AV\JsonProvider\JsonDataProvider;
+use AV\JsonProvider\Mapping\Attribute\JsonProviderRecord;
 use AV\JsonProvider\Schema\TableSchema;
+
+#[JsonProviderRecord('products')]
+final class Product
+{
+    public function __construct(
+        public int $id,
+        public string $name,
+        public float $price,
+    ) {}
+}
 
 $db = JsonDataProvider::createDatabase('/path/to/db');
 
@@ -45,15 +59,22 @@ $db->createTable(TableSchema::create(
     name: 'products',
     columns: ['name' => 'string', 'price' => 'float'],
 ));
+$db->registerDto(Product::class);
 
+// id: 0 is a placeholder — the provider assigns the real id and returns it
 $id = $db->table('products')
-    ->insertByArray(['name' => 'Widget', 'price' => 9.99]);
+    ->insert(new Product(id: 0, name: 'Widget', price: 9.99));
 
-$row = $db->table('products')->where('id', '=', $id)->selectOneByArray();
+$product = $db->table('products')->where('id', '=', $id)->selectOne();
+// $product is a Product: typed fields, the real id, and (where declared)
+// date/time columns as DateTimeImmutable and enum columns as enum cases
 ```
 
-The clean method names (`insert`, `selectOne`, `selectAll`, `update`) work with
-typed DTOs instead of arrays — see the docs on DTO mapping.
+DTOs are the recommended surface — each value is validated against the schema
+on write, and reads come back as typed objects. When you would rather pass and
+receive plain arrays (no class, ad-hoc shapes), every method has a `*ByArray`
+twin — `insertByArray`, `selectOneByArray`, `selectAllByArray`, … See
+[DTO mapping](docs/en/21-dto-mapping.md) for the full contract.
 
 ## License
 
