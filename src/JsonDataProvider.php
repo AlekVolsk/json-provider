@@ -19,6 +19,7 @@ use AV\JsonProvider\Query\OrderBy;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\TableSchema;
@@ -192,6 +193,134 @@ final class JsonDataProvider
 
         $this->schema->registerTable($tableSchema);
         $this->meta->initTable($tableSchema->name);
+    }
+
+    /**
+     * Drops a table entirely: removes its schema descriptor (with every
+     * relation that involves it), its meta entry, its files and any bound DTO
+     * mapping. A no-op when the table is unknown (idempotent).
+     *
+     * The schema entry is removed first, so the invariant "every registered
+     * table has a meta entry" is never broken mid-operation: should physical
+     * file removal fail, the table is already logically gone rather than left
+     * registered without meta.
+     *
+     * Foreign keys are not enforced here: dropping a parent table silently
+     * removes its relations and leaves any child FK columns/values dangling
+     * (cf. SQL DROP TABLE, not DROP TABLE ... RESTRICT). Drop or migrate the
+     * children first if that matters.
+     */
+    public function dropTable(string $tableName): void
+    {
+        if (!$this->schema->hasTable($tableName)) {
+            return;
+        }
+
+        $this->schema->unregisterTable($tableName);
+        $this->meta->dropEntry($tableName);
+        $this->ndjson->deleteTable($tableName);
+        $this->dtoRegistry->unregister($tableName);
+        $this->invalidateCache($tableName);
+    }
+
+    /**
+     * Whether a table is registered in the schema.
+     */
+    public function hasTable(string $tableName): bool
+    {
+        return $this->schema->hasTable($tableName);
+    }
+
+    /**
+     * Names of all tables registered in the schema.
+     *
+     * @return list<string>
+     */
+    public function tableNames(): array
+    {
+        return array_keys($this->schema->getTables());
+    }
+
+    /**
+     * Column names of a table in schema order (the primary key comes first).
+     * Throws if the table does not exist.
+     *
+     * @return list<string>
+     */
+    public function columnNames(string $tableName): array
+    {
+        return array_keys($this->schema->getTable($tableName)->columns);
+    }
+
+    /**
+     * Aligns an existing table's columns to the given schema (a mini ALTER):
+     *  - adds columns present in $desired but not stored — existing rows get a
+     *    type-appropriate default ('' / 0 / 0.0 / false, or null for a nullable
+     *    type), so typed reads keep working;
+     *  - drops columns present in the table but not in $desired — their values
+     *    are removed from every row;
+     *  - fixes column order to match $desired.
+     * The indexes and unique constraints carried by $desired become the table's
+     * new definitions: index files are created for indexes new to the table and
+     * removed for those no longer present, then every index is rebuilt.
+     * Rewrites the data file and updates meta. Returns the added/dropped column
+     * names; a no-op (empty lists) when columns and order already match — in
+     * that case indexes/constraints/comments are left untouched.
+     *
+     * Guards (all throw StorageException, nothing is written):
+     *  - the table does not exist;
+     *  - a retained column changes type — this method never re-encodes data, so
+     *    a type change must be migrated separately;
+     *  - a unique constraint or index in $desired references a column absent
+     *    from $desired->columns;
+     *  - a non-nullable column with no zero-value default (temporal, year,
+     *    month, day) is added to a non-empty table — declare it nullable.
+     *
+     * @return array{added: list<string>, dropped: list<string>}
+     */
+    public function migrateColumns(TableSchema $desired): array
+    {
+        $current = $this->schema->getTable($desired->name);
+
+        $this->assertNoColumnTypeChange($current, $desired);
+        $this->assertSchemaFieldsDeclared($desired);
+
+        $currentColumns = array_keys($current->columns);
+        $desiredColumns = array_keys($desired->columns);
+
+        if ($currentColumns === $desiredColumns) {
+            return ['added' => [], 'dropped' => []];
+        }
+
+        $added = array_values(array_diff($desiredColumns, $currentColumns));
+        $dropped = array_values(array_diff($currentColumns, $desiredColumns));
+
+        $records = $this->readAllRaw($desired->name);
+
+        if ($records !== []) {
+            $this->assertAddedColumnsHaveDefault($desired, $added);
+        }
+
+        $migrated = [];
+
+        foreach ($records as $record) {
+            $row = [];
+
+            foreach ($desired->columns as $column => $type) {
+                $row[$column] = \array_key_exists($column, $record)
+                    ? $record[$column]
+                    : self::defaultForType($type);
+            }
+
+            $migrated[] = $row;
+        }
+
+        $this->createMissingIndexFiles($desired);
+        $this->schema->replaceTable($desired);
+        $this->writeAll($desired->name, $desired, $migrated);
+        $this->deleteOrphanIndexFiles($current, $desired);
+
+        return ['added' => $added, 'dropped' => $dropped];
     }
 
     /**
@@ -829,6 +958,174 @@ final class JsonDataProvider
     public function invalidateCache(string $tableName): void
     {
         $this->cache->invalidate($this->cacheKey($tableName));
+    }
+
+    /**
+     * Default value for a freshly added column, by its declared type. Nullable
+     * types default to null; the four base scalar types to their zero value.
+     * Types with no meaningful zero (temporal, year/month/day) are rejected
+     * upstream by assertAddedColumnsHaveDefault before this is reached on a
+     * non-empty table, so the null fallback here is never persisted as a
+     * not-null value.
+     */
+    private static function defaultForType(
+        string $type
+    ): bool | float | int | string | null {
+        if (str_ends_with($type, '|null')) {
+            return null;
+        }
+
+        return match ($type) {
+            ColumnTypes::STRING => '',
+            ColumnTypes::INT    => 0,
+            ColumnTypes::FLOAT  => 0.0,
+            ColumnTypes::BOOL   => false,
+            default             => null,
+        };
+    }
+
+    /**
+     * Whether a freshly added not-null column of this type has a usable
+     * zero-value default. Only the four base scalar types (and any nullable
+     * type, which defaults to null) qualify; temporal and year/month/day types
+     * have no sensible zero and must be declared nullable when added to a
+     * non-empty table.
+     */
+    private static function hasSafeDefault(string $type): bool
+    {
+        if (str_ends_with($type, '|null')) {
+            return true;
+        }
+
+        return match ($type) {
+            ColumnTypes::STRING,
+            ColumnTypes::INT,
+            ColumnTypes::FLOAT,
+            ColumnTypes::BOOL => true,
+            default           => false,
+        };
+    }
+
+    /**
+     * Rejects a migration that would change the type of a column kept in both
+     * the current and desired schema: migrateColumns rewrites data verbatim and
+     * never re-encodes values, so a type change is out of its contract.
+     */
+    private function assertNoColumnTypeChange(
+        TableSchema $current,
+        TableSchema $desired,
+    ): void {
+        foreach ($desired->columns as $column => $type) {
+            $currentType = $current->columns[$column] ?? null;
+
+            if ($currentType !== null && $currentType !== $type) {
+                throw StorageException::migrateColumnTypeChange(
+                    $desired->name,
+                    $column,
+                    $currentType,
+                    $type,
+                );
+            }
+        }
+    }
+
+    /**
+     * Ensures every unique-constraint field and index field in $desired refers
+     * to a column that $desired actually declares — otherwise the constraint or
+     * index would compute keys over a missing field (empty string for all
+     * rows), yielding phantom collisions and broken lookups.
+     */
+    private function assertSchemaFieldsDeclared(TableSchema $desired): void
+    {
+        foreach ($desired->uniqueConstraints as $constraint) {
+            foreach ($constraint->fields as $field) {
+                if (!isset($desired->columns[$field])) {
+                    throw StorageException::migrateFieldUnknownColumn(
+                        $desired->name,
+                        'unique constraint "' . $constraint->name . '"',
+                        $field,
+                    );
+                }
+            }
+        }
+
+        foreach ($desired->indexes as $index) {
+            foreach ($index->fields as $field) {
+                if (!isset($desired->columns[$field->field])) {
+                    throw StorageException::migrateFieldUnknownColumn(
+                        $desired->name,
+                        'index "' . $index->name . '"',
+                        $field->field,
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Rejects adding a not-null column with no zero-value default to a table
+     * that already holds rows: those rows would otherwise be filled with an
+     * invalid value (null, or an out-of-range 0 for month/day).
+     *
+     * @param list<string> $added
+     */
+    private function assertAddedColumnsHaveDefault(
+        TableSchema $desired,
+        array $added,
+    ): void {
+        foreach ($added as $column) {
+            $type = $desired->columns[$column];
+
+            if (!self::hasSafeDefault($type)) {
+                throw StorageException::migrateColumnNoDefault(
+                    $desired->name,
+                    $column,
+                    $type,
+                );
+            }
+        }
+    }
+
+    /**
+     * Creates an empty index file for every index in $desired that has none on
+     * disk yet, so the subsequent rebuild (which replaces existing files under
+     * flock) does not fail on a brand-new index.
+     */
+    private function createMissingIndexFiles(TableSchema $desired): void
+    {
+        foreach ($desired->indexes as $index) {
+            if (!$this->ndjson->exists($desired->name, $index->getFileName())) {
+                $this->ndjson->createFile(
+                    $desired->name,
+                    $index->getFileName(),
+                );
+            }
+        }
+    }
+
+    /**
+     * Removes index files whose index is present in the current schema but no
+     * longer in $desired (e.g. the index's column was dropped), so no orphan
+     * index file is left behind in the table directory.
+     */
+    private function deleteOrphanIndexFiles(
+        TableSchema $current,
+        TableSchema $desired,
+    ): void {
+        $keep = [];
+
+        foreach ($desired->indexes as $index) {
+            $keep[$index->name] = true;
+        }
+
+        foreach ($current->indexes as $index) {
+            if (!isset($keep[$index->name])) {
+                $this->ndjson->deleteFile(
+                    $desired->name,
+                    $index->getFileName(),
+                );
+            }
+        }
     }
 
     /**

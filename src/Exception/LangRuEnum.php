@@ -41,6 +41,14 @@ enum LangRuEnum: string implements LocaleInterface
     case REORDER_COLUMNS_INCOMPLETE = 'reorderColumns для таблицы "%s": '
         . 'пропущены колонки "%s"';
     case INDEX_NOT_FOUND = 'В таблице "%s" нет индекса с именем "%s"';
+    case MIGRATE_COLUMN_TYPE_CHANGE = 'migrateColumns для таблицы "%s": смена '
+        . 'типа колонки "%s" (%s -> %s) не поддерживается; мигрируйте данные '
+        . 'отдельно';
+    case MIGRATE_COLUMN_NO_DEFAULT = 'migrateColumns для таблицы "%s": нельзя '
+        . 'добавить not-null колонку "%s" типа %s в непустую таблицу (нет '
+        . 'значения по умолчанию); объявите её nullable';
+    case MIGRATE_FIELD_UNKNOWN_COLUMN = 'migrateColumns для таблицы "%s": %s '
+        . 'ссылается на неизвестную колонку "%s"';
     case BACKUP_ARCHIVE_EXISTS = 'Файл резервной копии уже существует: %s';
     case BACKUP_DESTINATION_INSIDE_DB = 'Путь резервной копии должен быть вне '
         . 'каталога БД: %s';

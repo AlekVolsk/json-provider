@@ -148,6 +148,47 @@ class StorageException extends JsonProviderException
         return new self('INDEX_NOT_FOUND', $table, $indexName);
     }
 
+    public static function migrateColumnTypeChange(
+        string $table,
+        string $column,
+        string $from,
+        string $to,
+    ): self {
+        return new self(
+            'MIGRATE_COLUMN_TYPE_CHANGE',
+            $table,
+            $column,
+            $from,
+            $to,
+        );
+    }
+
+    public static function migrateColumnNoDefault(
+        string $table,
+        string $column,
+        string $type,
+    ): self {
+        return new self(
+            'MIGRATE_COLUMN_NO_DEFAULT',
+            $table,
+            $column,
+            $type,
+        );
+    }
+
+    public static function migrateFieldUnknownColumn(
+        string $table,
+        string $owner,
+        string $field,
+    ): self {
+        return new self(
+            'MIGRATE_FIELD_UNKNOWN_COLUMN',
+            $table,
+            $owner,
+            $field,
+        );
+    }
+
     public static function backupArchiveExists(string $path): self
     {
         return new self('BACKUP_ARCHIVE_EXISTS', $path);

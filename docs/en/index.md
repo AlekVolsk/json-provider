@@ -23,7 +23,7 @@ This document is the working reference for an engineer integrating JsonProvider 
 09. [Reusable filters — JsonFilter](09-reusable-filters.md)
 10. [Mutations — insert / update / delete](10-mutations.md)
 11. [Identifier APIs](11-identifier-apis.md)
-12. [Schema mutations — reorderColumns](12-schema-mutations.md)
+12. [Schema mutations — reorder, migrate, drop](12-schema-mutations.md)
 13. [Index and table maintenance](13-maintenance.md)
 14. [Integrity — validate and repair](14-integrity.md)
 15. [Backup and restore](15-backup-restore.md)

@@ -21,6 +21,16 @@ final class DtoRegistry
         $this->byTable[$map->table] = $map;
     }
 
+    /**
+     * Removes the compiled DTO map bound to a table, if any. Idempotent — an
+     * unbound table is a no-op. Called when a table is dropped so a later
+     * re-create does not reuse a stale mapping.
+     */
+    public function unregister(string $table): void
+    {
+        unset($this->byTable[$table]);
+    }
+
     public function forTable(string $table): DtoMap | null
     {
         return $this->byTable[$table] ?? null;

@@ -67,6 +67,9 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `REORDER_COLUMNS_UNKNOWN` | reorderColumns: колонка не из схемы |
 | `REORDER_COLUMNS_DUPLICATE` | reorderColumns: дубликат имени колонки |
 | `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: пропущены колонки |
+| `MIGRATE_COLUMN_TYPE_CHANGE` | migrateColumns: у удерживаемой колонки меняется тип |
+| `MIGRATE_COLUMN_NO_DEFAULT` | migrateColumns: not-null-колонка без дефолта добавлена в непустую таблицу |
+| `MIGRATE_FIELD_UNKNOWN_COLUMN` | migrateColumns: ограничение/индекс ссылается на отсутствующую колонку |
 | `BACKUP_ARCHIVE_EXISTS` | целевой путь бэкапа занят |
 | `BACKUP_DESTINATION_INSIDE_DB` | целевой путь бэкапа внутри каталога БД |
 | `BACKUP_ARCHIVE_CORRUPT` | restore: архив отсутствует/нечитаем/неверный формат |

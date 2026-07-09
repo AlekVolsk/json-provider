@@ -432,6 +432,19 @@ final class NdjsonStorage
     }
 
     /**
+     * Removes the entire table subdirectory including all of its files.
+     * Idempotent — a missing subdirectory is a no-op.
+     */
+    public function deleteTable(string $tableName): void
+    {
+        foreach ($this->listFiles($tableName) as $fileName) {
+            $this->deleteFile($tableName, $fileName);
+        }
+
+        $this->deleteTableDir($tableName);
+    }
+
+    /**
      * Removes the table subdirectory (must be empty). Idempotent.
      */
     public function deleteTableDir(string $tableName): void

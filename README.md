@@ -13,6 +13,7 @@ Designed for compact, low-traffic workloads where a real RDBMS would be overkill
 - Schema-driven NDJSON storage with per-table subdirectories
 - Auto-incrementing integer primary key (`id`) — invariant, not optional
 - Lookup and ordering indexes (including a mandatory PK index)
+- Schema evolution — add / drop / reorder columns and drop tables (`migrateColumns`, `reorderColumns`, `dropTable`)
 - Query builder with `WHERE`, `LIKE`, `BETWEEN`, `IN`, `ORDER BY`, pagination, distinct
 - Foreign keys with `cascade` / `setNull` / `restrict` / `noAction`
 - Pluggable cache layer (APCu / Memcached / Redis / file / your own)

@@ -23,7 +23,7 @@ JsonProvider — это самодостаточный PHP-провайдер д
 09. [Переиспользуемые фильтры — JsonFilter](09-reusable-filters.md)
 10. [Мутации — insert / update / delete](10-mutations.md)
 11. [API идентификаторов](11-identifier-apis.md)
-12. [Изменение схемы — reorderColumns](12-schema-mutations.md)
+12. [Изменение схемы — reorder, migrate, drop](12-schema-mutations.md)
 13. [Сопровождение индексов и оптимизация таблицы](13-maintenance.md)
 14. [Целостность — validate и repair](14-integrity.md)
 15. [Резервное копирование и восстановление](15-backup-restore.md)

@@ -135,6 +135,30 @@ final class SchemaRegistry
     }
 
     /**
+     * Removes a table from the schema together with every relation that
+     * involves it, and persists information_schema.json. Idempotent — an
+     * unknown table is a no-op.
+     */
+    public function unregisterTable(string $name): void
+    {
+        $this->ensureLoaded();
+
+        if (!isset($this->tables[$name])) {
+            return;
+        }
+
+        unset($this->tables[$name]);
+
+        $this->relations = array_values(array_filter(
+            $this->relations ?? [],
+            static fn (RelationSchema $r): bool => $r->fromTable !== $name
+                && $r->toTable !== $name,
+        ));
+
+        $this->persist();
+    }
+
+    /**
      * Forces a schema reload from disk (after external modifications).
      */
     public function reload(): void
@@ -459,13 +483,23 @@ final class SchemaRegistry
         }
 
         foreach ($this->relations ?? [] as $relation) {
-            $data['relations'][] = [
+            $entry = [
                 'from'       => $relation->fromTable,
                 'foreignKey' => $relation->foreignKey,
                 'to'         => $relation->toTable,
                 'references' => $relation->references,
                 'type'       => $relation->type->value,
             ];
+
+            if ($relation->onDelete !== ForeignKeyActionEnum::NO_ACTION) {
+                $entry['onDelete'] = $relation->onDelete->value;
+            }
+
+            if ($relation->onUpdate !== ForeignKeyActionEnum::NO_ACTION) {
+                $entry['onUpdate'] = $relation->onUpdate->value;
+            }
+
+            $data['relations'][] = $entry;
         }
 
         $this->storage->write(self::SCHEMA_FILE, $data);

@@ -67,6 +67,9 @@ The custom locale class can live in any namespace.
 | `REORDER_COLUMNS_UNKNOWN` | reorderColumns: column not in schema |
 | `REORDER_COLUMNS_DUPLICATE` | reorderColumns: duplicate column name |
 | `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: some columns omitted |
+| `MIGRATE_COLUMN_TYPE_CHANGE` | migrateColumns: a retained column changes type |
+| `MIGRATE_COLUMN_NO_DEFAULT` | migrateColumns: not-null column with no default added to a non-empty table |
+| `MIGRATE_FIELD_UNKNOWN_COLUMN` | migrateColumns: a constraint/index references a missing column |
 | `BACKUP_ARCHIVE_EXISTS` | backup destination already occupied |
 | `BACKUP_DESTINATION_INSIDE_DB` | backup target lies inside the DB directory |
 | `BACKUP_ARCHIVE_CORRUPT` | restore: archive missing/unreadable/wrong format |

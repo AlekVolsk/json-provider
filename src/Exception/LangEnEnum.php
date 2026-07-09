@@ -41,6 +41,14 @@ enum LangEnEnum: string implements LocaleInterface
     case REORDER_COLUMNS_INCOMPLETE = 'reorderColumns for table "%s": '
         . 'missing column(s) "%s"';
     case INDEX_NOT_FOUND = 'Table "%s" has no index named "%s"';
+    case MIGRATE_COLUMN_TYPE_CHANGE = 'migrateColumns for table "%s": column '
+        . '"%s" type change (%s -> %s) is not supported; migrate the data '
+        . 'separately';
+    case MIGRATE_COLUMN_NO_DEFAULT = 'migrateColumns for table "%s": cannot '
+        . 'add non-nullable column "%s" of type %s to a non-empty table (no '
+        . 'default value); declare it nullable';
+    case MIGRATE_FIELD_UNKNOWN_COLUMN = 'migrateColumns for table "%s": %s '
+        . 'references unknown column "%s"';
     case BACKUP_ARCHIVE_EXISTS = 'Backup archive already exists at: %s';
     case BACKUP_DESTINATION_INSIDE_DB = 'Backup destination must be outside '
         . 'the DB directory: %s';

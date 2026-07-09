@@ -127,7 +127,8 @@ test-testo-bench: ##@Testing Testo - load benchmarks (tests/Bench, 50 x 100k)
 	@$(VENDOR_BIN)/testo \
         --config="$(PATH_ROOT)/testo.php" \
         --type=bench \
-		--log-junit="$(PATH_BUILD)/testo-bench-junit.xml"
+		--log-junit="$(PATH_BUILD)/testo-bench-junit.xml" \
+		-vvv
 
 
 #### PHP-CS-Fixer #####################################################################
