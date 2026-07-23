@@ -272,9 +272,9 @@ final class IndexEquivalenceTest
     // -- audit regressions -------------------------------------------------
 
     #[Test]
-    public function bigIntBoundaryRangesMatchFullScan(): void
+    public function bigFloatBoundaryRangesMatchFullScan(): void
     {
-        $columns = ['id' => 'int', 'n' => 'int'];
+        $columns = ['id' => 'int', 'f' => 'float'];
 
         $this->db->createTable(TableSchema::create(
             name: 'big',
@@ -282,9 +282,9 @@ final class IndexEquivalenceTest
             columns: $columns,
             indexes: [
                 new IndexSchema(
-                    name: 'idx_n',
+                    name: 'idx_f',
                     fields: [new IndexFieldSchema(
-                        'n',
+                        'f',
                         SortDirectionEnum::ASC,
                     )],
                 ),
@@ -297,11 +297,17 @@ final class IndexEquivalenceTest
             indexes: [],
         ));
 
-        $values = [2 ** 53 + 1, 2 ** 53, 2 ** 53 - 1, PHP_INT_MAX, 1];
+        $values = [
+            (float)(2 ** 53),
+            (float)(2 ** 53) * 2,
+            (float)PHP_INT_MAX,
+            1.0,
+            PHP_FLOAT_MAX,
+        ];
 
-        foreach ($values as $n) {
-            $this->db->insert('big', ['n' => $n]);
-            $this->db->insert('bigtwin', ['n' => $n]);
+        foreach ($values as $f) {
+            $this->db->insert('big', ['f' => $f]);
+            $this->db->insert('bigtwin', ['f' => $f]);
         }
 
         $cases = [
@@ -310,7 +316,7 @@ final class IndexEquivalenceTest
             ['>', 2 ** 53],
             ['>=', 2 ** 53 + 1],
             ['<=', 2 ** 53],
-            ['BETWEEN', [(float)(2 ** 53), (float)(2 ** 53)]],
+            ['BETWEEN', [(float)(2 ** 53), (float)PHP_INT_MAX]],
             ['BETWEEN', [2 ** 53, PHP_INT_MAX]],
             ['>', (float)PHP_INT_MAX],
         ];
@@ -318,12 +324,12 @@ final class IndexEquivalenceTest
         foreach ($cases as [$op, $value]) {
             $viaIndex = array_column(
                 $this->db->table('big')
-                    ->where('n', $op, $value)->selectAllByArray(),
+                    ->where('f', $op, $value)->selectAllByArray(),
                 'id',
             );
             $viaTwin = array_column(
                 $this->db->table('bigtwin')
-                    ->where('n', $op, $value)->selectAllByArray(),
+                    ->where('f', $op, $value)->selectAllByArray(),
                 'id',
             );
             sort($viaIndex);
@@ -332,7 +338,7 @@ final class IndexEquivalenceTest
             Assert::same(
                 $viaIndex,
                 $viaTwin,
-                "n {$op} " . var_export($value, true),
+                "f {$op} " . var_export($value, true),
             );
         }
     }

@@ -10,6 +10,7 @@ use AV\JsonProvider\Mapping\DtoMapper;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\OrderBy;
+use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\TableSchema;
 
 /**
@@ -59,7 +60,9 @@ final class JsonTable
     ) {}
 
     /**
-     * Adds a filter condition (AND).
+     * Adds a filter condition (AND). An unknown operator string is
+     * rejected with a localized INVALID_OPERATOR instead of a raw
+     * ValueError.
      */
     public function where(
         string $field,
@@ -67,9 +70,18 @@ final class JsonTable
         mixed $value,
         bool $not = false,
     ): self {
+        $op = FilterOperatorEnum::tryFrom($operator);
+
+        if ($op === null) {
+            throw StorageException::invalidOperator(
+                $this->tableSchema->name,
+                $operator,
+            );
+        }
+
         $this->conditions[] = new FilterCondition(
             $field,
-            FilterOperatorEnum::from($operator),
+            $op,
             $value,
             $not,
         );
@@ -101,26 +113,57 @@ final class JsonTable
     }
 
     /**
-     * Adds a sort rule.
+     * Adds a sort rule. The direction is case-insensitive ("asc"/"desc");
+     * anything else is rejected — a typo like "descending" must not
+     * silently sort ascending.
      */
     public function orderBy(string $field, string $direction = 'asc'): self
     {
-        $this->ordering[] = $direction === 'desc'
-            ? OrderBy::desc($field)
-            : OrderBy::asc($field);
+        $dir = SortDirectionEnum::tryFrom(strtolower($direction));
+
+        if ($dir === null) {
+            throw StorageException::invalidSortDirection(
+                $this->tableSchema->name,
+                $direction,
+            );
+        }
+
+        $this->ordering[] = new OrderBy($field, $dir);
 
         return $this;
     }
 
+    /**
+     * Caps the number of returned rows. 0 is valid and yields an empty
+     * result (cf. SQL LIMIT 0); negative values are rejected fail-fast.
+     */
     public function limit(int $n): self
     {
+        if ($n < 0) {
+            throw StorageException::invalidLimit(
+                $this->tableSchema->name,
+                $n,
+            );
+        }
+
         $this->limit = $n;
 
         return $this;
     }
 
+    /**
+     * Skips the given number of rows. Negative values are rejected
+     * fail-fast.
+     */
     public function offset(int $n): self
     {
+        if ($n < 0) {
+            throw StorageException::invalidOffset(
+                $this->tableSchema->name,
+                $n,
+            );
+        }
+
         $this->offset = $n;
 
         return $this;
@@ -214,6 +257,14 @@ final class JsonTable
     public function selectColumn(string $field): array
     {
         try {
+            if (!\array_key_exists($field, $this->tableSchema->columns)) {
+                throw StorageException::queryUnknownColumn(
+                    $this->tableSchema->name,
+                    $field,
+                    'selectColumn',
+                );
+            }
+
             $records = $this->provider->select(
                 $this->tableSchema->name,
                 $this->conditions,
@@ -233,11 +284,28 @@ final class JsonTable
     }
 
     /**
-     * Returns the count of matching records.
+     * Returns the count of matching records. Ordering does not change a
+     * count, but an unknown orderBy column is still rejected — the same
+     * builder chain must not silently pass here and throw on select.
      */
     public function count(): int
     {
         try {
+            foreach ($this->ordering as $order) {
+                if (
+                    !\array_key_exists(
+                        $order->field,
+                        $this->tableSchema->columns,
+                    )
+                ) {
+                    throw StorageException::queryUnknownColumn(
+                        $this->tableSchema->name,
+                        $order->field,
+                        'orderBy',
+                    );
+                }
+            }
+
             if ($this->distinctFields === []) {
                 return $this->provider->count(
                     $this->tableSchema->name,
@@ -486,11 +554,13 @@ final class JsonTable
     private function firstRow(): array | null
     {
         try {
+            $limit = $this->limit === null ? 1 : min(1, $this->limit);
+
             $results = $this->provider->select(
                 $this->tableSchema->name,
                 $this->conditions,
                 $this->ordering,
-                1,
+                $limit,
                 $this->offset,
                 $this->distinctFields,
             );

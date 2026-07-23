@@ -51,6 +51,12 @@ $cats  = $db->table('products')
 
 Multiple `where()` calls are joined with **AND**. The provider does not support `OR` directly — express `OR` by issuing separate queries or by broadening the data shape.
 
+Condition values are validated before the query executes — types mirror the write contract, a column missing from the schema is rejected (`QUERY_UNKNOWN_COLUMN`), a malformed `BETWEEN`/`IN` shape raises `CONDITION_MALFORMED`; the full policy lives in the [Schema model](04-schema-model.md). A ghost row lacking some key is filtered as if that field were `null`.
+
+## LIKE semantics
+
+LIKE is **bytewise and case-sensitive**. The only wildcard is an unescaped `%` (any byte run); `\%` is a literal percent, `\\` a literal backslash; `_` is **not** special (it matches a literal underscore). There is no case-insensitive variant (ILIKE) — case folding stays at the application level. For temporal columns the pattern matches against the stored UTC form. The pattern must be a string and the column string/temporal/passthrough.
+
 ## String comparison mode
 
 The ordering operators (`>`, `>=`, `<`, `<=`, `BETWEEN`) and `orderBy` compare string pairs **bytewise** by default (`ComparisonMode::Binary`): `'10' < '9'`, numeric strings are not coerced, and the order matches the byte order of indexes — a range, a sort and the index path give one answer. Numbers compare numerically; `null` sorts first; `=`/`IN` stay strict `===` always.
@@ -82,3 +88,5 @@ $db->table('products')
 ```
 
 When an ordering index covers the `orderBy`, pagination is applied at the index layer — only the requested slice is read from the data file.
+
+Negative `limit`/`offset` values are rejected fail-fast (`INVALID_LIMIT`/`INVALID_OFFSET`); `limit(0)` is valid and yields an empty result (cf. SQL `LIMIT 0`). The `orderBy` direction is case-insensitive (`'asc'`/`'DESC'`/`'Desc'`); anything else raises `INVALID_SORT_DIRECTION` instead of silently sorting ascending.

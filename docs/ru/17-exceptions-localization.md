@@ -81,6 +81,12 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `REQUIRED_COLUMN_MISSING` | insert пропустил non-nullable-колонку |
 | `NON_FINITE_FLOAT` | `NAN`/`INF` во float-колонку — не представимы в JSON |
 | `INVALID_UTF8` | строка не является корректной UTF-8 |
+| `QUERY_UNKNOWN_COLUMN` | колонка из where/orderBy/distinct/selectColumn отсутствует в схеме |
+| `CONDITION_TYPE_MISMATCH` | значение условия where не соответствует типу колонки/оператору |
+| `CONDITION_MALFORMED` | битая форма BETWEEN/IN (не массив, не [min, max]) |
+| `INVALID_SORT_DIRECTION` | направление orderBy не "asc"/"desc" |
+| `INVALID_LIMIT` | отрицательный limit |
+| `INVALID_OFFSET` | отрицательный offset |
 | `INVALID_TEMPORAL_VALUE` | дата/время не в принятом системном формате |
 | `ZERO_DATE` | передана нулевая дата (`0000-00-00`) |
 | `NUMERIC_PART_OUT_OF_RANGE` | значение `month`/`day` вне допустимого диапазона |

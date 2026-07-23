@@ -103,6 +103,20 @@ Types are enforced on every write (`insert`, `update`, and `where` values), not 
 
 Violations raise `StorageException` with a specific key — `TYPE_MISMATCH`, `NULL_NOT_ALLOWED`, `REQUIRED_COLUMN_MISSING`, `NON_FINITE_FLOAT`, `INVALID_UTF8`, `INVALID_TEMPORAL_VALUE`, `ZERO_DATE`, `NUMERIC_PART_OUT_OF_RANGE` — see [Exceptions & localization](17-exceptions-localization.md).
 
+### `where` value typing policy
+
+Condition values are checked by the same contract as writes — the first violation throws and the query never executes:
+
+| Operator | Value rule |
+| - | - |
+| `=` | scalar or `null` (`null` is allowed regardless of nullability and simply matches `null` cells) |
+| `>` `>=` `<` `<=` | non-`null` scalar of the column's exact type |
+| `BETWEEN` | array of exactly two non-`null` scalars following the range rule; otherwise `CONDITION_MALFORMED` |
+| `IN` | array whose elements follow the `=` rule; an empty array is valid and matches nothing; a non-array → `CONDITION_MALFORMED` |
+| `LIKE` | a string pattern; string/temporal/passthrough columns only |
+
+The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `CONDITION_TYPE_MISMATCH`. `NAN`/`INF` against a `float` column → `NON_FINITE_FLOAT` (the same guard as on write). Temporal conditions accept only system-format strings and are encoded to the stored UTC form. Unknown (passthrough) column types skip the value check, but the structural `BETWEEN`/`IN` rules still apply. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QUERY_UNKNOWN_COLUMN`.
+
 ## Float format on disk
 
 JSON has a single number type, so a float without a fractional part could collapse into an int on re-read. The provider closes this from both sides:

@@ -81,6 +81,12 @@ The custom locale class can live in any namespace.
 | `REQUIRED_COLUMN_MISSING` | insert omitted a non-nullable column |
 | `NON_FINITE_FLOAT` | `NAN`/`INF` written into a float column — not representable in JSON |
 | `INVALID_UTF8` | string value is not valid UTF-8 |
+| `QUERY_UNKNOWN_COLUMN` | a where/orderBy/distinct/selectColumn column is missing from the schema |
+| `CONDITION_TYPE_MISMATCH` | a where condition value does not fit the column type/operator |
+| `CONDITION_MALFORMED` | malformed BETWEEN/IN shape (not an array, not [min, max]) |
+| `INVALID_SORT_DIRECTION` | orderBy direction is not "asc"/"desc" |
+| `INVALID_LIMIT` | negative limit |
+| `INVALID_OFFSET` | negative offset |
 | `INVALID_TEMPORAL_VALUE` | date/time value not in the accepted system format |
 | `ZERO_DATE` | a zero date (`0000-00-00`) was supplied |
 | `NUMERIC_PART_OUT_OF_RANGE` | `month`/`day` value outside its valid range |

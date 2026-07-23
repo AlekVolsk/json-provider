@@ -171,12 +171,15 @@ final class IndexTrustTest
     }
 
     #[Test]
-    public function betweenWithNullBoundDegradesSilently(): void
+    public function betweenWithNullBoundIsRejectedBeforeExecution(): void
     {
-        $rows = $this->db->table(self::TABLE)
-            ->where('grp', 'BETWEEN', [null, 2])->selectAllByArray();
-
-        Assert::count($rows, 3);
+        try {
+            $this->db->table(self::TABLE)
+                ->where('grp', 'BETWEEN', [null, 2])->selectAllByArray();
+            Assert::fail('a null BETWEEN bound must be rejected');
+        } catch (StorageException $e) {
+            Assert::same($e->getErrorKey(), 'CONDITION_MALFORMED');
+        }
     }
 
     #[Test]
@@ -189,28 +192,29 @@ final class IndexTrustTest
     }
 
     #[Test]
-    public function nonFiniteConditionDegradesSilently(): void
+    public function nonFiniteConditionIsRejectedBeforeExecution(): void
     {
         foreach ([NAN, INF, -INF] as $value) {
-            $rows = $this->db->table(self::TABLE)
-                ->where('grp', '=', $value)->selectAllByArray();
-
-            Assert::count($rows, 0);
+            try {
+                $this->db->table(self::TABLE)
+                    ->where('grp', '=', $value)->selectAllByArray();
+                Assert::fail('a non-finite condition must be rejected');
+            } catch (StorageException $e) {
+                Assert::same($e->getErrorKey(), 'CONDITION_TYPE_MISMATCH');
+            }
         }
-
-        $rows = $this->db->table(self::TABLE)
-            ->where('grp', 'BETWEEN', [-INF, 2])->selectAllByArray();
-
-        Assert::count($rows, 3);
     }
 
     #[Test]
-    public function singleElementBetweenIsQuietZero(): void
+    public function singleElementBetweenIsRejectedBeforeExecution(): void
     {
-        $rows = $this->db->table(self::TABLE)
-            ->where('grp', 'BETWEEN', [1])->selectAllByArray();
-
-        Assert::count($rows, 0);
+        try {
+            $this->db->table(self::TABLE)
+                ->where('grp', 'BETWEEN', [1])->selectAllByArray();
+            Assert::fail('a one-element BETWEEN must be rejected');
+        } catch (StorageException $e) {
+            Assert::same($e->getErrorKey(), 'CONDITION_MALFORMED');
+        }
     }
 
     // -- lazy v1 -> v2 upgrade ---------------------------------------------

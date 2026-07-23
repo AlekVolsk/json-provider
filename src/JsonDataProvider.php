@@ -578,34 +578,8 @@ final class JsonDataProvider
                     $tableSchema,
                     $conditions,
                 );
-                $this->ensureTableConsistent($tableSchema);
-                $records = $this->readAllForWrite($tableName);
 
-                $toDelete = array_filter(
-                    $records,
-                    fn (array $r): bool => $this->matchesAll(
-                        $r,
-                        $conditions,
-                    ),
-                );
-
-                if ($toDelete === []) {
-                    return 0;
-                }
-
-                $this->processForeignKeys($tableName, $toDelete, 'delete');
-
-                $filtered = array_values(array_filter(
-                    $records,
-                    fn (array $r): bool => !$this->matchesAll(
-                        $r,
-                        $conditions,
-                    ),
-                ));
-
-                $this->writeAll($tableName, $tableSchema, $filtered);
-
-                return \count($toDelete);
+                return $this->deleteMatching($tableSchema, $conditions);
             },
         );
     }
@@ -1094,6 +1068,16 @@ final class JsonDataProvider
         array $distinctFields = [],
     ): array {
         $tableSchema = $this->schema->getTable($tableName);
+
+        if ($limit !== null && $limit < 0) {
+            throw StorageException::invalidLimit($tableName, $limit);
+        }
+
+        if ($offset < 0) {
+            throw StorageException::invalidOffset($tableName, $offset);
+        }
+
+        $this->assertKnownColumns($tableSchema, $ordering, $distinctFields);
         $conditions = $this->values->encodeConditions(
             $tableSchema,
             $conditions,
@@ -1187,10 +1171,15 @@ final class JsonDataProvider
             $deduped = [];
 
             foreach ($records as $record) {
-                $key = implode("\x00", array_map(
-                    static fn (string $f): string => (string)(
-                        $record[$f] ?? ''
-                    ),
+                /*
+                 * serialize() is type-distinguishing: null, '', false, 0,
+                 * '0', true, 1 and '1' are eight distinct keys, and \x00
+                 * bytes inside values cannot collide tuples. Missing
+                 * fields read as null (ghost rows); unknown fields were
+                 * rejected by assertKnownColumns earlier.
+                 */
+                $key = serialize(array_map(
+                    static fn (string $f): mixed => $record[$f] ?? null,
                     $distinctFields,
                 ));
 
@@ -1224,16 +1213,15 @@ final class JsonDataProvider
     public function count(string $tableName, array $conditions = []): int
     {
         $tableSchema = $this->schema->getTable($tableName);
+        $conditions = $this->values->encodeConditions(
+            $tableSchema,
+            $conditions,
+        );
         $records = $this->readAllRaw($tableName);
 
         if ($conditions === []) {
             return \count($records);
         }
-
-        $conditions = $this->values->encodeConditions(
-            $tableSchema,
-            $conditions,
-        );
 
         return \count(array_filter(
             $records,
@@ -1248,6 +1236,53 @@ final class JsonDataProvider
     public function invalidateCache(string $tableName): void
     {
         $this->cache->invalidate($this->cacheKey($tableName));
+    }
+
+    /**
+     * Delete body over ALREADY-ENCODED conditions. The public delete()
+     * validates and encodes user input first; FK cascades call this
+     * directly — their conditions are built from STORED values (already
+     * in the on-disk form), so running them through encodeConditions
+     * would double-encode temporal values (shifting an already-UTC string
+     * again) and apply user-input typing to engine-built conditions.
+     * Requires the table EX lock (held transitively by the caller's
+     * mutation lock plan).
+     *
+     * @param array<int,FilterCondition> $conditions
+     */
+    private function deleteMatching(
+        TableSchema $tableSchema,
+        array $conditions,
+    ): int {
+        $tableName = $tableSchema->name;
+        $this->ensureTableConsistent($tableSchema);
+        $records = $this->readAllForWrite($tableName);
+
+        $toDelete = array_filter(
+            $records,
+            fn (array $r): bool => $this->matchesAll(
+                $r,
+                $conditions,
+            ),
+        );
+
+        if ($toDelete === []) {
+            return 0;
+        }
+
+        $this->processForeignKeys($tableName, $toDelete, 'delete');
+
+        $filtered = array_values(array_filter(
+            $records,
+            fn (array $r): bool => !$this->matchesAll(
+                $r,
+                $conditions,
+            ),
+        ));
+
+        $this->writeAll($tableName, $tableSchema, $filtered);
+
+        return \count($toDelete);
     }
 
     /**
@@ -2059,7 +2094,10 @@ final class JsonDataProvider
                     );
                 }
             } elseif ($action === Schema\ForeignKeyActionEnum::CASCADE) {
-                $this->delete($childTable, $conditions);
+                $this->deleteMatching(
+                    $this->schema->getTable($childTable),
+                    $conditions,
+                );
             } elseif ($action === Schema\ForeignKeyActionEnum::SET_NULL) {
                 $childSchema = $this->schema->getTable($childTable);
                 $this->ensureTableConsistent($childSchema);
@@ -2189,6 +2227,41 @@ final class JsonDataProvider
                 $record,
                 $lineNumber,
             );
+        }
+    }
+
+    /**
+     * Rejects orderBy and distinct references to columns absent from the
+     * schema — together with the where-side check in encodeConditions
+     * this closes the "typo deletes the whole table" class: no query
+     * layer input reaches matching with an unknown column name.
+     *
+     * @param array<int,OrderBy> $ordering
+     * @param array<int,string>  $distinctFields
+     */
+    private function assertKnownColumns(
+        TableSchema $tableSchema,
+        array $ordering,
+        array $distinctFields,
+    ): void {
+        foreach ($ordering as $order) {
+            if (!\array_key_exists($order->field, $tableSchema->columns)) {
+                throw StorageException::queryUnknownColumn(
+                    $tableSchema->name,
+                    $order->field,
+                    'orderBy',
+                );
+            }
+        }
+
+        foreach ($distinctFields as $field) {
+            if (!\array_key_exists($field, $tableSchema->columns)) {
+                throw StorageException::queryUnknownColumn(
+                    $tableSchema->name,
+                    $field,
+                    'distinct',
+                );
+            }
         }
     }
 

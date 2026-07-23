@@ -258,6 +258,77 @@ class StorageException extends JsonProviderException
         return new self('INDEX_KEY_NON_FINITE', $field);
     }
 
+    public static function queryUnknownColumn(
+        string $table,
+        string $column,
+        string $context,
+    ): self {
+        return new self('QUERY_UNKNOWN_COLUMN', $table, $column, $context);
+    }
+
+    public static function conditionTypeMismatch(
+        string $table,
+        string $column,
+        string $operator,
+        string $expected,
+        string $actual,
+    ): self {
+        return new self(
+            'CONDITION_TYPE_MISMATCH',
+            $table,
+            $column,
+            $operator,
+            $expected,
+            $actual,
+        );
+    }
+
+    public static function conditionMalformed(
+        string $table,
+        string $column,
+        string $operator,
+        string $reason,
+    ): self {
+        return new self(
+            'CONDITION_MALFORMED',
+            $table,
+            $column,
+            $operator,
+            $reason,
+        );
+    }
+
+    public static function invalidSortDirection(
+        string $table,
+        string $direction,
+    ): self {
+        return new self('INVALID_SORT_DIRECTION', $table, $direction);
+    }
+
+    public static function invalidOperator(
+        string $table,
+        string $operator,
+    ): self {
+        return new self('INVALID_OPERATOR', $table, $operator);
+    }
+
+    public static function likeEvaluationFailed(
+        string $pattern,
+        string $reason,
+    ): self {
+        return new self('LIKE_EVALUATION_FAILED', $pattern, $reason);
+    }
+
+    public static function invalidLimit(string $table, int $value): self
+    {
+        return new self('INVALID_LIMIT', $table, (string)$value);
+    }
+
+    public static function invalidOffset(string $table, int $value): self
+    {
+        return new self('INVALID_OFFSET', $table, (string)$value);
+    }
+
     public static function indexUnreliable(
         string $table,
         string $indexName,

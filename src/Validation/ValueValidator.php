@@ -31,8 +31,9 @@ use AV\JsonProvider\Schema\TableSchema;
  * accepted only for `<type>|null` columns. Unknown/custom type strings are
  * passed through unchecked for backward compatibility.
  *
- * Tables without a single temporal column pay nothing on read: decodeRecord and
- * encodeConditions short-circuit via a memoized per-schema check.
+ * Tables without a single temporal column pay nothing on decodeRecord — it
+ * short-circuits via a memoized per-schema check. encodeConditions always
+ * runs the full validate-and-encode pass.
  */
 final class ValueValidator
 {
@@ -168,9 +169,26 @@ final class ValueValidator
     }
 
     /**
-     * Encodes temporal values inside filter conditions so they compare against
-     * the stored UTC form. Non-temporal fields and LIKE are left as-is. Returns
-     * the conditions unchanged when the table has no temporal columns.
+     * Full validate-and-encode pass over filter conditions — the write
+     * contract mirrored onto the read side. Per condition, in order:
+     *
+     *  1. the column must exist in the schema (QUERY_UNKNOWN_COLUMN);
+     *  2. structure: BETWEEN takes exactly [min, max], IN takes an array
+     *     (empty = matches nothing) — CONDITION_MALFORMED otherwise;
+     *     checked for every column type including passthrough;
+     *  3. value typing, mirroring encodeForWrite: EQ takes a scalar or
+     *     null (null is allowed regardless of nullability and simply
+     *     matches null cells); GT/GTE/LT/LTE and BETWEEN bounds take a
+     *     non-null scalar of the column's exact type; IN elements follow
+     *     the EQ rule; LIKE takes a string and only works on
+     *     string/temporal/passthrough columns. The single coercion is int
+     *     into a float column; numeric STRINGS are rejected, as are
+     *     NAN/INF (same guard as the write path). Unknown (passthrough)
+     *     column types skip the value checks;
+     *  4. temporal values are encoded to their stored UTC form so index
+     *     lookups and strict `=` compare against what is on disk.
+     *
+     * The first violation throws; the query never executes.
      *
      * @param array<int,FilterCondition> $conditions
      *
@@ -180,10 +198,6 @@ final class ValueValidator
         TableSchema $schema,
         array $conditions,
     ): array {
-        if (!$this->hasTemporalColumns($schema)) {
-            return $conditions;
-        }
-
         $out = [];
 
         foreach ($conditions as $condition) {
@@ -198,35 +212,50 @@ final class ValueValidator
         FilterCondition $condition,
     ): FilterCondition {
         $type = $schema->columns[$condition->field] ?? null;
-        $kind = $type === null
-            ? null
-            : ColumnTypeInfo::parse($type)->temporalKind();
 
-        if (
-            $kind === null
-            || $condition->operator === FilterOperatorEnum::LIKE
-        ) {
-            return $condition;
+        if ($type === null) {
+            throw StorageException::queryUnknownColumn(
+                $schema->name,
+                $condition->field,
+                'where',
+            );
         }
 
+        $info = ColumnTypeInfo::parse($type);
         $value = match ($condition->operator) {
-            FilterOperatorEnum::IN => $this->encodeConditionList(
+            FilterOperatorEnum::BETWEEN => $this->conditionBetween(
                 $schema->name,
                 $condition->field,
-                $kind,
+                $info,
                 $condition->value,
             ),
-            FilterOperatorEnum::BETWEEN => $this->encodeConditionRange(
+            FilterOperatorEnum::IN => $this->conditionIn(
                 $schema->name,
                 $condition->field,
-                $kind,
+                $info,
                 $condition->value,
             ),
-            default => $this->encodeConditionScalar(
+            FilterOperatorEnum::LIKE => $this->conditionLike(
                 $schema->name,
                 $condition->field,
-                $kind,
+                $info,
                 $condition->value,
+            ),
+            FilterOperatorEnum::EQ => $this->conditionScalar(
+                $schema->name,
+                $condition->field,
+                '=',
+                $info,
+                $condition->value,
+                true,
+            ),
+            default => $this->conditionScalar(
+                $schema->name,
+                $condition->field,
+                $condition->operator->value,
+                $info,
+                $condition->value,
+                false,
             ),
         };
 
@@ -238,62 +267,269 @@ final class ValueValidator
         );
     }
 
-    private function encodeConditionScalar(
-        string $table,
-        string $column,
-        TemporalKind $kind,
-        mixed $value,
-    ): mixed {
-        if (!\is_string($value)) {
-            return $value;
-        }
-
-        return $this->encodeTemporal($table, $column, $kind, $value);
-    }
-
     /**
-     * @return array<int,mixed>
+     * @return array{0: mixed, 1: mixed}
      */
-    private function encodeConditionList(
+    private function conditionBetween(
         string $table,
         string $column,
-        TemporalKind $kind,
-        mixed $value,
-    ): array {
-        if (!\is_array($value)) {
-            return [];
-        }
-
-        return array_map(
-            fn (mixed $item): mixed => $this->encodeConditionScalar(
-                $table,
-                $column,
-                $kind,
-                $item,
-            ),
-            array_values($value),
-        );
-    }
-
-    /**
-     * @return array<int,mixed>
-     */
-    private function encodeConditionRange(
-        string $table,
-        string $column,
-        TemporalKind $kind,
+        ColumnTypeInfo $info,
         mixed $value,
     ): array {
         if (!\is_array($value) || \count($value) !== 2) {
-            return \is_array($value) ? array_values($value) : [];
+            throw StorageException::conditionMalformed(
+                $table,
+                $column,
+                'BETWEEN',
+                'expects [min, max] array of two non-null scalars',
+            );
         }
 
-        [$from, $to] = array_values($value);
+        $bounds = array_values($value);
+
+        foreach ($bounds as $bound) {
+            if (!\is_scalar($bound)) {
+                throw StorageException::conditionMalformed(
+                    $table,
+                    $column,
+                    'BETWEEN',
+                    'expects [min, max] array of two non-null scalars',
+                );
+            }
+        }
 
         return [
-            $this->encodeConditionScalar($table, $column, $kind, $from),
-            $this->encodeConditionScalar($table, $column, $kind, $to),
+            $this->conditionScalar(
+                $table,
+                $column,
+                'BETWEEN',
+                $info,
+                $bounds[0],
+                false,
+            ),
+            $this->conditionScalar(
+                $table,
+                $column,
+                'BETWEEN',
+                $info,
+                $bounds[1],
+                false,
+            ),
         ];
+    }
+
+    /**
+     * @return array<int,mixed>
+     */
+    private function conditionIn(
+        string $table,
+        string $column,
+        ColumnTypeInfo $info,
+        mixed $value,
+    ): array {
+        if (!\is_array($value)) {
+            throw StorageException::conditionMalformed(
+                $table,
+                $column,
+                'IN',
+                'expects an array of scalars',
+            );
+        }
+
+        $out = [];
+
+        foreach (array_values($value) as $item) {
+            if (!\is_scalar($item) && $item !== null) {
+                throw StorageException::conditionMalformed(
+                    $table,
+                    $column,
+                    'IN',
+                    'expects an array of scalars',
+                );
+            }
+
+            $out[] = $this->conditionScalar(
+                $table,
+                $column,
+                'IN',
+                $info,
+                $item,
+                true,
+            );
+        }
+
+        return $out;
+    }
+
+    private function conditionLike(
+        string $table,
+        string $column,
+        ColumnTypeInfo $info,
+        mixed $value,
+    ): string {
+        if (!\is_string($value)) {
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                'LIKE',
+                'a string pattern',
+                get_debug_type($value),
+            );
+        }
+
+        if (
+            $this->conditionKnownBase($info)
+            && $info->temporalKind() === null
+            && $info->base !== ColumnTypes::STRING
+        ) {
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                'LIKE',
+                'a string or temporal column (LIKE is not defined for '
+                    . $info->base . ')',
+                $info->base,
+            );
+        }
+
+        return $value;
+    }
+
+    /**
+     * Validates and encodes one condition value against the column type:
+     * the EQ rule ($allowNull) or the range rule (non-null). Mirrors
+     * encodeValue on the write side, including the int-to-float widening
+     * and the non-finite guard.
+     */
+    private function conditionScalar(
+        string $table,
+        string $column,
+        string $operator,
+        ColumnTypeInfo $info,
+        mixed $value,
+        bool $allowNull,
+    ): bool | float | int | string | null {
+        if ($value === null) {
+            if ($allowNull) {
+                return null;
+            }
+
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                $operator,
+                'a non-null scalar',
+                'null',
+            );
+        }
+
+        if (!\is_scalar($value)) {
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                $operator,
+                'a scalar',
+                get_debug_type($value),
+            );
+        }
+
+        if (!$this->conditionKnownBase($info)) {
+            return $value;
+        }
+
+        $kind = $info->temporalKind();
+
+        if ($kind !== null) {
+            if (!\is_string($value)) {
+                throw StorageException::conditionTypeMismatch(
+                    $table,
+                    $column,
+                    $operator,
+                    'a ' . $kind->value . ' string',
+                    get_debug_type($value),
+                );
+            }
+
+            return $this->encodeTemporal($table, $column, $kind, $value);
+        }
+
+        $expected = match ($info->base) {
+            ColumnTypes::STRING => \is_string($value) ? null : 'string',
+            ColumnTypes::BOOL   => \is_bool($value) ? null : 'bool',
+            ColumnTypes::INT,
+            ColumnTypes::YEAR,
+            ColumnTypes::MONTH,
+            ColumnTypes::DAY => \is_int($value) ? null : 'int',
+            default          => \is_int($value) || \is_float($value)
+                ? null
+                : 'float (or int)',
+        };
+
+        if ($expected !== null) {
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                $operator,
+                $expected,
+                get_debug_type($value),
+            );
+        }
+
+        if ($info->base === ColumnTypes::FLOAT) {
+            \assert(\is_int($value) || \is_float($value));
+
+            if (\is_float($value) && !is_finite($value)) {
+                throw StorageException::nonFiniteFloat($table, $column);
+            }
+
+            return (float)$value;
+        }
+
+        if ($info->base === ColumnTypes::STRING) {
+            \assert(\is_string($value));
+
+            return $this->requireString($table, $column, $value);
+        }
+
+        if (
+            $info->base === ColumnTypes::YEAR
+            || $info->base === ColumnTypes::MONTH
+            || $info->base === ColumnTypes::DAY
+        ) {
+            \assert(\is_int($value));
+
+            return $this->encodeNumericPart(
+                $table,
+                $column,
+                $info->base,
+                $value,
+            );
+        }
+
+        return $value;
+    }
+
+    /**
+     * Whether the column's base type is known to the validator — unknown
+     * (passthrough) type strings skip value checks for backward
+     * compatibility, exactly as on the write side.
+     */
+    private function conditionKnownBase(ColumnTypeInfo $info): bool
+    {
+        if ($info->temporalKind() !== null) {
+            return true;
+        }
+
+        return match ($info->base) {
+            ColumnTypes::STRING,
+            ColumnTypes::INT,
+            ColumnTypes::FLOAT,
+            ColumnTypes::BOOL,
+            ColumnTypes::YEAR,
+            ColumnTypes::MONTH,
+            ColumnTypes::DAY => true,
+            default          => false,
+        };
     }
 
     private function encodeValue(

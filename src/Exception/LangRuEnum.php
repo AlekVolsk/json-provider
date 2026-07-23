@@ -50,6 +50,21 @@ enum LangRuEnum: string implements LocaleInterface
         . 'и не может использоваться: %s';
     case INDEX_KEY_NON_FINITE = 'Ключ индекса для поля "%s": NAN и INF '
         . 'не индексируемы';
+    case QUERY_UNKNOWN_COLUMN = 'В таблице "%s" нет колонки "%s" '
+        . '(указана в %s)';
+    case CONDITION_TYPE_MISMATCH = 'Таблица "%s", колонка "%s", оператор '
+        . '%s: значение условия должно быть %s, получено %s';
+    case CONDITION_MALFORMED = 'Таблица "%s", колонка "%s", оператор %s: %s';
+    case INVALID_SORT_DIRECTION = 'Таблица "%s": недопустимое направление '
+        . 'сортировки "%s" (ожидается "asc" или "desc", без учёта регистра)';
+    case INVALID_OPERATOR = 'Таблица "%s": неизвестный оператор '
+        . 'фильтрации "%s"';
+    case LIKE_EVALUATION_FAILED = 'LIKE-шаблон "%s" не удалось '
+        . 'вычислить: %s';
+    case INVALID_LIMIT = 'Таблица "%s": limit должен быть неотрицательным '
+        . 'целым, получено %s';
+    case INVALID_OFFSET = 'Таблица "%s": offset должен быть неотрицательным '
+        . 'целым, получено %s';
     case MIGRATE_COLUMN_TYPE_CHANGE = 'migrateColumns для таблицы "%s": смена '
         . 'типа колонки "%s" (%s -> %s) не поддерживается; мигрируйте данные '
         . 'отдельно';

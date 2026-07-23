@@ -30,6 +30,44 @@ API changes an integrator must know when updating.
   new. `rebuildIndex()` on a legacy-format table escalates to rebuilding
   all indexes of the table.
 
+### Query validation
+
+- `where` values are validated against the column types before the query
+  executes: numeric strings and cross-type values raise
+  `CONDITION_TYPE_MISMATCH` (previously loose comparison could match — or
+  silently match nothing); the single coercion is an int condition on a
+  float column; `NAN`/`INF` raise `NON_FINITE_FLOAT`; null range bounds
+  are rejected. Temporal conditions must be system-format strings.
+- Columns missing from the schema are rejected with
+  `QUERY_UNKNOWN_COLUMN` in `where`, `orderBy`, `isDistinct` and
+  `selectColumn` — previously a typo in a NOT-condition could match (and
+  delete) every row.
+- `BETWEEN` requires exactly `[min, max]` non-null scalars and `IN`
+  requires an array (`CONDITION_MALFORMED`); an empty `IN` list matches
+  nothing. A ghost row lacking a field is filtered as if the field were
+  null.
+- LIKE gains escaping: `\%` matches a literal percent, `\\` a literal
+  backslash; `_` stays literal. Patterns must be strings and the column
+  string/temporal/passthrough.
+- `orderBy` directions are case-insensitive but strict
+  (`INVALID_SORT_DIRECTION` instead of silently sorting ascending);
+  negative `limit`/`offset` raise `INVALID_LIMIT`/`INVALID_OFFSET`.
+- Distinct keys are type-distinguishing: `null`, `''`, `false`, `0`,
+  `'0'`, `true`, `1`, `'1'` are eight distinct values (previously string
+  casting collapsed them).
+- An unknown operator string in `where()` raises `INVALID_OPERATOR`
+  instead of a raw `ValueError`; a PCRE evaluation failure inside LIKE
+  (catastrophic backtracking on adversarial patterns) raises
+  `LIKE_EVALUATION_FAILED` instead of silently reading as "no match"
+  (which inverted through NOT LIKE could delete protected rows).
+- FK cascade conditions are engine-built from stored values and bypass
+  the user-input validation: cascading over temporal FK columns now
+  matches the stored UTC form under any PHP timezone (previously the
+  value was shifted twice and children were silently orphaned), and a
+  type-skewed FK schema no longer makes the parent row undeletable.
+- `limit(0)->selectOne()` returns null (LIMIT 0 contract); unknown
+  `orderBy` columns are rejected on `count()`/`exists()` too.
+
 ### Query semantics
 
 - String ordering comparisons (`>`, `>=`, `<`, `<=`, `BETWEEN`, `ORDER BY`)

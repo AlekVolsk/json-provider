@@ -26,18 +26,20 @@ final class FilterCondition
     /**
      * Returns whether the given record satisfies this condition.
      *
+     * A missing field reads as null — a ghost row lacking the column
+     * behaves exactly like a row holding null, so `field = null` finds
+     * both and `NOT field = x` cannot silently match every ghost row.
+     * Fields absent from the SCHEMA never reach this point: the query
+     * layer rejects them with QUERY_UNKNOWN_COLUMN before matching.
+     *
      * @param array<string,null|scalar> $record
      */
     public function matches(
         array $record,
         ComparisonMode $mode = ComparisonMode::Binary,
     ): bool {
-        if (!\array_key_exists($this->field, $record)) {
-            return $this->not;
-        }
-
         $result = $this->operator->matches(
-            $record[$this->field],
+            $record[$this->field] ?? null,
             $this->value,
             $mode,
         );

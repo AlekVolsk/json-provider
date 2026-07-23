@@ -49,6 +49,20 @@ enum LangEnEnum: string implements LocaleInterface
         . 'corrupt and cannot be trusted: %s';
     case INDEX_KEY_NON_FINITE = 'Index key for field "%s": NAN and INF '
         . 'are not indexable';
+    case QUERY_UNKNOWN_COLUMN = 'Table "%s" has no column "%s" '
+        . '(referenced in %s)';
+    case CONDITION_TYPE_MISMATCH = 'Table "%s", column "%s", operator %s: '
+        . 'condition value must be %s, got %s';
+    case CONDITION_MALFORMED = 'Table "%s", column "%s", operator %s: %s';
+    case INVALID_SORT_DIRECTION = 'Table "%s": invalid sort direction '
+        . '"%s" (expected "asc" or "desc", case-insensitive)';
+    case INVALID_OPERATOR = 'Table "%s": unknown filter operator "%s"';
+    case LIKE_EVALUATION_FAILED = 'LIKE pattern "%s" could not be '
+        . 'evaluated: %s';
+    case INVALID_LIMIT = 'Table "%s": limit must be a non-negative '
+        . 'integer, got %s';
+    case INVALID_OFFSET = 'Table "%s": offset must be a non-negative '
+        . 'integer, got %s';
     case MIGRATE_COLUMN_TYPE_CHANGE = 'migrateColumns for table "%s": column '
         . '"%s" type change (%s -> %s) is not supported; migrate the data '
         . 'separately';
