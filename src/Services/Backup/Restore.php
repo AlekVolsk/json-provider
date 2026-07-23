@@ -209,10 +209,10 @@ final class Restore
 
             $records = $this->parseAndNormalize($raw, $tableSchema);
 
-            $this->ndjson->writeRaw(
+            $byteSize = $this->ndjson->writeRaw(
                 $tableName,
                 $tableSchema->getFileName(),
-                $this->encodeRecords($records),
+                $this->ndjson->encodeRecords($tableName, $records),
             );
             $this->indexManager->rebuild($tableSchema, $records);
 
@@ -220,8 +220,8 @@ final class Restore
                 $this->meta->initTable($tableName);
             }
 
-            $this->meta->setLineCount($tableName, \count($records));
             $this->meta->setLastInsertedId($tableName, $this->maxId($records));
+            $this->meta->commitRewrite($tableName, \count($records), $byteSize);
         }
     }
 
@@ -278,26 +278,6 @@ final class Restore
         );
 
         return $records;
-    }
-
-    /**
-     * @param array<int,array<string,null|scalar>> $records
-     */
-    private function encodeRecords(array $records): string
-    {
-        $lines = [];
-
-        foreach ($records as $record) {
-            $encoded = json_encode($record);
-
-            if ($encoded === false) {
-                continue;
-            }
-
-            $lines[] = $encoded;
-        }
-
-        return $lines === [] ? '' : implode("\n", $lines) . "\n";
     }
 
     /**

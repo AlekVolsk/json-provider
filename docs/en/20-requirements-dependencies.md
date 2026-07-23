@@ -3,6 +3,7 @@
 ## Runtime requirements
 
 - **PHP 8.4 or newer.**
+- A POSIX-compatible OS (Linux, macOS, BSD). The locking model is built on `flock`, so **Windows and network filesystems (NFS, SMB) are not supported** — the DB directory must live on a local filesystem.
 - Required bundled extensions (part of a standard PHP build):
   - `ext-json` — encoding and decoding NDJSON records;
   - `ext-phar` — reading and writing backup `.tar` archives;

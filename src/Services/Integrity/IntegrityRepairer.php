@@ -29,12 +29,14 @@ use AV\JsonProvider\Storage\NdjsonStorage;
  *    rebuilt).
  *  - META_ENTRY_MISSING: re-init meta entry, then re-derive lineCount and
  *      lastInsertedId from data.
- *  - META_LINE_COUNT_DRIFT: setLineCount to actual count.
+ *  - META_LINE_COUNT_DRIFT: commitRewrite with the actual count and size.
  *  - META_LAST_ID_DRIFT: setLastInsertedId to max(id).
  *  - META_ORPHAN_ENTRY: drop entry from meta.
- *  - ORPHAN_DB_ENTRY: delete file or remove subdirectory (if empty).
- *  - TABLE_FILE_MISSING: not auto-repairable (data loss); reported as
- *      REPAIR FAILED with a clear reason.
+ *  - ORPHAN_DB_ENTRY: delete the file; a directory is removed only when
+ *      every file in it is empty (non-empty orphans need a manual call).
+ *  - TABLE_FILE_MISSING: provision an empty data file, missing index files
+ *      and the meta entry — the createTable crash window; lost data is not
+ *      invented.
  *
  * After per-issue repair, an explicit "table optimize" pass is run for every
  * touched table (sort records by id ASC + rebuild every index), recorded as
@@ -124,9 +126,13 @@ final class IntegrityRepairer
 
         $records = $this->normalizeAndSort($tableSchema, $records);
 
-        $this->ndjson->write($tableName, $tableSchema->getFileName(), $records);
+        $byteSize = $this->ndjson->write(
+            $tableName,
+            $tableSchema->getFileName(),
+            $records,
+        );
         $this->indexManager->rebuild($tableSchema, $records);
-        $this->meta->setLineCount($tableName, \count($records));
+        $this->meta->commitRewrite($tableName, \count($records), $byteSize);
 
         return new IntegrityIssue(
             IssueSeverity::INFO,
@@ -175,9 +181,8 @@ final class IntegrityRepairer
                     ->repairMetaOrphanEntry($issue),
                 IssueCategory::ORPHAN_DB_ENTRY => $this
                     ->repairOrphanDbEntry($issue),
-                IssueCategory::TABLE_FILE_MISSING => $issue->withRepairError(
-                    'table data file is missing — cannot be auto-restored',
-                ),
+                IssueCategory::TABLE_FILE_MISSING => $this
+                    ->repairTableFileMissing($issue),
                 default => $issue,
             };
         } catch (\Throwable $e) {
@@ -243,11 +248,16 @@ final class IntegrityRepairer
     ): IntegrityIssue {
         $tableName = (string)$issue->tableName;
         $tableSchema = $this->schema->getTable($tableName);
+
+        $tail = $this->ndjson->repairTail(
+            $tableName,
+            $tableSchema->getFileName(),
+        );
         $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
 
         $this->meta->initTable($tableName);
-        $this->meta->setLineCount($tableName, \count($records));
         $this->meta->setLastInsertedId($tableName, $this->maxId($records));
+        $this->meta->commitRewrite($tableName, \count($records), $tail['size']);
 
         return $issue->withRepaired();
     }
@@ -256,9 +266,14 @@ final class IntegrityRepairer
     {
         $tableName = (string)$issue->tableName;
         $tableSchema = $this->schema->getTable($tableName);
+
+        $tail = $this->ndjson->repairTail(
+            $tableName,
+            $tableSchema->getFileName(),
+        );
         $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
 
-        $this->meta->setLineCount($tableName, \count($records));
+        $this->meta->commitRewrite($tableName, \count($records), $tail['size']);
 
         return $issue->withRepaired();
     }
@@ -283,6 +298,45 @@ final class IntegrityRepairer
         return $issue->withRepaired();
     }
 
+    /**
+     * The createTable crash window: the table is registered in the schema
+     * but its data file never appeared. Structural repair only — provision
+     * an empty data file, missing index files and (when absent) the meta
+     * entry, so the table becomes operational again. No data is invented:
+     * a lost non-empty file cannot be restored, and the fresh entry states
+     * exactly that (0 rows).
+     */
+    private function repairTableFileMissing(
+        IntegrityIssue $issue,
+    ): IntegrityIssue {
+        $tableName = (string)$issue->tableName;
+        $tableSchema = $this->schema->getTable($tableName);
+
+        $this->ndjson->createFileFresh($tableName, $tableSchema->getFileName());
+
+        foreach ($tableSchema->indexes as $index) {
+            if (!$this->ndjson->exists($tableName, $index->getFileName())) {
+                $this->ndjson->createFileFresh(
+                    $tableName,
+                    $index->getFileName(),
+                );
+            }
+        }
+
+        if (!$this->meta->hasEntry($tableName)) {
+            $this->meta->initTable($tableName);
+        } else {
+            $this->meta->commitRewrite($tableName, 0, 0);
+        }
+
+        return $issue->withRepaired();
+    }
+
+    /**
+     * Deletes an orphan root entry. A directory is removed as a whole ONLY
+     * when none of its files holds any bytes — repair fixes structures,
+     * never destroys data; a non-empty orphan requires a manual decision.
+     */
     private function repairOrphanDbEntry(IntegrityIssue $issue): IntegrityIssue
     {
         $name = $issue->context['name'] ?? null;
@@ -295,7 +349,15 @@ final class IntegrityRepairer
         }
 
         if ($kind === 'dir') {
-            $this->ndjson->deleteTableDir($name);
+            foreach ($this->ndjson->listFiles($name) as $fileName) {
+                if ($this->ndjson->fileSizeBytes($name, $fileName) > 0) {
+                    return $issue->withRepairError(
+                        'non-empty orphan dir requires manual removal',
+                    );
+                }
+            }
+
+            $this->ndjson->deleteTable($name);
 
             return $issue->withRepaired();
         }

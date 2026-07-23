@@ -2,6 +2,10 @@
 
 Once a table exists its structure can still evolve. Three operations cover the common cases, plus a few read-only helpers to inspect what is registered.
 
+All DDL operations run under exclusive locks on the database and the affected tables, and re-read the schema from disk as their first step — concurrent schema changes from other processes are never lost, and a race of same-name `createTable` calls honestly ends with `TABLE_ALREADY_EXISTS` for the loser.
+
+`createTable` works in "schema → meta → files" order: the data and index files are created last and provisioned fresh (garbage from a crashed drop with the same name never leaks into the new table). A crash mid-operation leaves a registered table without meta/files — that window self-heals on the first write into the table, or via an explicit `repairTable()`.
+
 ## reorderColumns
 
 `reorderColumns()` changes the order of columns of an existing table. It rewrites both the schema and every record so they agree on the new order.
@@ -69,7 +73,7 @@ $db->dropTable('audit_log');
 
 Notes:
 
-- the schema entry is removed first, so the "every registered table has a meta entry" invariant is never broken mid-operation;
+- the operation runs under exclusive database and table locks; the schema entry is removed first (schema → meta → files), so the "every registered table has a meta entry" invariant is never broken mid-operation;
 - foreign keys are **not** enforced: dropping a parent table silently removes its relations and leaves any child FK columns/values dangling (like SQL `DROP TABLE`, not `DROP TABLE ... RESTRICT`). Drop or migrate the children first if that matters.
 
 ## Introspection

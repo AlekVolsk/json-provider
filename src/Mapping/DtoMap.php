@@ -205,7 +205,6 @@ final class DtoMap
                 $info
             );
 
-            // @var class-string<\BackedEnum> $phpType
             return new FieldDescriptor(
                 $property,
                 $column,

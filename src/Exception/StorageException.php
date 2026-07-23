@@ -24,6 +24,19 @@ class StorageException extends JsonProviderException
         return new self('LOCK_FAILED', $path);
     }
 
+    public static function lockTimeout(
+        string $mode,
+        string $subject,
+        string $seconds,
+    ): self {
+        return new self('LOCK_TIMEOUT', $mode, $subject, $seconds);
+    }
+
+    public static function lockOrderViolation(string $details): self
+    {
+        return new self('LOCK_ORDER_VIOLATION', $details);
+    }
+
     public static function invalidJson(string $path): self
     {
         return new self('INVALID_JSON', $path);

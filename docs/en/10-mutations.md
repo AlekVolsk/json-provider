@@ -45,6 +45,8 @@ $db->table('products')->deleteById($id);
 
 Foreign-key actions (`cascade`, `setNull`, `restrict`) trigger automatically based on the schema. `restrict` raises `FOREIGN_KEY_RESTRICT` if there are children pointing at the row.
 
+A limitation of the current cascade engine: with cyclic relations (A↔B) and self-referencing tables a cascading delete may fail to remove transitive descendants (only the direct target is removed). Do not rely on cascades over cyclic graphs — delete leaves-to-roots instead.
+
 ## Affected rows
 
 ```php

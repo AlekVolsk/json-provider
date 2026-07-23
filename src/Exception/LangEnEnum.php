@@ -14,6 +14,10 @@ enum LangEnEnum: string implements LocaleInterface
     case FILE_NOT_READABLE = 'Storage file is not readable: %s';
     case FILE_NOT_WRITABLE = 'Storage file is not writable: %s';
     case LOCK_FAILED = 'Failed to acquire file lock: %s';
+    case LOCK_TIMEOUT = 'Failed to acquire %s lock on %s within %s seconds';
+    case LOCK_ORDER_VIOLATION = 'Lock ordering violated: %s (locks must be '
+        . 'acquired database-first, then tables in name order, never '
+        . 'upgraded)';
     case INVALID_JSON = 'Invalid data format in storage file: %s';
     case TABLE_NOT_FOUND = 'Table not found in schema: %s';
     case TABLE_ALREADY_EXISTS = 'Table "%s" already exists';

@@ -14,13 +14,27 @@ use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Storage\JsonStorageTxHandle;
 
 /**
  * Schema registry — parses information_schema.json and exposes table and
- * relation metadata. Loaded lazily on first access and cached in memory.
+ * relation metadata.
+ *
+ * Reads are cached in memory and revalidated against the file's stat
+ * (mtime+size) on every access, so external or cross-process schema changes
+ * are picked up without an explicit reload.
+ *
+ * Every mutation goes through mutate(): a read-modify-write transaction
+ * under the schema file's sidecar lock that parses the FRESH on-disk state,
+ * applies the change, and persists — a stale in-memory copy can never
+ * overwrite another writer's tables or relations.
  *
  * Physical I/O is delegated to JsonStorage — the registry has no knowledge
  * of the DB location.
+ *
+ * @phpstan-type SchemaTables array<string,TableSchema>
+ * @phpstan-type SchemaRelations array<int,RelationSchema>
+ * @phpstan-type SchemaState array{SchemaTables, SchemaRelations}
  */
 final class SchemaRegistry
 {
@@ -31,6 +45,12 @@ final class SchemaRegistry
 
     /** @var null|array<int,RelationSchema> */
     private array | null $relations = null;
+
+    private int | null $loadedMtime = null;
+
+    private int | null $loadedSize = null;
+
+    private int | null $loadedIno = null;
 
     public function __construct(
         private readonly JsonStorage $storage,
@@ -101,18 +121,63 @@ final class SchemaRegistry
     }
 
     /**
+     * Read-modify-write mutation of the schema file under its sidecar lock.
+     *
+     * The callback receives tables and relations parsed from the FRESH
+     * on-disk contents (never the in-memory cache) and returns the new
+     * [tables, relations] pair to persist, or null to abort without
+     * writing. All existence/duplicate checks belong inside the callback so
+     * they see the current state even when another process changed the
+     * schema since this registry last read it.
+     *
+     * @param callable(SchemaTables, SchemaRelations): (null|SchemaState) $apply
+     */
+    public function mutate(callable $apply): void
+    {
+        $this->storage->transaction(
+            self::SCHEMA_FILE,
+            function (array $data, JsonStorageTxHandle $h) use ($apply): void {
+                $tables = $this->parseTables($data);
+                $relations = $this->parseRelations($data);
+
+                $result = $apply($tables, $relations);
+
+                if ($result === null) {
+                    return;
+                }
+
+                $h->save($this->serialize($result[0], $result[1]));
+            },
+        );
+
+        $this->tables = null;
+        $this->relations = null;
+        $this->loadedMtime = null;
+        $this->loadedSize = null;
+        $this->loadedIno = null;
+    }
+
+    /**
      * Registers a new table in the schema and persists information_schema.json.
+     * The duplicate check runs against the fresh on-disk state: a lost race
+     * with a concurrent createTable surfaces as TABLE_ALREADY_EXISTS.
      */
     public function registerTable(TableSchema $table): void
     {
-        $this->ensureLoaded();
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use ($table): array {
+                if (isset($tables[$table->name])) {
+                    throw StorageException::tableAlreadyExists($table->name);
+                }
 
-        if (isset($this->tables[$table->name])) {
-            throw StorageException::tableAlreadyExists($table->name);
-        }
+                $tables[$table->name] = $table;
 
-        $this->tables[$table->name] = $table;
-        $this->persist();
+                return [$tables, $relations];
+            },
+        );
     }
 
     /**
@@ -124,38 +189,86 @@ final class SchemaRegistry
      */
     public function replaceTable(TableSchema $table): void
     {
-        $this->ensureLoaded();
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use ($table): array {
+                if (!isset($tables[$table->name])) {
+                    throw StorageException::tableNotFound($table->name);
+                }
 
-        if (!isset($this->tables[$table->name])) {
-            throw StorageException::tableNotFound($table->name);
-        }
+                $tables[$table->name] = $table;
 
-        $this->tables[$table->name] = $table;
-        $this->persist();
+                return [$tables, $relations];
+            },
+        );
+    }
+
+    /**
+     * Applies $transform to the fresh on-disk descriptor of the table and
+     * persists the result. $transform receives the current TableSchema and
+     * returns the modified one; column-level validation belongs inside the
+     * transform. Returns the persisted descriptor.
+     *
+     * @param callable(TableSchema): TableSchema $transform
+     */
+    public function updateTable(string $name, callable $transform): TableSchema
+    {
+        $updated = null;
+
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use (
+                $name,
+                $transform,
+                &$updated,
+            ): array {
+                $current = $tables[$name]
+                    ?? throw StorageException::tableNotFound($name);
+
+                $updated = $transform($current);
+                $tables[$name] = $updated;
+
+                return [$tables, $relations];
+            },
+        );
+
+        \assert($updated instanceof TableSchema);
+
+        return $updated;
     }
 
     /**
      * Removes a table from the schema together with every relation that
      * involves it, and persists information_schema.json. Idempotent — an
-     * unknown table is a no-op.
+     * unknown table is a no-op (nothing is written).
      */
     public function unregisterTable(string $name): void
     {
-        $this->ensureLoaded();
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use ($name): array | null {
+                if (!isset($tables[$name])) {
+                    return null;
+                }
 
-        if (!isset($this->tables[$name])) {
-            return;
-        }
+                unset($tables[$name]);
 
-        unset($this->tables[$name]);
+                $relations = array_values(array_filter(
+                    $relations,
+                    static fn (RelationSchema $r): bool => $r
+                        ->fromTable !== $name
+                        && $r->toTable !== $name,
+                ));
 
-        $this->relations = array_values(array_filter(
-            $this->relations ?? [],
-            static fn (RelationSchema $r): bool => $r->fromTable !== $name
-                && $r->toTable !== $name,
-        ));
-
-        $this->persist();
+                return [$tables, $relations];
+            },
+        );
     }
 
     /**
@@ -165,12 +278,29 @@ final class SchemaRegistry
     {
         $this->tables = null;
         $this->relations = null;
+        $this->loadedMtime = null;
+        $this->loadedSize = null;
+        $this->loadedIno = null;
         $this->ensureLoaded();
     }
 
+    /**
+     * Loads the schema on first access and revalidates the cached copy
+     * against the file's stat on every subsequent one: an mtime or size
+     * change (another process, an external edit) triggers a re-read. The
+     * stat is taken BEFORE the read, so a write landing in between only
+     * causes one extra re-read next time — never a stale cache.
+     */
     private function ensureLoaded(): void
     {
-        if ($this->tables !== null) {
+        $stat = $this->storage->stat(self::SCHEMA_FILE);
+
+        if (
+            $this->tables !== null
+            && $this->loadedMtime === $stat['mtime']
+            && $this->loadedSize === $stat['size']
+            && $this->loadedIno === $stat['ino']
+        ) {
             return;
         }
 
@@ -178,6 +308,9 @@ final class SchemaRegistry
 
         $this->tables = $this->parseTables($data);
         $this->relations = $this->parseRelations($data);
+        $this->loadedMtime = $stat['mtime'];
+        $this->loadedSize = $stat['size'];
+        $this->loadedIno = $stat['ino'];
     }
 
     /**
@@ -194,9 +327,11 @@ final class SchemaRegistry
         }
 
         foreach ($data['tables'] as $name => $def) {
-            if (!\is_string($name) || !\is_array($def)) {
+            if (!\is_array($def)) {
                 continue;
             }
+
+            $name = (string)$name;
 
             $columns = isset($def['columns'])
                 && \is_array($def['columns']) ? $def['columns'] : [];
@@ -424,13 +559,19 @@ final class SchemaRegistry
     }
 
     /**
-     * Serializes the current schema back to information_schema.json.
+     * Serializes the given schema state into the information_schema.json
+     * shape. Pure: no I/O, no reads of the in-memory cache.
+     *
+     * @param array<string,TableSchema> $tables
+     * @param array<int,RelationSchema> $relations
+     *
+     * @return array<string,mixed>
      */
-    private function persist(): void
+    private function serialize(array $tables, array $relations): array
     {
         $data = ['tables' => [], 'relations' => []];
 
-        foreach ($this->tables ?? [] as $name => $table) {
+        foreach ($tables as $name => $table) {
             $unique = [];
 
             foreach ($table->uniqueConstraints as $constraint) {
@@ -482,7 +623,7 @@ final class SchemaRegistry
             $data['tables'][$name] = $tableData;
         }
 
-        foreach ($this->relations ?? [] as $relation) {
+        foreach ($relations as $relation) {
             $entry = [
                 'from'       => $relation->fromTable,
                 'foreignKey' => $relation->foreignKey,
@@ -502,6 +643,10 @@ final class SchemaRegistry
             $data['relations'][] = $entry;
         }
 
-        $this->storage->write(self::SCHEMA_FILE, $data);
+        if ($data['tables'] === []) {
+            $data['tables'] = new \stdClass();
+        }
+
+        return $data;
     }
 }

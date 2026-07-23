@@ -10,19 +10,28 @@ use AV\JsonProvider\Storage\JsonStorageTxHandle;
 
 /**
  * Per-table metadata registry — operates on meta.json.
- * Format: {"tableName": {"lastInsertedId": N, "lineCount": M}, ...}.
+ * Format: {"tableName":
+ *   {"lastInsertedId": N, "lineCount": M, "byteSize": B}, ...}.
  *
  * lastInsertedId is the most recently allocated auto-increment id for the
  * table.
  * 0 on an empty table (no inserts ever). Not rolled back on delete: ids are
- * never reused, gaps in the sequence are normal (cf. SQL AUTO_INCREMENT).
+ * never reused, gaps in the sequence are normal (cf. SQL AUTO_INCREMENT). An
+ * id allocated by allocateId() but never committed (crash before append)
+ * leaves a gap — also normal.
+ *
+ * byteSize is the data file size after the last successfully committed
+ * write. Comparing it against the actual file size is the O(1) consistency
+ * gate (ensureTableConsistent): a mismatch means a crashed or foreign write
+ * and triggers tail repair plus index rebuild. Entries written before the
+ * byteSize field existed read as null, which forces that same re-check.
  *
  * Contract: a meta entry must exist for every registered table. It is created
  * by initTable() (called from JsonDataProvider::createTable). Any operation
- * (allocateInsert / setLineCount / get*) for a missing table —
+ * (allocateId / commit* / get*) for a missing table —
  * StorageException::metaEntryMissing.
  *
- * Atomicity is provided by JsonStorage::transaction (flock).
+ * Atomicity is provided by JsonStorage::transaction (sidecar lock).
  * The registry knows the format only; physical I/O is delegated.
  */
 final class MetaRegistry
@@ -34,63 +43,57 @@ final class MetaRegistry
     ) {}
 
     /**
-     * Atomically increments lastInsertedId for the table and returns the
-     * new id.
-     * Also increments lineCount; line is the 0-based row number prior to
-     * the increment.
-     *
-     * @return array{id: int, line: int}
+     * Atomically increments lastInsertedId for the table and returns the new
+     * id. Does not touch lineCount/byteSize — those are committed after the
+     * physical write via commitAppend()/commitRewrite(). A crash between
+     * allocateId and the commit leaves an id gap, which is allowed.
      */
-    public function allocateInsert(string $tableName): array
+    public function allocateId(string $tableName): int
     {
         return $this->storage->transaction(
             self::META_FILE,
             static function (
                 array $data,
                 JsonStorageTxHandle $h,
-            ) use ($tableName): array {
-                /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+            ) use ($tableName): int {
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
                     throw StorageException::metaEntryMissing($tableName);
                 }
 
                 $id = $data[$tableName]['lastInsertedId'] + 1;
-                $line = $data[$tableName]['lineCount'];
-
                 $data[$tableName]['lastInsertedId'] = $id;
-                $data[$tableName]['lineCount'] = $line + 1;
 
                 $h->save($data);
 
-                return ['id' => $id, 'line' => $line];
+                return $id;
             },
         );
     }
 
     /**
-     * Sets the exact lineCount value after a full table rewrite.
+     * Commits the line count and byte size after a successful append to the
+     * data file. Call only after the appended bytes are on disk.
      */
-    public function setLineCount(string $tableName, int $count): void
-    {
-        $this->storage->transaction(
-            self::META_FILE,
-            static function (
-                array $data,
-                JsonStorageTxHandle $h,
-            ) use (
-                $tableName,
-                $count,
-            ): void {
-                /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
-                if (!isset($data[$tableName])) {
-                    throw StorageException::metaEntryMissing($tableName);
-                }
+    public function commitAppend(
+        string $tableName,
+        int $lineCount,
+        int $byteSize,
+    ): void {
+        $this->commit($tableName, $lineCount, $byteSize);
+    }
 
-                $data[$tableName]['lineCount'] = $count;
-
-                $h->save($data);
-            },
-        );
+    /**
+     * Commits the line count and byte size after a successful full rewrite
+     * of the data file. Call only after the rename made the new file
+     * visible.
+     */
+    public function commitRewrite(
+        string $tableName,
+        int $lineCount,
+        int $byteSize,
+    ): void {
+        $this->commit($tableName, $lineCount, $byteSize);
     }
 
     /**
@@ -106,12 +109,16 @@ final class MetaRegistry
                 array $data,
                 JsonStorageTxHandle $h,
             ) use ($tableName): void {
-                /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (isset($data[$tableName])) {
                     throw StorageException::tableAlreadyExists($tableName);
                 }
 
-                $data[$tableName] = ['lastInsertedId' => 0, 'lineCount' => 0];
+                $data[$tableName] = [
+                    'lastInsertedId' => 0,
+                    'lineCount'      => 0,
+                    'byteSize'       => 0,
+                ];
                 $h->save($data);
             },
         );
@@ -150,11 +157,21 @@ final class MetaRegistry
     }
 
     /**
+     * Returns the committed data file size in bytes, or null when the entry
+     * predates the byteSize field (pre-v2 meta) — callers must treat null as
+     * "unknown, verify against the actual file".
+     */
+    public function getByteSize(string $tableName): int | null
+    {
+        return $this->getEntry($tableName)['byteSize'];
+    }
+
+    /**
      * Returns whether a meta entry exists for the table.
      */
     public function hasEntry(string $tableName): bool
     {
-        /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+        /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
         $data = $this->storage->read(self::META_FILE);
 
         return isset($data[$tableName]);
@@ -167,7 +184,7 @@ final class MetaRegistry
      */
     public function getTableNames(): array
     {
-        /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+        /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
         $data = $this->storage->read(self::META_FILE);
 
         return array_keys($data);
@@ -188,7 +205,7 @@ final class MetaRegistry
                 $tableName,
                 $value,
             ): void {
-                /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
                     throw StorageException::metaEntryMissing($tableName);
                 }
@@ -212,7 +229,7 @@ final class MetaRegistry
                 array $data,
                 JsonStorageTxHandle $h,
             ) use ($tableName): void {
-                /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
                     return;
                 }
@@ -224,17 +241,55 @@ final class MetaRegistry
     }
 
     /**
-     * @return array{lastInsertedId: int, lineCount: int}
+     * Shared body of commitAppend/commitRewrite: stores the post-write line
+     * count and byte size, lazily upgrading a pre-byteSize entry to v2.
+     */
+    private function commit(
+        string $tableName,
+        int $lineCount,
+        int $byteSize,
+    ): void {
+        $this->storage->transaction(
+            self::META_FILE,
+            static function (
+                array $data,
+                JsonStorageTxHandle $h,
+            ) use (
+                $tableName,
+                $lineCount,
+                $byteSize,
+            ): void {
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
+                if (!isset($data[$tableName])) {
+                    throw StorageException::metaEntryMissing($tableName);
+                }
+
+                $data[$tableName]['lineCount'] = $lineCount;
+                $data[$tableName]['byteSize'] = $byteSize;
+
+                $h->save($data);
+            },
+        );
+    }
+
+    /**
+     * @return array{lastInsertedId: int, lineCount: int, byteSize: null|int}
      */
     private function getEntry(string $tableName): array
     {
-        /** @var array<string, array{lastInsertedId: int, lineCount: int}> $data */
+        /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
         $data = $this->storage->read(self::META_FILE);
 
         if (!isset($data[$tableName])) {
             throw StorageException::metaEntryMissing($tableName);
         }
 
-        return $data[$tableName];
+        $entry = $data[$tableName];
+
+        return [
+            'lastInsertedId' => $entry['lastInsertedId'],
+            'lineCount'      => $entry['lineCount'],
+            'byteSize'       => $entry['byteSize'] ?? null,
+        ];
     }
 }

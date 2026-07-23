@@ -14,6 +14,11 @@ enum LangRuEnum: string implements LocaleInterface
     case FILE_NOT_READABLE = 'Файл хранилища недоступен для чтения: %s';
     case FILE_NOT_WRITABLE = 'Файл хранилища недоступен для записи: %s';
     case LOCK_FAILED = 'Не удалось установить блокировку файла: %s';
+    case LOCK_TIMEOUT = 'Не удалось получить блокировку %s на %s '
+        . 'за %s с';
+    case LOCK_ORDER_VIOLATION = 'Нарушен порядок блокировок: %s (порядок '
+        . 'захвата: сначала база, затем таблицы по возрастанию имени, '
+        . 'повышение режима запрещено)';
     case INVALID_JSON = 'Недопустимый формат данных в файле хранилища: %s';
     case TABLE_NOT_FOUND = 'Таблица не найдена в схеме: %s';
     case TABLE_ALREADY_EXISTS = 'Таблица "%s" уже существует';

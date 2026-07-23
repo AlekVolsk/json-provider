@@ -63,8 +63,8 @@ What gets repaired:
 | `meta_line_count_drift` | set to actual row count |
 | `meta_last_id_drift` | set to `max(id)` of existing records |
 | `meta_orphan_entry` | drop entry from meta |
-| `orphan_db_entry` | delete file, or remove subdirectory if empty |
-| `table_file_missing` | not auto-repairable (data loss); reported as failure |
+| `orphan_db_entry` | delete file; a directory is removed as a whole only when every file in it is empty — a non-empty orphan requires a manual decision |
+| `table_file_missing` | provision an empty data file, missing index files and the meta entry (the `createTable` crash window); lost data is not invented |
 
 ## Report rendering
 

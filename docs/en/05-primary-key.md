@@ -6,7 +6,7 @@ Every table has a primary key. It is **not** a configuration knob — it is an i
 - the type is `int`,
 - it is always the first column in `columns`,
 - it is auto-incrementing (allocated by the provider),
-- ids are never reused after delete (gaps are normal),
+- ids are never reused after delete (gaps are normal); an id allocated by an insert that crashed before committing the record is burned too — a normal gap. The single exception is recovery of a lost meta entry (self-healing, `repair`, `restore`): the counter is restored as `max(id)` of the surviving records, so ids of deleted "top" rows may be handed out again,
 - the table always has a PK index named `pk`, located at index position 0.
 
 Constants live in `Schema\PrimaryKey`:

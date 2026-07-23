@@ -22,6 +22,7 @@ use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
+use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Services\Backup\Backup;
@@ -31,6 +32,7 @@ use AV\JsonProvider\Services\Integrity\IntegrityReport;
 use AV\JsonProvider\Services\Integrity\IntegrityValidator;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Storage\TableLockManager;
 use AV\JsonProvider\Validation\ValueValidator;
 
 /**
@@ -49,6 +51,7 @@ final class JsonDataProvider
     /** @var array<string,self> */
     private static array $instances = [];
 
+    private readonly TableLockManager $locks;
     private readonly NdjsonStorage $ndjson;
     private readonly JsonStorage $json;
     private readonly SchemaRegistry $schema;
@@ -69,8 +72,9 @@ final class JsonDataProvider
         CacheInterface | null $cache = null,
     ) {
         $this->dbPath = $dbPath;
-        $this->ndjson = new NdjsonStorage($dbPath);
-        $this->json = new JsonStorage($dbPath);
+        $this->locks = new TableLockManager($dbPath);
+        $this->ndjson = new NdjsonStorage($dbPath, $this->locks);
+        $this->json = new JsonStorage($dbPath, $this->locks);
         $this->schema = new SchemaRegistry($this->json);
         $this->cache = $cache ?? new NullCache();
         $this->indexManager = new IndexManager($this->ndjson);
@@ -83,11 +87,17 @@ final class JsonDataProvider
     /**
      * Returns the singleton instance for the given storage path.
      * The storage must already exist (contain information_schema.json).
+     *
+     * The path is normalized (trailing slashes stripped): "/db" and "/db/"
+     * resolve to the same instance — two instances over one directory
+     * would hold independent lock managers and block each other.
      */
     public static function getInstance(
         string $dbPath,
         CacheInterface | null $cache = null,
     ): self {
+        $dbPath = self::normalizePath($dbPath);
+
         if (!isset(self::$instances[$dbPath])) {
             self::$instances[$dbPath] = new self($dbPath, $cache);
         }
@@ -102,7 +112,8 @@ final class JsonDataProvider
      */
     public static function exists(string $dbPath): bool
     {
-        return (new JsonStorage($dbPath))->exists('information_schema.json');
+        return (new JsonStorage(self::normalizePath($dbPath)))
+            ->exists('information_schema.json');
     }
 
     /**
@@ -113,6 +124,7 @@ final class JsonDataProvider
         string $dbPath,
         CacheInterface | null $cache = null,
     ): self {
+        $dbPath = self::normalizePath($dbPath);
         $bootstrap = JsonStorage::createRoot($dbPath);
         $bootstrap->createFile(
             'information_schema.json',
@@ -169,30 +181,52 @@ final class JsonDataProvider
     }
 
     /**
-     * Creates a new table: registers it in the schema, creates the NDJSON file
-     * and empty files for every declared index (so append on insert does
-     * not fail).
+     * Creates a new table: registers it in the schema, initializes its meta
+     * entry, then creates the NDJSON data file and empty files for every
+     * declared index (so append on insert does not fail).
+     *
+     * Order: schema -> meta -> files. A crash mid-way leaves a registered
+     * table without meta/files — a state the first write self-heals
+     * (ensureTableConsistent) and repair fixes explicitly; the reverse
+     * order would leave anonymous files invisible to both. Files are
+     * provisioned via createFileFresh, so garbage left at the same path by
+     * a crashed drop never leaks into the new table. A meta entry without a
+     * schema entry is likewise an orphan of a crashed drop (dropTable
+     * commits schema first) — under the held database EX lock it is
+     * discarded before the fresh init, so the old id sequence and counters
+     * never leak either.
      */
     public function createTable(TableSchema $tableSchema): void
     {
-        if ($this->schema->hasTable($tableSchema->name)) {
-            throw StorageException::tableAlreadyExists($tableSchema->name);
-        }
+        $this->locks->withLocks(
+            [$tableSchema->name => 'ex'],
+            'ex',
+            function () use ($tableSchema): void {
+                $this->schema->reload();
 
-        $this->ndjson->createFile(
-            $tableSchema->name,
-            $tableSchema->getFileName(),
+                if (
+                    !$this->schema->hasTable($tableSchema->name)
+                    && $this->meta->hasEntry($tableSchema->name)
+                ) {
+                    $this->meta->dropEntry($tableSchema->name);
+                }
+
+                $this->schema->registerTable($tableSchema);
+                $this->meta->initTable($tableSchema->name);
+
+                $this->ndjson->createFileFresh(
+                    $tableSchema->name,
+                    $tableSchema->getFileName(),
+                );
+
+                foreach ($tableSchema->indexes as $index) {
+                    $this->ndjson->createFileFresh(
+                        $tableSchema->name,
+                        $index->getFileName(),
+                    );
+                }
+            },
         );
-
-        foreach ($tableSchema->indexes as $index) {
-            $this->ndjson->createFile(
-                $tableSchema->name,
-                $index->getFileName(),
-            );
-        }
-
-        $this->schema->registerTable($tableSchema);
-        $this->meta->initTable($tableSchema->name);
     }
 
     /**
@@ -212,15 +246,24 @@ final class JsonDataProvider
      */
     public function dropTable(string $tableName): void
     {
-        if (!$this->schema->hasTable($tableName)) {
-            return;
-        }
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName): void {
+                $this->schema->reload();
 
-        $this->schema->unregisterTable($tableName);
-        $this->meta->dropEntry($tableName);
-        $this->ndjson->deleteTable($tableName);
-        $this->dtoRegistry->unregister($tableName);
-        $this->invalidateCache($tableName);
+                if (!$this->schema->hasTable($tableName)) {
+                    return;
+                }
+
+                $this->schema->unregisterTable($tableName);
+                $this->meta->dropEntry($tableName);
+                $this->ndjson->deleteTable($tableName);
+                $this->dtoRegistry->unregister($tableName);
+                $this->invalidateCache($tableName);
+                $this->locks->deleteTableLock($tableName);
+            },
+        );
     }
 
     /**
@@ -280,47 +323,59 @@ final class JsonDataProvider
      */
     public function migrateColumns(TableSchema $desired): array
     {
-        $current = $this->schema->getTable($desired->name);
+        return $this->locks->withLocks(
+            [$desired->name => 'ex'],
+            'ex',
+            function () use ($desired): array {
+                $this->schema->reload();
+                $current = $this->schema->getTable($desired->name);
 
-        $this->assertNoColumnTypeChange($current, $desired);
-        $this->assertSchemaFieldsDeclared($desired);
+                $this->assertNoColumnTypeChange($current, $desired);
+                $this->assertSchemaFieldsDeclared($desired);
 
-        $currentColumns = array_keys($current->columns);
-        $desiredColumns = array_keys($desired->columns);
+                $currentColumns = array_keys($current->columns);
+                $desiredColumns = array_keys($desired->columns);
 
-        if ($currentColumns === $desiredColumns) {
-            return ['added' => [], 'dropped' => []];
-        }
+                if ($currentColumns === $desiredColumns) {
+                    return ['added' => [], 'dropped' => []];
+                }
 
-        $added = array_values(array_diff($desiredColumns, $currentColumns));
-        $dropped = array_values(array_diff($currentColumns, $desiredColumns));
+                $added = array_values(
+                    array_diff($desiredColumns, $currentColumns),
+                );
+                $dropped = array_values(
+                    array_diff($currentColumns, $desiredColumns),
+                );
 
-        $records = $this->readAllRaw($desired->name);
+                $this->ensureTableConsistent($current);
+                $records = $this->readAllForWrite($desired->name);
 
-        if ($records !== []) {
-            $this->assertAddedColumnsHaveDefault($desired, $added);
-        }
+                if ($records !== []) {
+                    $this->assertAddedColumnsHaveDefault($desired, $added);
+                }
 
-        $migrated = [];
+                $migrated = [];
 
-        foreach ($records as $record) {
-            $row = [];
+                foreach ($records as $record) {
+                    $row = [];
 
-            foreach ($desired->columns as $column => $type) {
-                $row[$column] = \array_key_exists($column, $record)
-                    ? $record[$column]
-                    : self::defaultForType($type);
-            }
+                    foreach ($desired->columns as $column => $type) {
+                        $row[$column] = \array_key_exists($column, $record)
+                            ? $record[$column]
+                            : self::defaultForType($type);
+                    }
 
-            $migrated[] = $row;
-        }
+                    $migrated[] = $row;
+                }
 
-        $this->createMissingIndexFiles($desired);
-        $this->schema->replaceTable($desired);
-        $this->writeAll($desired->name, $desired, $migrated);
-        $this->deleteOrphanIndexFiles($current, $desired);
+                $this->createMissingIndexFiles($desired);
+                $this->schema->replaceTable($desired);
+                $this->writeAll($desired->name, $desired, $migrated);
+                $this->deleteOrphanIndexFiles($current, $desired);
 
-        return ['added' => $added, 'dropped' => $dropped];
+                return ['added' => $added, 'dropped' => $dropped];
+            },
+        );
     }
 
     /**
@@ -349,46 +404,61 @@ final class JsonDataProvider
      */
     public function insert(string $tableName, array $record): int
     {
-        $tableSchema = $this->schema->getTable($tableName);
-        $record = $this->values->encodeForWrite($tableSchema, $record, true);
+        return $this->locks->withLocks(
+            $this->insertLockPlan($this->schema->getTable($tableName)),
+            'sh',
+            function () use ($tableName, $record): int {
+                $tableSchema = $this->schema->getTable($tableName);
+                $record = $this->values->encodeForWrite(
+                    $tableSchema,
+                    $record,
+                    true,
+                );
+                $this->ensureTableConsistent($tableSchema);
 
-        if ($tableSchema->uniqueConstraints !== []) {
-            $records = $this->readAllRaw($tableName);
-            $this->checkUniqueConstraints(
-                $tableSchema,
-                $records,
-                $record,
-                null,
-            );
-        }
+                if ($tableSchema->uniqueConstraints !== []) {
+                    $records = $this->readAllForWrite($tableName);
+                    $this->checkUniqueConstraints(
+                        $tableSchema,
+                        $records,
+                        $record,
+                        null,
+                    );
+                }
 
-        // Кодируемость проверяем ДО выделения id/строки в мете: иначе
-        // сбой json_encode
-        // (битый UTF-8, INF/NAN) оставит дыру в нумерации строк и собьёт
-        // индексы записей.
-        $probe = $this->normalizeRecord($tableSchema, $record + ['id' => 0]);
+                $probe = $this->normalizeRecord(
+                    $tableSchema,
+                    $record + ['id' => 0],
+                );
 
-        if (json_encode($probe) === false) {
-            throw StorageException::invalidRecord(
-                $tableSchema->name,
-                json_last_error_msg(),
-            );
-        }
+                if (json_encode($probe) === false) {
+                    throw StorageException::invalidRecord(
+                        $tableSchema->name,
+                        json_last_error_msg(),
+                    );
+                }
 
-        $alloc = $this->meta->allocateInsert($tableName);
-        $record['id'] = $alloc['id'];
-        $lineNumber = $alloc['line'];
-        $record = $this->normalizeRecord($tableSchema, $record);
+                $id = $this->meta->allocateId($tableName);
+                $record['id'] = $id;
+                $lineNumber = $this->meta->getLineCount($tableName);
+                $record = $this->normalizeRecord($tableSchema, $record);
 
-        $this->ndjson->append(
-            $tableSchema->name,
-            $tableSchema->getFileName(),
-            $record,
+                $byteSize = $this->ndjson->append(
+                    $tableSchema->name,
+                    $tableSchema->getFileName(),
+                    $record,
+                );
+                $this->appendIndexes($tableSchema, $record, $lineNumber);
+                $this->meta->commitAppend(
+                    $tableName,
+                    $lineNumber + 1,
+                    $byteSize,
+                );
+                $this->invalidateCache($tableName);
+
+                return $id;
+            },
         );
-        $this->appendIndexes($tableSchema, $record, $lineNumber);
-        $this->invalidateCache($tableName);
-
-        return $alloc['id'];
     }
 
     /**
@@ -405,50 +475,69 @@ final class JsonDataProvider
         array $conditions,
         array $data,
     ): int {
-        $tableSchema = $this->schema->getTable($tableName);
-        $conditions = $this->values->encodeConditions(
-            $tableSchema,
-            $conditions,
+        return $this->locks->withLocks(
+            $this->mutationLockPlan($this->schema->getTable($tableName)),
+            'sh',
+            function () use (
+                $tableName,
+                $conditions,
+                $data,
+            ): int {
+                $tableSchema = $this->schema->getTable($tableName);
+                $conditions = $this->values->encodeConditions(
+                    $tableSchema,
+                    $conditions,
+                );
+                $this->ensureTableConsistent($tableSchema);
+                $records = $this->readAllForWrite($tableName);
+
+                unset($data['id']);
+                $data = $this->values->encodeForWrite(
+                    $tableSchema,
+                    $data,
+                    false,
+                );
+
+                $targetIndexes = [];
+
+                foreach ($records as $index => $existing) {
+                    if ($this->matchesAll($existing, $conditions)) {
+                        $targetIndexes[] = $index;
+                    }
+                }
+
+                if ($targetIndexes === []) {
+                    return 0;
+                }
+
+                foreach ($targetIndexes as $index) {
+                    $oldRecord = $records[$index];
+                    $updated = array_merge($oldRecord, $data);
+                    $excludeId = isset($oldRecord['id'])
+                        && \is_int($oldRecord['id'])
+                        ? $oldRecord['id']
+                        : null;
+
+                    $this->checkUniqueConstraints(
+                        $tableSchema,
+                        $records,
+                        $updated,
+                        $excludeId,
+                    );
+                    $this->processForeignKeysOnUpdate(
+                        $tableName,
+                        $oldRecord,
+                        $updated,
+                    );
+
+                    $records[$index] = $updated;
+                }
+
+                $this->writeAll($tableName, $tableSchema, $records);
+
+                return \count($targetIndexes);
+            },
         );
-        $records = $this->readAllRaw($tableName);
-
-        unset($data['id']);
-        $data = $this->values->encodeForWrite($tableSchema, $data, false);
-
-        $targetIndexes = [];
-
-        foreach ($records as $index => $existing) {
-            if ($this->matchesAll($existing, $conditions)) {
-                $targetIndexes[] = $index;
-            }
-        }
-
-        if ($targetIndexes === []) {
-            return 0;
-        }
-
-        foreach ($targetIndexes as $index) {
-            $oldRecord = $records[$index];
-            $updated = array_merge($oldRecord, $data);
-            $excludeId = isset($oldRecord['id'])
-                && \is_int($oldRecord['id'])
-                ? $oldRecord['id']
-                : null;
-
-            $this->checkUniqueConstraints(
-                $tableSchema,
-                $records,
-                $updated,
-                $excludeId,
-            );
-            $this->processForeignKeysOnUpdate($tableName, $oldRecord, $updated);
-
-            $records[$index] = $updated;
-        }
-
-        $this->writeAll($tableName, $tableSchema, $records);
-
-        return \count($targetIndexes);
     }
 
     /**
@@ -459,32 +548,45 @@ final class JsonDataProvider
      */
     public function delete(string $tableName, array $conditions): int
     {
-        $tableSchema = $this->schema->getTable($tableName);
-        $conditions = $this->values->encodeConditions(
-            $tableSchema,
-            $conditions,
+        return $this->locks->withLocks(
+            $this->mutationLockPlan($this->schema->getTable($tableName)),
+            'sh',
+            function () use ($tableName, $conditions): int {
+                $tableSchema = $this->schema->getTable($tableName);
+                $conditions = $this->values->encodeConditions(
+                    $tableSchema,
+                    $conditions,
+                );
+                $this->ensureTableConsistent($tableSchema);
+                $records = $this->readAllForWrite($tableName);
+
+                $toDelete = array_filter(
+                    $records,
+                    fn (array $r): bool => $this->matchesAll(
+                        $r,
+                        $conditions,
+                    ),
+                );
+
+                if ($toDelete === []) {
+                    return 0;
+                }
+
+                $this->processForeignKeys($tableName, $toDelete, 'delete');
+
+                $filtered = array_values(array_filter(
+                    $records,
+                    fn (array $r): bool => !$this->matchesAll(
+                        $r,
+                        $conditions,
+                    ),
+                ));
+
+                $this->writeAll($tableName, $tableSchema, $filtered);
+
+                return \count($toDelete);
+            },
         );
-        $records = $this->readAllRaw($tableName);
-
-        $toDelete = array_filter(
-            $records,
-            fn (array $r): bool => $this->matchesAll($r, $conditions),
-        );
-
-        if ($toDelete === []) {
-            return 0;
-        }
-
-        $this->processForeignKeys($tableName, $toDelete, 'delete');
-
-        $filtered = array_values(array_filter(
-            $records,
-            fn (array $r): bool => !$this->matchesAll($r, $conditions),
-        ));
-
-        $this->writeAll($tableName, $tableSchema, $filtered);
-
-        return \count($toDelete);
     }
 
     /**
@@ -535,43 +637,51 @@ final class JsonDataProvider
      */
     public function reorderColumns(string $tableName, array $newOrder): void
     {
-        $tableSchema = $this->schema->getTable($tableName);
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $newOrder): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
 
-        $this->validateNewOrder($tableSchema, $newOrder);
+                $this->validateNewOrder($tableSchema, $newOrder);
 
-        $normalized = $this->normalizeNewOrder($newOrder);
+                $normalized = $this->normalizeNewOrder($newOrder);
 
-        if (\count($normalized) !== \count($tableSchema->columns)) {
-            $missing = array_diff(
-                array_keys($tableSchema->columns),
-                $normalized,
-            );
+                if (\count($normalized) !== \count($tableSchema->columns)) {
+                    $missing = array_diff(
+                        array_keys($tableSchema->columns),
+                        $normalized,
+                    );
 
-            throw StorageException::reorderColumnsIncomplete(
-                $tableName,
-                implode(', ', $missing),
-            );
-        }
+                    throw StorageException::reorderColumnsIncomplete(
+                        $tableName,
+                        implode(', ', $missing),
+                    );
+                }
 
-        $newColumns = [];
+                $newColumns = [];
 
-        foreach ($normalized as $field) {
-            $newColumns[$field] = $tableSchema->columns[$field];
-        }
+                foreach ($normalized as $field) {
+                    $newColumns[$field] = $tableSchema->columns[$field];
+                }
 
-        $newSchema = new TableSchema(
-            name: $tableSchema->name,
-            uniqueConstraints: $tableSchema->uniqueConstraints,
-            columns: $newColumns,
-            indexes: $tableSchema->indexes,
-            tableComment: $tableSchema->tableComment,
-            columnComment: $tableSchema->columnComment,
+                $newSchema = new TableSchema(
+                    name: $tableSchema->name,
+                    uniqueConstraints: $tableSchema->uniqueConstraints,
+                    columns: $newColumns,
+                    indexes: $tableSchema->indexes,
+                    tableComment: $tableSchema->tableComment,
+                    columnComment: $tableSchema->columnComment,
+                );
+
+                $this->ensureTableConsistent($tableSchema);
+                $records = $this->readAllForWrite($tableName);
+
+                $this->schema->replaceTable($newSchema);
+                $this->writeAll($tableName, $newSchema, $records);
+            },
         );
-
-        $this->schema->replaceTable($newSchema);
-
-        $records = $this->readAllRaw($tableName);
-        $this->writeAll($tableName, $newSchema, $records);
     }
 
     /**
@@ -586,8 +696,11 @@ final class JsonDataProvider
         string $tableName,
         string | null $comment,
     ): void {
-        $tableSchema = $this->schema->getTable($tableName);
-        $this->schema->replaceTable($tableSchema->withTableComment($comment));
+        $this->schema->updateTable(
+            $tableName,
+            static fn (TableSchema $t): TableSchema => $t
+                ->withTableComment($comment),
+        );
     }
 
     /**
@@ -608,14 +721,22 @@ final class JsonDataProvider
         string $column,
         string | null $comment,
     ): void {
-        $tableSchema = $this->schema->getTable($tableName);
+        $this->schema->updateTable(
+            $tableName,
+            static function (TableSchema $t) use (
+                $tableName,
+                $column,
+                $comment,
+            ): TableSchema {
+                if (!isset($t->columns[$column])) {
+                    throw StorageException::columnNotFound(
+                        $tableName,
+                        $column,
+                    );
+                }
 
-        if (!isset($tableSchema->columns[$column])) {
-            throw StorageException::columnNotFound($tableName, $column);
-        }
-
-        $this->schema->replaceTable(
-            $tableSchema->withColumnComment($column, $comment),
+                return $t->withColumnComment($column, $comment);
+            },
         );
     }
 
@@ -633,20 +754,28 @@ final class JsonDataProvider
         array $comments,
         bool $merge = false,
     ): void {
-        $tableSchema = $this->schema->getTable($tableName);
+        $this->schema->updateTable(
+            $tableName,
+            static function (TableSchema $t) use (
+                $tableName,
+                $comments,
+                $merge,
+            ): TableSchema {
+                foreach (array_keys($comments) as $column) {
+                    if (!isset($t->columns[$column])) {
+                        throw StorageException::columnNotFound(
+                            $tableName,
+                            $column,
+                        );
+                    }
+                }
 
-        foreach (array_keys($comments) as $column) {
-            if (!isset($tableSchema->columns[$column])) {
-                throw StorageException::columnNotFound($tableName, $column);
-            }
-        }
+                $effective = $merge
+                    ? array_merge($t->columnComment, $comments)
+                    : $comments;
 
-        $effective = $merge
-            ? array_merge($tableSchema->columnComment, $comments)
-            : $comments;
-
-        $this->schema->replaceTable(
-            $tableSchema->withColumnComments($effective),
+                return $t->withColumnComments($effective);
+            },
         );
     }
 
@@ -720,11 +849,24 @@ final class JsonDataProvider
      */
     public function rebuildIndex(string $tableName, string $indexName): void
     {
-        $tableSchema = $this->schema->getTable($tableName);
-        $indexSchema = $this->indexManager->findIndex($tableSchema, $indexName);
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'sh',
+            function () use ($tableName, $indexName): void {
+                $tableSchema = $this->schema->getTable($tableName);
+                $indexSchema = $this->indexManager->findIndex(
+                    $tableSchema,
+                    $indexName,
+                );
 
-        $records = $this->readAllRaw($tableName);
-        $this->indexManager->rebuildOne($tableName, $indexSchema, $records);
+                $records = $this->readAllForWrite($tableName);
+                $this->indexManager->rebuildOne(
+                    $tableName,
+                    $indexSchema,
+                    $records,
+                );
+            },
+        );
     }
 
     /**
@@ -733,10 +875,16 @@ final class JsonDataProvider
      */
     public function rebuildAllIndexes(string $tableName): void
     {
-        $tableSchema = $this->schema->getTable($tableName);
-        $records = $this->readAllRaw($tableName);
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'sh',
+            function () use ($tableName): void {
+                $tableSchema = $this->schema->getTable($tableName);
+                $records = $this->readAllForWrite($tableName);
 
-        $this->indexManager->rebuild($tableSchema, $records);
+                $this->indexManager->rebuild($tableSchema, $records);
+            },
+        );
     }
 
     /**
@@ -748,8 +896,14 @@ final class JsonDataProvider
      */
     public function optimizeTable(string $tableName): void
     {
-        $this->repairer()->optimizeTable($tableName);
-        $this->invalidateCache($tableName);
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'sh',
+            function () use ($tableName): void {
+                $this->repairer()->optimizeTable($tableName);
+                $this->invalidateCache($tableName);
+            },
+        );
     }
 
     /**
@@ -777,25 +931,50 @@ final class JsonDataProvider
      */
     public function repairTable(string $tableName): IntegrityReport
     {
-        $report = $this->repairer()->repairTable($tableName);
-        $this->invalidateCache($tableName);
+        return $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'sh',
+            function () use ($tableName): IntegrityReport {
+                $report = $this->repairer()->repairTable($tableName);
+                $this->invalidateCache($tableName);
 
-        return $report;
+                return $report;
+            },
+        );
     }
 
     /**
      * Repairs the entire database where possible; returns the full report.
+     * Runs under the database EX lock plus EX on every schema table.
      * All per-table caches are invalidated.
      */
     public function repair(): IntegrityReport
     {
-        $report = $this->repairer()->repairDatabase();
+        return $this->locks->withDatabase(
+            function (): IntegrityReport {
+                $this->schema->reload();
+                $plan = array_fill_keys(
+                    array_keys($this->schema->getTables()),
+                    'ex',
+                );
 
-        foreach (array_keys($this->schema->getTables()) as $tableName) {
-            $this->invalidateCache($tableName);
-        }
+                return $this->locks->withLocks(
+                    $plan,
+                    null,
+                    function (): IntegrityReport {
+                        $report = $this->repairer()->repairDatabase();
 
-        return $report;
+                        foreach (
+                            array_keys($this->schema->getTables()) as $table
+                        ) {
+                            $this->invalidateCache($table);
+                        }
+
+                        return $report;
+                    },
+                );
+            },
+        );
     }
 
     /**
@@ -808,7 +987,11 @@ final class JsonDataProvider
      */
     public function backup(string $destination): string
     {
-        return $this->backupService()->export($destination);
+        return $this->locks->withLocks(
+            [],
+            'ex',
+            fn (): string => $this->backupService()->export($destination),
+        );
     }
 
     /**
@@ -821,17 +1004,43 @@ final class JsonDataProvider
      */
     public function restore(string $archivePath): void
     {
-        $this->restoreService()->restore($archivePath);
+        $this->locks->withDatabase(
+            function () use ($archivePath): void {
+                $this->schema->reload();
+                $plan = array_fill_keys(
+                    array_keys($this->schema->getTables()),
+                    'ex',
+                );
 
-        foreach (array_keys($this->schema->getTables()) as $tableName) {
-            $this->invalidateCache($tableName);
-        }
+                $this->locks->withLocks(
+                    $plan,
+                    null,
+                    function () use ($archivePath): void {
+                        $this->restoreService()->restore($archivePath);
+
+                        foreach (
+                            array_keys($this->schema->getTables()) as $table
+                        ) {
+                            $this->invalidateCache($table);
+                        }
+                    },
+                );
+            },
+        );
     }
 
     /**
      * Selects records by conditions, ordering, and pagination.
      * Uses an ordering-index if available, then a filter-index, otherwise
      * falls back to full scan.
+     *
+     * Two-tier read model: a full scan is lock-free — rename-atomicity
+     * guarantees it sees one complete file (the snapshot may predate
+     * appends that finish after the file was opened). An index-driven read
+     * holds the table SH lock across the index+data I/O, so a writer (table
+     * EX over data -> indexes -> meta) can never swap the files between the
+     * index lookup and the row reads — the pair is always coherent. The SH
+     * section covers only the I/O and is released before decoding.
      *
      * @param array<int,FilterCondition> $conditions
      * @param array<int,OrderBy>         $ordering
@@ -854,30 +1063,73 @@ final class JsonDataProvider
         );
         $index = $this->resolveIndex($tableSchema, $ordering, $conditions);
         $paginatedByIndex = false;
+        $records = null;
 
-        if (
-            $index !== null
-            && $ordering !== []
-            && $index->matchesOrdering($ordering)
-        ) {
-            $records = $this->selectViaIndex(
-                $index,
-                $tableSchema,
-                $conditions,
-                $ordering,
-                $limit,
-                $offset,
+        if ($index !== null) {
+            $appliedPagination = false;
+
+            /**
+             * The pre-lock resolution is only a hint: the schema is re-read
+             * and the index re-resolved under the SH lock, so a concurrent
+             * DDL that dropped or replaced the index degrades this read to
+             * a full scan instead of failing on a missing index file. Null
+             * from the closure signals that fallback.
+             *
+             * @var null|array<int,array<string,null|scalar>> $records
+             */
+            $records = $this->locks->withLocks(
+                [$tableName => 'sh'],
+                null,
+                function () use (
+                    $tableName,
+                    $conditions,
+                    $ordering,
+                    $limit,
+                    $offset,
+                    &$appliedPagination,
+                ): array | null {
+                    $freshSchema = $this->schema->getTable($tableName);
+                    $freshIndex = $this->resolveIndex(
+                        $freshSchema,
+                        $ordering,
+                        $conditions,
+                    );
+
+                    if ($freshIndex === null) {
+                        return null;
+                    }
+
+                    if (
+                        $ordering !== []
+                        && $freshIndex->matchesOrdering($ordering)
+                    ) {
+                        $appliedPagination = true;
+
+                        return $this->selectViaIndex(
+                            $freshIndex,
+                            $freshSchema,
+                            $conditions,
+                            $ordering,
+                            $limit,
+                            $offset,
+                        );
+                    }
+
+                    return $this->selectViaIndex(
+                        $freshIndex,
+                        $freshSchema,
+                        $conditions,
+                        $ordering,
+                    );
+                },
             );
-            $paginatedByIndex = true;
-        } elseif ($index !== null) {
-            $records = $this->selectViaIndex(
-                $index,
-                $tableSchema,
-                $conditions,
-                $ordering,
-            );
-        } else {
+
+            $paginatedByIndex = $records !== null && $appliedPagination;
+        }
+
+        if ($records === null) {
             $records = $this->readAllRaw($tableName);
+            $paginatedByIndex = false;
 
             if ($conditions !== []) {
                 $records = array_values(array_filter(
@@ -958,6 +1210,17 @@ final class JsonDataProvider
     public function invalidateCache(string $tableName): void
     {
         $this->cache->invalidate($this->cacheKey($tableName));
+    }
+
+    /**
+     * Strips trailing slashes so every spelling of a directory maps to one
+     * singleton (and one lock manager). The filesystem root stays "/".
+     */
+    private static function normalizePath(string $dbPath): string
+    {
+        $normalized = rtrim(str_replace('\\', '/', $dbPath), '/');
+
+        return $normalized === '' ? '/' : $normalized;
     }
 
     /**
@@ -1129,11 +1392,127 @@ final class JsonDataProvider
     }
 
     /**
+     * Reads all records straight from disk, bypassing the cache entirely —
+     * the only legal base for a rewrite or a constraint check inside a
+     * write critical section. The caller must hold the appropriate table
+     * lock; the cache is neither read nor written.
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    private function readAllForWrite(string $tableName): array
+    {
+        return $this->ndjson->read(
+            $tableName,
+            $this->schema->getTable($tableName)->getFileName(),
+        );
+    }
+
+    /**
+     * Lock plan for an insert: the table itself EX plus SH on parents of
+     * its enforced relations (rows of the parents provide FK context).
+     *
+     * @return array<string,string>
+     */
+    private function insertLockPlan(TableSchema $tableSchema): array
+    {
+        $plan = [$tableSchema->name => 'ex'];
+        $this->addParentShLocks($tableSchema->name, $plan);
+
+        return $plan;
+    }
+
+    /**
+     * Lock plan for an update/delete: the table EX, transitively every
+     * CASCADE/SET_NULL child EX (their rows are rewritten and their own
+     * children may cascade further), every RESTRICT child SH (their rows
+     * are only read), and SH on the parents of every EX table (FK context
+     * of the nested mutations). Derived from the relations graph of the
+     * schema, not from data; cycles terminate via the visited set.
+     *
+     * @return array<string,string>
+     */
+    private function mutationLockPlan(TableSchema $tableSchema): array
+    {
+        $plan = [$tableSchema->name => 'ex'];
+        $queue = [$tableSchema->name];
+        $visited = [$tableSchema->name => true];
+
+        while ($queue !== []) {
+            $table = array_shift($queue);
+            $this->addParentShLocks($table, $plan);
+
+            foreach ($this->schema->getChildRelations($table) as $relation) {
+                $child = $relation->fromTable;
+                $actions = [$relation->onDelete, $relation->onUpdate];
+
+                if (
+                    \in_array(
+                        Schema\ForeignKeyActionEnum::CASCADE,
+                        $actions,
+                        true,
+                    )
+                    || \in_array(
+                        Schema\ForeignKeyActionEnum::SET_NULL,
+                        $actions,
+                        true,
+                    )
+                ) {
+                    $plan[$child] = 'ex';
+
+                    if (!isset($visited[$child])) {
+                        $visited[$child] = true;
+                        $queue[] = $child;
+                    }
+                } elseif (
+                    \in_array(
+                        Schema\ForeignKeyActionEnum::RESTRICT,
+                        $actions,
+                        true,
+                    )
+                ) {
+                    $plan[$child] ??= 'sh';
+                }
+            }
+        }
+
+        return $plan;
+    }
+
+    /**
+     * Adds SH locks for the parents of the table's enforced relations to
+     * the plan (never downgrading an already planned EX).
+     *
+     * @param array<string,string> $plan
+     */
+    private function addParentShLocks(string $tableName, array &$plan): void
+    {
+        foreach ($this->schema->getRelations($tableName) as $relation) {
+            if (
+                $relation->fromTable !== $tableName
+                || $relation->toTable === $tableName
+            ) {
+                continue;
+            }
+
+            if (self::relationEnforced($relation)) {
+                $plan[$relation->toTable] ??= 'sh';
+            }
+        }
+    }
+
+    private static function relationEnforced(RelationSchema $relation): bool
+    {
+        return $relation->onDelete !== Schema\ForeignKeyActionEnum::NO_ACTION
+            || $relation->onUpdate !== Schema\ForeignKeyActionEnum::NO_ACTION;
+    }
+
+    /**
      * Reads all records in their stored (canonical UTC) form, with cache.
      *
-     * This is the internal read path: it feeds index rebuilds, uniqueness
-     * checks, foreign keys and count — all of which must see the exact stored
-     * values, never the timezone-localized presentation. Public reads go
+     * This is the internal read path: it feeds full-scan selects and count —
+     * consumers that must see the exact stored values, never the
+     * timezone-localized presentation. Write paths use readAllForWrite()
+     * instead: the cache is never a base for a rewrite. Public reads go
      * through readAll()/select(), which decode temporal columns at the very
      * end.
      *
@@ -1185,6 +1564,87 @@ final class JsonDataProvider
     }
 
     /**
+     * O(1) consistency gate run as the first step of a write operation:
+     * compares the committed meta byteSize against the actual data file
+     * size. On match the table is trusted as-is. On mismatch (crashed
+     * append, foreign write, pre-byteSize meta) the table is re-emitted
+     * canonically: records are parsed from disk (a complete unterminated
+     * tail record survives the parse; a torn partial line was never
+     * acknowledged and is dropped), the file is fully rewritten so parsed
+     * positions and physical line numbers realign, indexes are rebuilt
+     * against those positions and the true lineCount/byteSize committed.
+     * A tail-only patch would be cheaper but leaves index line numbers
+     * pointing at physical lines that a mid-file garbage line has shifted.
+     * Requires the table EX lock (via writeAll).
+     *
+     * When the meta entry itself was missing and had to be initialized, the
+     * id watermark (lastInsertedId = max stored id) is restored BEFORE the
+     * counters are committed by the rewrite: a crash after commitRewrite
+     * would otherwise leave a green byteSize gate over lastInsertedId=0 and
+     * the next insert would mint a duplicate primary key, while a crash in
+     * this order leaves a red gate and healing simply re-runs.
+     */
+    private function ensureTableConsistent(TableSchema $tableSchema): void
+    {
+        if (
+            !$this->ndjson->exists(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            )
+        ) {
+            $this->ndjson->createFileFresh(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            );
+        }
+
+        $this->createMissingIndexFiles($tableSchema);
+
+        $metaInitialized = false;
+
+        try {
+            $expected = $this->meta->getByteSize($tableSchema->name);
+        } catch (StorageException $e) {
+            if ($e->getErrorKey() !== 'META_ENTRY_MISSING') {
+                throw $e;
+            }
+
+            $this->meta->initTable($tableSchema->name);
+            $metaInitialized = true;
+            $expected = 0;
+        }
+
+        $actual = $this->ndjson->fileSizeBytes(
+            $tableSchema->name,
+            $tableSchema->getFileName(),
+        );
+
+        if (!$metaInitialized && $expected === $actual) {
+            return;
+        }
+
+        $records = $this->readAllForWrite($tableSchema->name);
+
+        if ($metaInitialized) {
+            $maxId = 0;
+
+            foreach ($records as $record) {
+                $id = $record[PrimaryKey::FIELD] ?? null;
+
+                if (\is_int($id) && $id > $maxId) {
+                    $maxId = $id;
+                }
+            }
+
+            if ($maxId > 0) {
+                $this->meta->setLastInsertedId($tableSchema->name, $maxId);
+            }
+        }
+
+        $this->writeAll($tableSchema->name, $tableSchema, $records);
+    }
+
+    /**
      * @param array<int,array<string,null|scalar>> $records
      */
     private function writeAll(
@@ -1192,17 +1652,22 @@ final class JsonDataProvider
         TableSchema $tableSchema,
         array $records,
     ): void {
+        \assert(
+            $this->locks->isHeld($tableName, 'ex'),
+            'writeAll requires the table EX lock',
+        );
+
         $records = array_values(array_map(
             fn (array $r): array => $this->normalizeRecord($tableSchema, $r),
             $records,
         ));
-        $this->ndjson->write(
+        $byteSize = $this->ndjson->write(
             $tableSchema->name,
             $tableSchema->getFileName(),
             $records,
         );
         $this->indexManager->rebuild($tableSchema, $records);
-        $this->meta->setLineCount($tableName, \count($records));
+        $this->meta->commitRewrite($tableName, \count($records), $byteSize);
         $this->cache->set($this->cacheKey($tableName), $records);
     }
 
@@ -1287,8 +1752,6 @@ final class JsonDataProvider
             ));
         }
 
-        // Индекс покрыл только условия, но не сортировку — досортировываем
-        // в памяти.
         if ($ordering !== []) {
             $this->sortByOrdering($records, $ordering);
         }
@@ -1380,7 +1843,7 @@ final class JsonDataProvider
             ];
 
             if ($action === Schema\ForeignKeyActionEnum::RESTRICT) {
-                $count = $this->count($childTable, $conditions);
+                $count = $this->countMatchingOnDisk($childTable, $conditions);
 
                 if ($count > 0) {
                     throw StorageException::foreignKeyRestrict(
@@ -1392,8 +1855,9 @@ final class JsonDataProvider
             } elseif ($action === Schema\ForeignKeyActionEnum::CASCADE) {
                 $this->delete($childTable, $conditions);
             } elseif ($action === Schema\ForeignKeyActionEnum::SET_NULL) {
-                $childRecords = $this->readAllRaw($childTable);
                 $childSchema = $this->schema->getTable($childTable);
+                $this->ensureTableConsistent($childSchema);
+                $childRecords = $this->readAllForWrite($childTable);
                 $changed = false;
 
                 foreach ($childRecords as &$childRecord) {
@@ -1456,7 +1920,7 @@ final class JsonDataProvider
             ];
 
             if ($action === Schema\ForeignKeyActionEnum::RESTRICT) {
-                $count = $this->count($childTable, $conditions);
+                $count = $this->countMatchingOnDisk($childTable, $conditions);
 
                 if ($count > 0) {
                     throw StorageException::foreignKeyRestrict(
@@ -1466,8 +1930,9 @@ final class JsonDataProvider
                     );
                 }
             } elseif ($action === Schema\ForeignKeyActionEnum::CASCADE) {
-                $childRecords = $this->readAllRaw($childTable);
                 $childSchema = $this->schema->getTable($childTable);
+                $this->ensureTableConsistent($childSchema);
+                $childRecords = $this->readAllForWrite($childTable);
                 $changed = false;
 
                 foreach ($childRecords as &$childRecord) {
@@ -1483,8 +1948,9 @@ final class JsonDataProvider
                     $this->writeAll($childTable, $childSchema, $childRecords);
                 }
             } elseif ($action === Schema\ForeignKeyActionEnum::SET_NULL) {
-                $childRecords = $this->readAllRaw($childTable);
                 $childSchema = $this->schema->getTable($childTable);
+                $this->ensureTableConsistent($childSchema);
+                $childRecords = $this->readAllForWrite($childTable);
                 $changed = false;
 
                 foreach ($childRecords as &$childRecord) {
@@ -1698,6 +2164,28 @@ final class JsonDataProvider
         }
 
         return $normalized;
+    }
+
+    /**
+     * Counts records matching the conditions by scanning the on-disk state
+     * (never the cache) — the FK restrict probe inside a write critical
+     * section.
+     *
+     * @param array<int,FilterCondition> $conditions
+     */
+    private function countMatchingOnDisk(
+        string $tableName,
+        array $conditions,
+    ): int {
+        $count = 0;
+
+        foreach ($this->readAllForWrite($tableName) as $record) {
+            if ($this->matchesAll($record, $conditions)) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     /**

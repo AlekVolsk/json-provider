@@ -23,6 +23,7 @@ final class NdjsonStorage
 {
     public function __construct(
         private readonly string $dbPath,
+        private readonly TableLockManager | null $locks = null,
     ) {}
 
     /**
@@ -58,6 +59,10 @@ final class NdjsonStorage
                 if (\is_string($key) && (\is_scalar($val) || $val === null)) {
                     $row[$key] = $val;
                 }
+            }
+
+            if ($row === []) {
+                continue;
             }
 
             $result[] = $row;
@@ -107,7 +112,7 @@ final class NdjsonStorage
             }
         }
 
-        return $row;
+        return $row === [] ? null : $row;
     }
 
     /**
@@ -167,6 +172,10 @@ final class NdjsonStorage
                 }
             }
 
+            if ($row === []) {
+                continue;
+            }
+
             foreach ($index[$lineNum] as $pos) {
                 $result[$pos] = $row;
             }
@@ -185,7 +194,40 @@ final class NdjsonStorage
     }
 
     /**
-     * Fully rewrites the NDJSON file under an exclusive lock.
+     * Encodes records into their on-disk NDJSON byte form (one JSON object
+     * per line, each line \n-terminated). The whole set is encoded before
+     * any disk I/O: an unencodable record aborts with INVALID_RECORD while
+     * the disk is still untouched. JSON_PRESERVE_ZERO_FRACTION keeps float
+     * values (99.0) distinguishable from ints on re-read.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    public function encodeRecords(string $tableName, array $records): string
+    {
+        $buffer = '';
+
+        foreach (array_values($records) as $record) {
+            $line = json_encode($record, JSON_PRESERVE_ZERO_FRACTION);
+
+            if ($line === false) {
+                throw StorageException::invalidRecord(
+                    $tableName,
+                    json_last_error_msg(),
+                );
+            }
+
+            $buffer .= $line . "\n";
+        }
+
+        return $buffer;
+    }
+
+    /**
+     * Fully rewrites the NDJSON file: the record set is encoded into a
+     * buffer first (any failure leaves the file untouched), then replaced
+     * atomically via tmp+fsync+rename. Writer mutual exclusion comes from
+     * the table EX lock held by the caller — concurrent readers see either
+     * the old or the new complete file. Returns the new file size in bytes.
      *
      * @param array<int,array<string,null|scalar>> $records
      */
@@ -193,47 +235,28 @@ final class NdjsonStorage
         string $tableName,
         string $fileName,
         array $records,
-    ): void {
+    ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
 
-        $handle = fopen($path, 'c+');
+        \assert(
+            $this->locks === null || $this->locks->isHeld($tableName, 'ex'),
+            'NdjsonStorage::write requires the table EX lock',
+        );
 
-        if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
-        }
+        $bytes = $this->encodeRecords($tableName, $records);
 
-        try {
-            if (!flock($handle, LOCK_EX)) {
-                throw StorageException::lockFailed($path);
-            }
-
-            ftruncate($handle, 0);
-            rewind($handle);
-
-            foreach (array_values($records) as $record) {
-                $line = json_encode($record);
-
-                if ($line === false) {
-                    throw StorageException::invalidRecord(
-                        $tableName,
-                        json_last_error_msg(),
-                    );
-                }
-
-                fwrite($handle, $line . "\n");
-            }
-
-            fflush($handle);
-            flock($handle, LOCK_UN);
-        } finally {
-            fclose($handle);
-        }
+        return AtomicFileWriter::write($path, $bytes);
     }
 
     /**
      * Appends a single record to the end of an NDJSON file under an
-     * exclusive lock.
+     * exclusive file lock (which excludes concurrent appends; exclusion
+     * against full rewrites comes from the caller's table EX lock), fsyncing
+     * the result. A short write (ENOSPC, I/O error) is rolled back by
+     * truncating to the pre-append size, so a torn line is never
+     * acknowledged and the committed byteSize stays honest. Returns the file
+     * size in bytes after the append.
      *
      * @param array<string,null|scalar> $record
      */
@@ -241,7 +264,7 @@ final class NdjsonStorage
         string $tableName,
         string $fileName,
         array $record,
-    ): void {
+    ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
 
@@ -254,7 +277,7 @@ final class NdjsonStorage
             );
         }
 
-        $handle = fopen($path, 'a');
+        $handle = fopen($path, 'c+');
 
         if ($handle === false) {
             throw StorageException::fileNotWritable($path);
@@ -265,12 +288,67 @@ final class NdjsonStorage
                 throw StorageException::lockFailed($path);
             }
 
-            fwrite($handle, $line . "\n");
-            fflush($handle);
+            $before = fstat($handle);
+
+            if ($before === false) {
+                throw StorageException::fileNotWritable($path);
+            }
+
+            $preSize = max(0, $before['size']);
+
+            if ($preSize > 0) {
+                fseek($handle, -1, SEEK_END);
+
+                if (fgetc($handle) !== "\n") {
+                    throw StorageException::invalidRecord(
+                        $tableName,
+                        'data file tail is not newline-terminated; '
+                            . 'repair the table first',
+                    );
+                }
+            }
+
+            fseek($handle, 0, SEEK_END);
+
+            $bytes = $line . "\n";
+            $length = \strlen($bytes);
+            $written = 0;
+            $ok = true;
+
+            while ($written < $length) {
+                $chunk = fwrite(
+                    $handle,
+                    $written === 0 ? $bytes : substr($bytes, $written),
+                );
+
+                if ($chunk === false || $chunk === 0) {
+                    $ok = false;
+
+                    break;
+                }
+
+                $written += $chunk;
+            }
+
+            if ($ok) {
+                $ok = fflush($handle) && fsync($handle);
+            }
+
+            if (!$ok) {
+                ftruncate($handle, $preSize);
+                fflush($handle);
+                fsync($handle);
+
+                throw StorageException::fileNotWritable($path);
+            }
+
+            $size = $preSize + $length;
             flock($handle, LOCK_UN);
         } finally {
             fclose($handle);
         }
+
+        return $size;
     }
 
     /**
@@ -288,11 +366,26 @@ final class NdjsonStorage
             throw StorageException::tableFileExists($path);
         }
 
-        $result = file_put_contents($path, '');
+        AtomicFileWriter::write($path, '');
+    }
 
-        if ($result === false) {
-            throw StorageException::fileNotWritable($path);
-        }
+    /**
+     * Creates the file empty, or atomically empties it when it already
+     * exists (empty temp + rename). For logical names freshly validated
+     * against the schema under a held EX lock: createTable provisions the
+     * data/index files as its last step with this, so leftover garbage of a
+     * crashed or foreign file with the same name never leaks into a new
+     * table.
+     */
+    public function createFileFresh(string $tableName, string $fileName): void
+    {
+        $this->ensureDbDir();
+        $this->ensureTableDir($tableName);
+
+        AtomicFileWriter::write(
+            $this->resolvePath($tableName, $fileName),
+            '',
+        );
     }
 
     /**
@@ -301,6 +394,116 @@ final class NdjsonStorage
     public function exists(string $tableName, string $fileName): bool
     {
         return file_exists($this->resolvePath($tableName, $fileName));
+    }
+
+    /**
+     * Returns the current on-disk size of the file in bytes, bypassing the
+     * PHP stat cache. This is the "actual" side of the byteSize consistency
+     * gate.
+     */
+    public function fileSizeBytes(string $tableName, string $fileName): int
+    {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+
+        clearstatcache(true, $path);
+        $size = filesize($path);
+
+        if ($size === false) {
+            throw StorageException::fileNotReadable($path);
+        }
+
+        return $size;
+    }
+
+    /**
+     * Repairs the tail of an NDJSON file after a crashed append, under an
+     * exclusive file lock. Looks at the bytes after the last "\n":
+     *
+     *  - empty tail             -> 'none' (file already well-formed);
+     *  - valid JSON object      -> append the missing "\n" — the record was
+     *                              fully written, only the terminator was
+     *                              lost ('newline-added', record saved);
+     *  - anything else          -> truncate to the last "\n" — the record
+     *                              never fully hit the disk and was never
+     *                              acknowledged ('partial-truncated').
+     *
+     * Returns the action taken plus the resulting file size and line count.
+     *
+     * @return array{
+     *     action: 'newline-added'|'none'|'partial-truncated',
+     *     size: int,
+     *     lines: int
+     * }
+     */
+    public function repairTail(string $tableName, string $fileName): array
+    {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+
+        $handle = fopen($path, 'c+');
+
+        if ($handle === false) {
+            throw StorageException::fileNotWritable($path);
+        }
+
+        try {
+            if (!flock($handle, LOCK_EX)) {
+                throw StorageException::lockFailed($path);
+            }
+
+            $contents = stream_get_contents($handle);
+
+            if ($contents === false) {
+                throw StorageException::fileNotReadable($path);
+            }
+
+            $lastNewline = strrpos($contents, "\n");
+            $tailStart = $lastNewline === false ? 0 : max(0, $lastNewline + 1);
+            $tail = substr($contents, $tailStart);
+            $tailRecord = $tail === '' ? null : json_decode($tail, true);
+
+            if ($tail === '') {
+                $action = 'none';
+                $size = \strlen($contents);
+                $lines = substr_count($contents, "\n");
+            } elseif (
+                \is_array($tailRecord)
+                && $tailRecord !== []
+                && !array_is_list($tailRecord)
+            ) {
+                fseek($handle, 0, SEEK_END);
+                $ok = fwrite($handle, "\n") === 1
+                    && fflush($handle)
+                    && fsync($handle);
+
+                if (!$ok) {
+                    throw StorageException::fileNotWritable($path);
+                }
+
+                $action = 'newline-added';
+                $size = \strlen($contents) + 1;
+                $lines = substr_count($contents, "\n") + 1;
+            } else {
+                $ok = ftruncate($handle, $tailStart)
+                    && fflush($handle)
+                    && fsync($handle);
+
+                if (!$ok) {
+                    throw StorageException::fileNotWritable($path);
+                }
+
+                $action = 'partial-truncated';
+                $size = $tailStart;
+                $lines = substr_count($contents, "\n");
+            }
+
+            flock($handle, LOCK_UN);
+        } finally {
+            fclose($handle);
+        }
+
+        return ['action' => $action, 'size' => $size, 'lines' => $lines];
     }
 
     /**
@@ -324,36 +527,24 @@ final class NdjsonStorage
     }
 
     /**
-     * Writes raw byte contents to an NDJSON file under an exclusive lock.
-     * Used by the restore service to copy file contents verbatim.
+     * Writes raw byte contents to an NDJSON file atomically
+     * (tmp+fsync+rename). Used by the restore service to copy file contents
+     * verbatim. Returns the byte size written.
      */
     public function writeRaw(
         string $tableName,
         string $fileName,
         string $contents,
-    ): void {
+    ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
 
-        $handle = fopen($path, 'c+');
+        \assert(
+            $this->locks === null || $this->locks->isHeld($tableName, 'ex'),
+            'NdjsonStorage::writeRaw requires the table EX lock',
+        );
 
-        if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
-        }
-
-        try {
-            if (!flock($handle, LOCK_EX)) {
-                throw StorageException::lockFailed($path);
-            }
-
-            ftruncate($handle, 0);
-            rewind($handle);
-            fwrite($handle, $contents);
-            fflush($handle);
-            flock($handle, LOCK_UN);
-        } finally {
-            fclose($handle);
-        }
+        return AtomicFileWriter::write($path, $contents);
     }
 
     /**

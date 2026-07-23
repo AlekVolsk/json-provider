@@ -21,9 +21,17 @@ use AV\JsonProvider\Exception\StorageException;
  */
 final class JsonStorage
 {
+    private TableLockManager | null $locks;
+
+    /** @var array<string,true> files with a transaction in flight */
+    private array $inTransaction = [];
+
     public function __construct(
         private readonly string $dbPath,
-    ) {}
+        TableLockManager | null $locks = null,
+    ) {
+        $this->locks = $locks;
+    }
 
     /**
      * Factory for a brand-new storage: creates the DB root directory and
@@ -77,7 +85,9 @@ final class JsonStorage
     }
 
     /**
-     * Fully rewrites the JSON file under an exclusive lock.
+     * Fully rewrites the JSON file atomically (tmp+fsync+rename) under the
+     * same sidecar lock .locks/<fileName>.lock that transaction() takes, so
+     * a plain write and a concurrent read-modify-write never interleave.
      *
      * @param array<mixed> $data
      */
@@ -92,33 +102,25 @@ final class JsonStorage
             throw StorageException::fileNotWritable($path);
         }
 
-        $handle = fopen($path, 'c+');
-
-        if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
-        }
-
-        try {
-            if (!flock($handle, LOCK_EX)) {
-                throw StorageException::lockFailed($path);
-            }
-
-            ftruncate($handle, 0);
-            rewind($handle);
-            fwrite($handle, $json);
-            fflush($handle);
-            flock($handle, LOCK_UN);
-        } finally {
-            fclose($handle);
-        }
+        $this->locks()->withServiceFile(
+            $fileName,
+            static fn (): int => AtomicFileWriter::write($path, $json),
+        );
     }
 
     /**
-     * Atomic read-modify-write under an exclusive lock.
+     * Atomic read-modify-write under the sidecar lock
+     * .locks/<fileName>.lock.
      *
      * The callback receives current file contents and a handle. To persist
      * changes, call $handle->save(). If save() is not called, the file is
      * left unchanged (useful for read-only operations under the lock).
+     *
+     * The file is read by path inside the lock (not through a pre-opened
+     * descriptor), so the callback always sees the bytes of the current
+     * inode even right after another process replaced the file via rename.
+     * Saving goes through tmp+fsync+rename — a crash mid-save leaves the
+     * previous contents intact.
      *
      * @template T
      *
@@ -129,60 +131,25 @@ final class JsonStorage
     public function transaction(string $fileName, callable $callback): mixed
     {
         $path = $this->resolvePath($fileName);
-        $this->ensureFileExists($path);
 
-        $handle = fopen($path, 'c+');
-
-        if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
+        if (isset($this->inTransaction[$fileName])) {
+            throw StorageException::lockOrderViolation(
+                'nested transaction on "' . $fileName . '"',
+            );
         }
 
-        try {
-            if (!flock($handle, LOCK_EX)) {
-                throw StorageException::lockFailed($path);
-            }
+        return $this->locks()->withServiceFile(
+            $fileName,
+            function () use ($path, $fileName, $callback): mixed {
+                $this->inTransaction[$fileName] = true;
 
-            $raw = stream_get_contents($handle);
-
-            if ($raw === false) {
-                throw StorageException::fileNotReadable($path);
-            }
-
-            if ($raw === '') {
-                $data = [];
-            } else {
-                $decoded = json_decode($raw, true);
-
-                if (!\is_array($decoded)) {
-                    throw StorageException::invalidJson($path);
+                try {
+                    return $this->runTransaction($path, $callback);
+                } finally {
+                    unset($this->inTransaction[$fileName]);
                 }
-
-                $data = $decoded;
-            }
-
-            $tx = new JsonStorageTxHandle();
-            $result = $callback($data, $tx);
-
-            if ($tx->hasPendingSave()) {
-                $next = $tx->pendingData();
-                $json = json_encode($next, JSON_PRETTY_PRINT);
-
-                if ($json === false) {
-                    throw StorageException::fileNotWritable($path);
-                }
-
-                ftruncate($handle, 0);
-                rewind($handle);
-                fwrite($handle, $json);
-                fflush($handle);
-            }
-
-            flock($handle, LOCK_UN);
-
-            return $result;
-        } finally {
-            fclose($handle);
-        }
+            },
+        );
     }
 
     /**
@@ -207,9 +174,7 @@ final class JsonStorage
             throw StorageException::fileNotWritable($path);
         }
 
-        if (file_put_contents($path, $json) === false) {
-            throw StorageException::fileNotWritable($path);
-        }
+        AtomicFileWriter::write($path, $json);
     }
 
     /**
@@ -229,9 +194,7 @@ final class JsonStorage
             throw StorageException::tableFileExists($path);
         }
 
-        if (file_put_contents($path, "{}\n") === false) {
-            throw StorageException::fileNotWritable($path);
-        }
+        AtomicFileWriter::write($path, "{}\n");
     }
 
     /**
@@ -240,6 +203,34 @@ final class JsonStorage
     public function exists(string $fileName): bool
     {
         return file_exists($this->resolvePath($fileName));
+    }
+
+    /**
+     * Returns the file's current mtime, size and inode, bypassing the PHP
+     * stat cache. Used as a cheap change marker for cached readers: mtime
+     * alone has second granularity and two same-length writes can share a
+     * size, but every atomic save rename()s a fresh temp file, so the inode
+     * changes on every write.
+     *
+     * @return array{mtime: int, size: int, ino: int}
+     */
+    public function stat(string $fileName): array
+    {
+        $path = $this->resolvePath($fileName);
+        $this->ensureFileExists($path);
+
+        clearstatcache(true, $path);
+        $stat = @stat($path);
+
+        if ($stat === false) {
+            throw StorageException::fileNotReadable($path);
+        }
+
+        return [
+            'mtime' => $stat['mtime'],
+            'size'  => $stat['size'],
+            'ino'   => $stat['ino'],
+        ];
     }
 
     /**
@@ -305,6 +296,53 @@ final class JsonStorage
     }
 
     /**
+     * Body of transaction(): fresh read by path, callback, atomic save.
+     *
+     * @template T
+     *
+     * @param callable(array<mixed>, JsonStorageTxHandle): T $callback
+     *
+     * @return T
+     */
+    private function runTransaction(string $path, callable $callback): mixed
+    {
+        $this->ensureFileExists($path);
+
+        $raw = file_get_contents($path);
+
+        if ($raw === false) {
+            throw StorageException::fileNotReadable($path);
+        }
+
+        if ($raw === '') {
+            $data = [];
+        } else {
+            $decoded = json_decode($raw, true);
+
+            if (!\is_array($decoded)) {
+                throw StorageException::invalidJson($path);
+            }
+
+            $data = $decoded;
+        }
+
+        $tx = new JsonStorageTxHandle();
+        $result = $callback($data, $tx);
+
+        if ($tx->hasPendingSave()) {
+            $json = json_encode($tx->pendingData(), JSON_PRETTY_PRINT);
+
+            if ($json === false) {
+                throw StorageException::fileNotWritable($path);
+            }
+
+            AtomicFileWriter::write($path, $json);
+        }
+
+        return $result;
+    }
+
+    /**
      * Resolves the absolute path: dbPath/<fileName>.
      * Path-traversal guard: the name must not contain separators.
      */
@@ -324,6 +362,18 @@ final class JsonStorage
         if (!is_dir($this->dbPath)) {
             throw StorageException::fileNotWritable($this->dbPath);
         }
+    }
+
+    /**
+     * Lock manager for sidecar (level 3) service-file locks. Inject the
+     * provider-level manager so held-set re-entrancy sees table and sidecar
+     * locks together; standalone usage falls back to a lazily created own
+     * instance (cross-process exclusion still holds — flock grants are per
+     * open file description).
+     */
+    private function locks(): TableLockManager
+    {
+        return $this->locks ??= new TableLockManager($this->dbPath);
     }
 
     private function ensureFileExists(string $path): void
