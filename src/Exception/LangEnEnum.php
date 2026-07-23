@@ -66,6 +66,10 @@ enum LangEnEnum: string implements LocaleInterface
         . 'null was given';
     case REQUIRED_COLUMN_MISSING = 'Table "%s": required column "%s" '
         . 'is missing';
+    case NON_FINITE_FLOAT = 'Table "%s", column "%s": NAN and INF are not '
+        . 'storable float values';
+    case INVALID_UTF8 = 'Table "%s", column "%s": string value is not '
+        . 'valid UTF-8';
     case INVALID_TEMPORAL_VALUE = 'Table "%s", column "%s": invalid %s '
         . 'value: "%s"';
     case ZERO_DATE = 'Table "%s", column "%s": zero dates are not allowed: '

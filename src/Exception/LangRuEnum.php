@@ -66,6 +66,10 @@ enum LangRuEnum: string implements LocaleInterface
     case NULL_NOT_ALLOWED = 'Таблица "%s", колонка "%s" не допускает null';
     case REQUIRED_COLUMN_MISSING = 'Таблица "%s": отсутствует обязательная '
         . 'колонка "%s"';
+    case NON_FINITE_FLOAT = 'Таблица "%s", колонка "%s": NAN и INF '
+        . 'не сохраняемы как float';
+    case INVALID_UTF8 = 'Таблица "%s", колонка "%s": строка не является '
+        . 'корректной UTF-8';
     case INVALID_TEMPORAL_VALUE = 'Таблица "%s", колонка "%s": некорректное '
         . 'значение %s: "%s"';
     case ZERO_DATE = 'Таблица "%s", колонка "%s": нулевые даты недопустимы: '

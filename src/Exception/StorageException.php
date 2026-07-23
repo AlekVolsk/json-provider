@@ -248,6 +248,16 @@ class StorageException extends JsonProviderException
         return new self('REQUIRED_COLUMN_MISSING', $table, $column);
     }
 
+    public static function nonFiniteFloat(string $table, string $column): self
+    {
+        return new self('NON_FINITE_FLOAT', $table, $column);
+    }
+
+    public static function invalidUtf8(string $table, string $column): self
+    {
+        return new self('INVALID_UTF8', $table, $column);
+    }
+
     public static function invalidTemporalValue(
         string $table,
         string $column,

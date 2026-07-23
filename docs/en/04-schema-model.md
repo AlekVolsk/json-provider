@@ -94,12 +94,33 @@ Records hold scalars and `null`; nested arrays are not supported.
 Types are enforced on every write (`insert`, `update`, and `where` values), not just documented. The contract is **strict**:
 
 - a value must match the declared PHP type exactly; the only widening allowed is `int` into a `float` column (`10 → 10.0`);
+- `NAN`, `INF` and `-INF` are never written into a `float` column — `NON_FINITE_FLOAT` (JSON cannot represent them); the guard fires on `insert`/`update`, before the disk is touched;
+- a written string must be valid UTF-8, otherwise `INVALID_UTF8` — likewise on `insert`/`update`, before the disk is touched;
 - `null` is accepted only on a `<type>|null` column;
 - on `insert`, a missing non-nullable column is an error (a missing nullable column becomes `null`); `update` is a patch — it validates only the keys it is given and leaves the rest untouched;
 - keys not present in the schema are dropped;
 - unknown/custom type strings are passed through unchecked (backward compatibility).
 
-Violations raise `StorageException` with a specific key — `TYPE_MISMATCH`, `NULL_NOT_ALLOWED`, `REQUIRED_COLUMN_MISSING`, `INVALID_TEMPORAL_VALUE`, `ZERO_DATE`, `NUMERIC_PART_OUT_OF_RANGE` — see [Exceptions & localization](17-exceptions-localization.md).
+Violations raise `StorageException` with a specific key — `TYPE_MISMATCH`, `NULL_NOT_ALLOWED`, `REQUIRED_COLUMN_MISSING`, `NON_FINITE_FLOAT`, `INVALID_UTF8`, `INVALID_TEMPORAL_VALUE`, `ZERO_DATE`, `NUMERIC_PART_OUT_OF_RANGE` — see [Exceptions & localization](17-exceptions-localization.md).
+
+## Float format on disk
+
+JSON has a single number type, so a float without a fractional part could collapse into an int on re-read. The provider closes this from both sides:
+
+- **write** — a float is always stored with its fraction (`99.0` → `"price":99.0`, the `JSON_PRESERVE_ZERO_FRACTION` flag), so re-reading yields a PHP `float`;
+- **read** — int values in `float` columns are widened to `float` on every read path (full scan, indexed selects, `count`, cache fill, DTO hydration). Legacy rows written by older versions (`"price":99`) and external file edits are therefore indistinguishable from fresh writes: strict `=`/`IN` comparisons against `99.0` find them.
+
+No migration of existing databases is required; to rewrite files into the new format, run `optimizeTable()` once per table. Zero-sign nuance: a freshly written `-0.0` keeps its sign, while a legacy `-0` reads back as `int 0` and widens to an unsigned `0.0` — the sign of old rows is not restored.
+
+## Unique constraint semantics
+
+Constraints from `uniqueConstraints` are checked on `insert` and `update` before anything is written. The rules follow SQL:
+
+- a record with `null` (or a missing field) in **any** constraint field does not participate in the check — any number of such records may coexist, including under composite constraints;
+- a conflict exists only between two records whose constraint fields are **all** non-`null` and pairwise equal;
+- the comparison is **type-strict**: `1`, `1.0`, `'1'` and `true` are four distinct values that never conflict with each other (no SQL-style numeric merging). In a declared `float` column an `int` is widened to `float` already on write, so `1` and `1.0` are one key there; `-0.0` and `0.0` are one key too (the key follows the query engine's strict equality).
+
+`UniqueConstraint::keyPart()` canonicalizes a single key value; `UniqueConstraint::keyOf()` returns `null` for records that do not participate.
 
 ## Temporal types and timezones
 

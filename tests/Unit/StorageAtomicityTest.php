@@ -551,16 +551,17 @@ final class StorageAtomicityTest
     #[Test]
     public function updateWithUnencodableValueLeavesTableFullyIntact(): void
     {
-        // INF slips past the value validator today (its rejection lands
-        // with the stage-2 dv-float-nonfinite fix); the buffered encode in
-        // the rewrite path must refuse the whole operation: the data file
-        // stays byte-identical, meta stays correct, every row survives.
+        // Declared float columns reject INF up front (NON_FINITE_FLOAT),
+        // but a passthrough (unknown-type) column carries any scalar past
+        // the validator; the buffered encode in the rewrite path must then
+        // refuse the whole operation: the data file stays byte-identical,
+        // meta stays correct, every row survives.
         $dbDir = self::TMP_DIR . '/probe-' . uniqid();
         $db = \AV\JsonProvider\JsonDataProvider::createDatabase($dbDir);
         $db->createTable(\AV\JsonProvider\Schema\TableSchema::create(
             name: 'goods',
             uniqueConstraints: [],
-            columns: ['id' => 'int', 'price' => 'float'],
+            columns: ['id' => 'int', 'price' => 'variant'],
             indexes: [],
         ));
         $db->insert('goods', ['price' => 1.5]);

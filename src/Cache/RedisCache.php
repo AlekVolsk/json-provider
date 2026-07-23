@@ -60,11 +60,15 @@ final class RedisCache implements CacheInterface
     }
 
     /**
+     * JSON_PRESERVE_ZERO_FRACTION keeps float values (99.0) from collapsing
+     * into ints across the encode/decode roundtrip, so a cache hit serves
+     * the same PHP types as a cold disk read.
+     *
      * @param array<int,array<string,null|scalar>> $records
      */
     public function set(string $key, array $records): void
     {
-        $json = json_encode($records);
+        $json = json_encode($records, JSON_PRESERVE_ZERO_FRACTION);
 
         if ($json === false) {
             return;

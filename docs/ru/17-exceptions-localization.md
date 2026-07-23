@@ -79,6 +79,8 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `TYPE_MISMATCH` | значение не соответствует заявленному типу колонки |
 | `NULL_NOT_ALLOWED` | `null` для non-nullable-колонки |
 | `REQUIRED_COLUMN_MISSING` | insert пропустил non-nullable-колонку |
+| `NON_FINITE_FLOAT` | `NAN`/`INF` во float-колонку — не представимы в JSON |
+| `INVALID_UTF8` | строка не является корректной UTF-8 |
 | `INVALID_TEMPORAL_VALUE` | дата/время не в принятом системном формате |
 | `ZERO_DATE` | передана нулевая дата (`0000-00-00`) |
 | `NUMERIC_PART_OUT_OF_RANGE` | значение `month`/`day` вне допустимого диапазона |

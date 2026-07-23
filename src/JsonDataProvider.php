@@ -431,7 +431,9 @@ final class JsonDataProvider
                     $record + ['id' => 0],
                 );
 
-                if (json_encode($probe) === false) {
+                $encoded = json_encode($probe, JSON_PRESERVE_ZERO_FRACTION);
+
+                if ($encoded === false) {
                     throw StorageException::invalidRecord(
                         $tableSchema->name,
                         json_last_error_msg(),
@@ -1395,15 +1397,19 @@ final class JsonDataProvider
      * Reads all records straight from disk, bypassing the cache entirely —
      * the only legal base for a rewrite or a constraint check inside a
      * write critical section. The caller must hold the appropriate table
-     * lock; the cache is neither read nor written.
+     * lock; the cache is neither read nor written. Float columns are
+     * widened (widenFloats), so unique keys and FK probes compare the same
+     * PHP types the read paths surface.
      *
      * @return array<int,array<string,null|scalar>>
      */
     private function readAllForWrite(string $tableName): array
     {
-        return $this->ndjson->read(
-            $tableName,
-            $this->schema->getTable($tableName)->getFileName(),
+        $tableSchema = $this->schema->getTable($tableName);
+
+        return $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
         );
     }
 
@@ -1514,7 +1520,9 @@ final class JsonDataProvider
      * timezone-localized presentation. Write paths use readAllForWrite()
      * instead: the cache is never a base for a rewrite. Public reads go
      * through readAll()/select(), which decode temporal columns at the very
-     * end.
+     * end. Float columns are widened before the records reach the cache,
+     * so every cache adapter stores and serves the same PHP types a cold
+     * disk read would produce.
      *
      * @return array<int,array<string,null|scalar>>
      */
@@ -1527,9 +1535,10 @@ final class JsonDataProvider
             return $cached;
         }
 
-        $records = $this->ndjson->read(
-            $tableName,
-            $this->schema->getTable($tableName)->getFileName(),
+        $tableSchema = $this->schema->getTable($tableName);
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
         );
         $this->cache->set($cacheKey, $records);
 
@@ -1537,8 +1546,8 @@ final class JsonDataProvider
     }
 
     /**
-     * Сортирует записи на месте по правилам ordering (стабильно — usort
-     * в PHP 8+).
+     * Sorts records in place by the ordering rules (stable — usort in
+     * PHP 8+).
      *
      * @param array<int,array<string,null|scalar>> $records
      * @param array<int,OrderBy>                   $ordering
@@ -1645,6 +1654,10 @@ final class JsonDataProvider
     }
 
     /**
+     * Records are float-widened before hitting both the disk and the cache:
+     * the disk write then preserves the zero fraction (99.0 stays "99.0")
+     * and every cache adapter holds the same PHP types a cold read yields.
+     *
      * @param array<int,array<string,null|scalar>> $records
      */
     private function writeAll(
@@ -1657,9 +1670,14 @@ final class JsonDataProvider
             'writeAll requires the table EX lock',
         );
 
-        $records = array_values(array_map(
-            fn (array $r): array => $this->normalizeRecord($tableSchema, $r),
-            $records,
+        $records = $this->values->widenFloats($tableSchema, array_values(
+            array_map(
+                fn (array $r): array => $this->normalizeRecord(
+                    $tableSchema,
+                    $r,
+                ),
+                $records,
+            ),
         ));
         $byteSize = $this->ndjson->write(
             $tableSchema->name,
@@ -1702,16 +1720,18 @@ final class JsonDataProvider
                     $lineNumbers = \array_slice($lineNumbers, $offset, $limit);
                 }
 
-                return $this->ndjson->readLines(
-                    $tableSchema->name,
-                    $tableSchema->getFileName(),
-                    $lineNumbers,
+                return $this->values->widenFloats(
+                    $tableSchema,
+                    $this->ndjson->readLines(
+                        $tableSchema->name,
+                        $tableSchema->getFileName(),
+                        $lineNumbers,
+                    ),
                 );
             }
 
             return $this->readFilteredPaginated(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
+                $tableSchema,
                 $lineNumbers,
                 $conditions,
                 $offset,
@@ -1734,16 +1754,19 @@ final class JsonDataProvider
             }
         }
 
-        $records = $lineNumbers !== null
-            ? $this->ndjson->readLines(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-                $lineNumbers,
-            )
-            : $this->ndjson->read(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-            );
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $lineNumbers !== null
+                ? $this->ndjson->readLines(
+                    $tableSchema->name,
+                    $tableSchema->getFileName(),
+                    $lineNumbers,
+                )
+                : $this->ndjson->read(
+                    $tableSchema->name,
+                    $tableSchema->getFileName(),
+                ),
+        );
 
         if ($conditions !== []) {
             $records = array_values(array_filter(
@@ -1760,8 +1783,8 @@ final class JsonDataProvider
     }
 
     /**
-     * Reads records by lineNumbers, filters, applies offset/limit without
-     * loading all into memory.
+     * Reads records by lineNumbers, widens float columns, filters, applies
+     * offset/limit without loading all into memory.
      *
      * @param array<int,int>             $lineNumbers
      * @param array<int,FilterCondition> $conditions
@@ -1769,14 +1792,20 @@ final class JsonDataProvider
      * @return array<int,array<string,null|scalar>>
      */
     private function readFilteredPaginated(
-        string $tableName,
-        string $file,
+        TableSchema $tableSchema,
         array $lineNumbers,
         array $conditions,
         int $offset,
         int | null $limit,
     ): array {
-        $records = $this->ndjson->readLines($tableName, $file, $lineNumbers);
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->readLines(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+                $lineNumbers,
+            ),
+        );
         $result = [];
         $skipped = 0;
 
@@ -2055,6 +2084,10 @@ final class JsonDataProvider
     }
 
     /**
+     * A null incoming key (any constraint field null or missing) always
+     * passes — SQL semantics; stored records with a null key are skipped
+     * for the same reason, so only two non-null equal keys conflict.
+     *
      * @param array<int,array<string,null|scalar>> $existing
      * @param array<string,null|scalar>            $incoming
      */
@@ -2066,6 +2099,10 @@ final class JsonDataProvider
         int | null $excludeId,
     ): void {
         $incomingKey = $constraint->keyOf($incoming);
+
+        if ($incomingKey === null) {
+            return;
+        }
 
         foreach ($existing as $record) {
             if (
@@ -2260,6 +2297,7 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->json,
                 $this->indexManager,
+                $this->values,
             );
         }
 

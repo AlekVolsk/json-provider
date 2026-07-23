@@ -256,7 +256,9 @@ final class NdjsonStorage
      * the result. A short write (ENOSPC, I/O error) is rolled back by
      * truncating to the pre-append size, so a torn line is never
      * acknowledged and the committed byteSize stays honest. Returns the file
-     * size in bytes after the append.
+     * size in bytes after the append. JSON_PRESERVE_ZERO_FRACTION keeps
+     * float values (99.0) distinguishable from ints on re-read, matching
+     * the full-rewrite encoding.
      *
      * @param array<string,null|scalar> $record
      */
@@ -268,7 +270,7 @@ final class NdjsonStorage
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
 
-        $line = json_encode($record);
+        $line = json_encode($record, JSON_PRESERVE_ZERO_FRACTION);
 
         if ($line === false) {
             throw StorageException::invalidRecord(

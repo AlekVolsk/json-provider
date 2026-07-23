@@ -39,10 +39,14 @@ final class ValueValidator
     /** @var \WeakMap<TableSchema,bool> */
     private \WeakMap $temporalMemo;
 
+    /** @var \WeakMap<TableSchema,array<int,string>> */
+    private \WeakMap $floatColumnsMemo;
+
     public function __construct(
         private readonly TemporalCodec $codec = new TemporalCodec(),
     ) {
         $this->temporalMemo = new \WeakMap();
+        $this->floatColumnsMemo = new \WeakMap();
     }
 
     /**
@@ -93,6 +97,43 @@ final class ValueValidator
         }
 
         return $out;
+    }
+
+    /**
+     * Widens int values stored in float columns to PHP floats.
+     *
+     * JSON has one number type: a float written without a fractional part by
+     * an older writer (or an external editor) decodes back as int. Every read
+     * path runs records through this method so float columns always surface
+     * as PHP floats — strict `=`/IN comparisons, unique keys, FK probes and
+     * DTO hydration then compare float to float. Idempotent; tables without
+     * float columns pay a single memoized check. Fresh writes keep the
+     * fraction on disk via JSON_PRESERVE_ZERO_FRACTION, so this is the
+     * safety net for legacy rows, not the primary format.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    public function widenFloats(TableSchema $schema, array $records): array
+    {
+        $columns = $this->floatColumns($schema);
+
+        if ($columns === []) {
+            return $records;
+        }
+
+        foreach ($records as $i => $record) {
+            foreach ($columns as $column) {
+                $value = $record[$column] ?? null;
+
+                if (\is_int($value)) {
+                    $records[$i][$column] = (float)$value;
+                }
+            }
+        }
+
+        return $records;
     }
 
     /**
@@ -364,6 +405,10 @@ final class ValueValidator
         return $value;
     }
 
+    /**
+     * The UTF-8 check relies on PCRE only (an empty /u pattern fails to
+     * match invalid UTF-8 subjects), so no ext-mbstring is required.
+     */
     private function requireString(
         string $table,
         string $column,
@@ -376,6 +421,10 @@ final class ValueValidator
                 ColumnTypes::STRING,
                 get_debug_type($value),
             );
+        }
+
+        if (preg_match('//u', $value) !== 1) {
+            throw StorageException::invalidUtf8($table, $column);
         }
 
         return $value;
@@ -398,6 +447,11 @@ final class ValueValidator
         return $value;
     }
 
+    /**
+     * NAN and INF are rejected: json_encode cannot represent them, so they
+     * would abort the write later with a generic INVALID_RECORD instead of
+     * pointing at the offending column.
+     */
     private function requireFloat(
         string $table,
         string $column,
@@ -414,6 +468,10 @@ final class ValueValidator
                 ColumnTypes::FLOAT,
                 get_debug_type($value),
             );
+        }
+
+        if (!is_finite($value)) {
+            throw StorageException::nonFiniteFloat($table, $column);
         }
 
         return $value;
@@ -451,6 +509,28 @@ final class ValueValidator
         }
 
         return $value;
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function floatColumns(TableSchema $schema): array
+    {
+        if (isset($this->floatColumnsMemo[$schema])) {
+            return $this->floatColumnsMemo[$schema];
+        }
+
+        $columns = [];
+
+        foreach ($schema->columns as $column => $type) {
+            if (ColumnTypeInfo::parse($type)->base === ColumnTypes::FLOAT) {
+                $columns[] = $column;
+            }
+        }
+
+        $this->floatColumnsMemo[$schema] = $columns;
+
+        return $columns;
     }
 
     private function hasTemporalColumns(TableSchema $schema): bool

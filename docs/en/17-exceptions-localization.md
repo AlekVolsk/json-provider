@@ -79,6 +79,8 @@ The custom locale class can live in any namespace.
 | `TYPE_MISMATCH` | a value does not match the column's declared type |
 | `NULL_NOT_ALLOWED` | `null` given for a non-nullable column |
 | `REQUIRED_COLUMN_MISSING` | insert omitted a non-nullable column |
+| `NON_FINITE_FLOAT` | `NAN`/`INF` written into a float column — not representable in JSON |
+| `INVALID_UTF8` | string value is not valid UTF-8 |
 | `INVALID_TEMPORAL_VALUE` | date/time value not in the accepted system format |
 | `ZERO_DATE` | a zero date (`0000-00-00`) was supplied |
 | `NUMERIC_PART_OUT_OF_RANGE` | `month`/`day` value outside its valid range |

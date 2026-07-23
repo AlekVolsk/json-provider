@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Validation\ValueValidator;
 
 /**
  * Repairs deviations found by IntegrityValidator.
@@ -54,6 +55,7 @@ final class IntegrityRepairer
         private readonly NdjsonStorage $ndjson,
         private readonly JsonStorage $json,
         private readonly IndexManager $indexManager,
+        private readonly ValueValidator $values,
     ) {}
 
     public function repairTable(string $tableName): IntegrityReport
@@ -115,14 +117,19 @@ final class IntegrityRepairer
      * Also re-derives meta.lineCount from the actual row count.
      *
      * Used both as a standalone preventive optimization and as a final pass
-     * inside repair operations.
+     * inside repair operations. Float columns are widened before the
+     * rewrite, so the pass also migrates legacy int-encoded float values
+     * ("price":99) into the canonical zero-fraction form ("price":99.0).
      *
      * Returns an INFO issue describing the result (TABLE_OPTIMIZED).
      */
     public function optimizeTable(string $tableName): IntegrityIssue
     {
         $tableSchema = $this->schema->getTable($tableName);
-        $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+        );
 
         $records = $this->normalizeAndSort($tableSchema, $records);
 
@@ -231,7 +238,10 @@ final class IntegrityRepairer
     {
         $tableName = (string)$issue->tableName;
         $tableSchema = $this->schema->getTable($tableName);
-        $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+        );
         $records = array_map(
             fn (array $r): array => $this->normalizeRecord($tableSchema, $r),
             $records,
