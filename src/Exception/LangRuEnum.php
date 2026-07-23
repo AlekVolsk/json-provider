@@ -46,6 +46,10 @@ enum LangRuEnum: string implements LocaleInterface
     case REORDER_COLUMNS_INCOMPLETE = 'reorderColumns для таблицы "%s": '
         . 'пропущены колонки "%s"';
     case INDEX_NOT_FOUND = 'В таблице "%s" нет индекса с именем "%s"';
+    case INDEX_UNRELIABLE = 'Индекс "%s" таблицы "%s" структурно повреждён '
+        . 'и не может использоваться: %s';
+    case INDEX_KEY_NON_FINITE = 'Ключ индекса для поля "%s": NAN и INF '
+        . 'не индексируемы';
     case MIGRATE_COLUMN_TYPE_CHANGE = 'migrateColumns для таблицы "%s": смена '
         . 'типа колонки "%s" (%s -> %s) не поддерживается; мигрируйте данные '
         . 'отдельно';

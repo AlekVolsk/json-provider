@@ -22,29 +22,50 @@ enum FilterOperatorEnum: string
 
     /**
      * Applies the operator to a record value against the condition value.
+     * Ordering operators delegate to ValueComparator, so ranges agree with
+     * ORDER BY and (in Binary mode) with the byte-encoded index order;
+     * equality stays strict `===`.
      */
     public function matches(
         bool | float | int | string | null $recordValue,
         mixed $conditionValue,
+        ComparisonMode $mode = ComparisonMode::Binary,
     ): bool {
         return match ($this) {
             self::EQ => $recordValue === $conditionValue,
             self::GT => $recordValue !== null
                 && \is_scalar($conditionValue)
-                && $recordValue > $conditionValue,
+                && ValueComparator::compare(
+                    $recordValue,
+                    $conditionValue,
+                    $mode,
+                ) > 0,
             self::GTE => $recordValue !== null
                 && \is_scalar($conditionValue)
-                && $recordValue >= $conditionValue,
+                && ValueComparator::compare(
+                    $recordValue,
+                    $conditionValue,
+                    $mode,
+                ) >= 0,
             self::LT => $recordValue !== null
                 && \is_scalar($conditionValue)
-                && $recordValue < $conditionValue,
+                && ValueComparator::compare(
+                    $recordValue,
+                    $conditionValue,
+                    $mode,
+                ) < 0,
             self::LTE => $recordValue !== null
                 && \is_scalar($conditionValue)
-                && $recordValue <= $conditionValue,
+                && ValueComparator::compare(
+                    $recordValue,
+                    $conditionValue,
+                    $mode,
+                ) <= 0,
             self::LIKE    => $this->matchesLike($recordValue, $conditionValue),
             self::BETWEEN => $this->matchesBetween(
                 $recordValue,
                 $conditionValue,
+                $mode,
             ),
             self::IN => $this->matchesIn($recordValue, $conditionValue),
         };
@@ -88,13 +109,28 @@ enum FilterOperatorEnum: string
     private function matchesBetween(
         bool | float | int | string | null $recordValue,
         mixed $conditionValue,
+        ComparisonMode $mode,
     ): bool {
-        if ($recordValue === null || !\is_array($conditionValue)) {
+        if (
+            $recordValue === null
+            || !\is_array($conditionValue)
+            || !\array_key_exists(0, $conditionValue)
+            || !\array_key_exists(1, $conditionValue)
+        ) {
             return false;
         }
 
-        [$min, $max] = $conditionValue;
+        $min = $conditionValue[0];
+        $max = $conditionValue[1];
 
-        return $recordValue >= $min && $recordValue <= $max;
+        if (
+            (!\is_scalar($min) && $min !== null)
+            || (!\is_scalar($max) && $max !== null)
+        ) {
+            return false;
+        }
+
+        return ValueComparator::compare($recordValue, $min, $mode) >= 0
+            && ValueComparator::compare($recordValue, $max, $mode) <= 0;
     }
 }

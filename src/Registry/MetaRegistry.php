@@ -26,6 +26,13 @@ use AV\JsonProvider\Storage\JsonStorageTxHandle;
  * and triggers tail repair plus index rebuild. Entries written before the
  * byteSize field existed read as null, which forces that same re-check.
  *
+ * indexFormat is the on-disk index key format for the table's index files:
+ * a missing field reads as 1 (legacy encoding), 2 is the current
+ * prefix-free typed encoding (IndexKey). Readers treat format < 2 indexes
+ * as untrusted (full scan); the first write under the table EX lock
+ * rebuilds them and stamps 2. The field is per-table, so mixed databases
+ * upgrade lazily table by table.
+ *
  * Contract: a meta entry must exist for every registered table. It is created
  * by initTable() (called from JsonDataProvider::createTable). Any operation
  * (allocateId / commit* / get*) for a missing table —
@@ -109,7 +116,7 @@ final class MetaRegistry
                 array $data,
                 JsonStorageTxHandle $h,
             ) use ($tableName): void {
-                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int, indexFormat?: int}> $data */
                 if (isset($data[$tableName])) {
                     throw StorageException::tableAlreadyExists($tableName);
                 }
@@ -118,6 +125,7 @@ final class MetaRegistry
                     'lastInsertedId' => 0,
                     'lineCount'      => 0,
                     'byteSize'       => 0,
+                    'indexFormat'    => 2,
                 ];
                 $h->save($data);
             },
@@ -164,6 +172,44 @@ final class MetaRegistry
     public function getByteSize(string $tableName): int | null
     {
         return $this->getEntry($tableName)['byteSize'];
+    }
+
+    /**
+     * Returns the on-disk index key format for the table. A missing field
+     * (pre-v2 meta) reads as 1: the legacy encoding, untrusted by readers.
+     * Throws if no meta entry exists for the table.
+     */
+    public function getIndexFormat(string $tableName): int
+    {
+        return $this->getEntry($tableName)['indexFormat'];
+    }
+
+    /**
+     * Stamps the index format after the table's index files were rebuilt
+     * with the corresponding encoder. Call only after the rebuilt files
+     * are on disk. Throws if no meta entry exists for the table.
+     */
+    public function stampIndexFormat(string $tableName, int $format): void
+    {
+        $this->storage->transaction(
+            self::META_FILE,
+            static function (
+                array $data,
+                JsonStorageTxHandle $h,
+            ) use (
+                $tableName,
+                $format,
+            ): void {
+                /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int, indexFormat?: int}> $data */
+                if (!isset($data[$tableName])) {
+                    throw StorageException::metaEntryMissing($tableName);
+                }
+
+                $data[$tableName]['indexFormat'] = $format;
+
+                $h->save($data);
+            },
+        );
     }
 
     /**
@@ -273,11 +319,16 @@ final class MetaRegistry
     }
 
     /**
-     * @return array{lastInsertedId: int, lineCount: int, byteSize: null|int}
+     * @return array{
+     *     lastInsertedId: int,
+     *     lineCount: int,
+     *     byteSize: null|int,
+     *     indexFormat: int,
+     * }
      */
     private function getEntry(string $tableName): array
     {
-        /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
+        /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int, indexFormat?: int}> $data */
         $data = $this->storage->read(self::META_FILE);
 
         if (!isset($data[$tableName])) {
@@ -290,6 +341,7 @@ final class MetaRegistry
             'lastInsertedId' => $entry['lastInsertedId'],
             'lineCount'      => $entry['lineCount'],
             'byteSize'       => $entry['byteSize'] ?? null,
+            'indexFormat'    => $entry['indexFormat'] ?? 1,
         ];
     }
 }

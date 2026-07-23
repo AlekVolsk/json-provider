@@ -13,6 +13,8 @@ Both are atomic at the file level (each index file is replaced under an exclusiv
 
 `rebuildIndex()` raises `INDEX_NOT_FOUND` if the named index does not exist in the table schema.
 
+Both operations stamp the current `indexFormat` in meta; `rebuildIndex()` on a table with the old format escalates to rebuilding all of its indexes (see [Indexes](06-indexes.md)).
+
 ## Table optimization
 
 ```php

@@ -13,10 +13,12 @@ use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
 use AV\JsonProvider\Mapping\DtoRegistry;
+use AV\JsonProvider\Query\ComparisonMode;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\OrderBy;
 use AV\JsonProvider\Query\SortDirectionEnum;
+use AV\JsonProvider\Query\ValueComparator;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ColumnTypes;
@@ -33,6 +35,7 @@ use AV\JsonProvider\Services\Integrity\IntegrityValidator;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Storage\TableLockManager;
+use AV\JsonProvider\Validation\ColumnTypeInfo;
 use AV\JsonProvider\Validation\ValueValidator;
 
 /**
@@ -66,6 +69,7 @@ final class JsonDataProvider
     private Backup | null $backup = null;
     private Restore | null $restore = null;
     private readonly string $dbPath;
+    private ComparisonMode $comparisonMode = ComparisonMode::Binary;
 
     private function __construct(
         string $dbPath,
@@ -144,6 +148,21 @@ final class JsonDataProvider
     public function setLocale(LocaleInterface $locale): self
     {
         JsonProviderException::setLocale($locale);
+
+        return $this;
+    }
+
+    /**
+     * Sets the string comparison mode for ordering operators and ORDER BY
+     * on this instance. Binary (default) is bytewise and index-compatible;
+     * Locale orders string pairs via the intl Collator and excludes
+     * indexes from string ordering/ranges (the byte-ordered index would
+     * disagree). Equality operators are unaffected. Without ext-intl,
+     * Locale silently behaves as Binary.
+     */
+    public function setComparisonMode(ComparisonMode $mode): self
+    {
+        $this->comparisonMode = $mode;
 
         return $this;
     }
@@ -856,6 +875,13 @@ final class JsonDataProvider
             'sh',
             function () use ($tableName, $indexName): void {
                 $tableSchema = $this->schema->getTable($tableName);
+
+                if ($this->meta->getIndexFormat($tableName) < 2) {
+                    $this->rebuildAllStamped($tableSchema);
+
+                    return;
+                }
+
                 $indexSchema = $this->indexManager->findIndex(
                     $tableSchema,
                     $indexName,
@@ -872,8 +898,9 @@ final class JsonDataProvider
     }
 
     /**
-     * Rebuilds every index of the table from current data, including PK.
-     * Sequential per index; each rebuild atomically replaces its own file.
+     * Rebuilds every index of the table from current data, including PK,
+     * and stamps the current index format. Sequential per index; each
+     * rebuild atomically replaces its own file.
      */
     public function rebuildAllIndexes(string $tableName): void
     {
@@ -881,10 +908,7 @@ final class JsonDataProvider
             [$tableName => 'ex'],
             'sh',
             function () use ($tableName): void {
-                $tableSchema = $this->schema->getTable($tableName);
-                $records = $this->readAllForWrite($tableName);
-
-                $this->indexManager->rebuild($tableSchema, $records);
+                $this->rebuildAllStamped($this->schema->getTable($tableName));
             },
         );
     }
@@ -1044,6 +1068,17 @@ final class JsonDataProvider
      * index lookup and the row reads — the pair is always coherent. The SH
      * section covers only the I/O and is released before decoding.
      *
+     * The index is used only when trusted (indexTrustworthy: committed
+     * byteSize matches the data file, indexFormat >= 2); an untrusted
+     * index silently degrades to a full scan, structural corruption of a
+     * trusted index throws INDEX_UNRELIABLE. An empty index result is
+     * authoritative only after that validation.
+     *
+     * Result pipeline invariant: filter -> sort -> distinct ->
+     * array_slice(offset, limit) -> decodeRecord. Index-side pagination is
+     * an optimization allowed only when it cannot change this outcome
+     * (matching ordering index, no distinct).
+     *
      * @param array<int,FilterCondition> $conditions
      * @param array<int,OrderBy>         $ordering
      * @param array<int,string>          $distinctFields
@@ -1075,7 +1110,14 @@ final class JsonDataProvider
              * and the index re-resolved under the SH lock, so a concurrent
              * DDL that dropped or replaced the index degrades this read to
              * a full scan instead of failing on a missing index file. Null
-             * from the closure signals that fallback.
+             * from the closure signals that fallback — an untrusted index
+             * (stale byteSize, pre-v2 format) degrades the same way, while
+             * structural corruption of a v2 index throws INDEX_UNRELIABLE.
+             *
+             * With distinct fields the index may only order and filter:
+             * pagination must happen after dedup, so limit/offset are never
+             * pushed into the index path (invariant shared with
+             * q-distinct-pagination — degradation must not bring it back).
              *
              * @var null|array<int,array<string,null|scalar>> $records
              */
@@ -1088,6 +1130,7 @@ final class JsonDataProvider
                     $ordering,
                     $limit,
                     $offset,
+                    $distinctFields,
                     &$appliedPagination,
                 ): array | null {
                     $freshSchema = $this->schema->getTable($tableName);
@@ -1104,6 +1147,8 @@ final class JsonDataProvider
                     if (
                         $ordering !== []
                         && $freshIndex->matchesOrdering($ordering)
+                        && $this->orderingIndexable($freshSchema, $ordering)
+                        && $distinctFields === []
                     ) {
                         $appliedPagination = true;
 
@@ -1130,19 +1175,11 @@ final class JsonDataProvider
         }
 
         if ($records === null) {
-            $records = $this->readAllRaw($tableName);
-            $paginatedByIndex = false;
-
-            if ($conditions !== []) {
-                $records = array_values(array_filter(
-                    $records,
-                    fn (array $r): bool => $this->matchesAll($r, $conditions),
-                ));
-            }
-
-            if ($ordering !== []) {
-                $this->sortByOrdering($records, $ordering);
-            }
+            $records = $this->selectFullScan(
+                $tableName,
+                $conditions,
+                $ordering,
+            );
         }
 
         if ($distinctFields !== []) {
@@ -1164,7 +1201,6 @@ final class JsonDataProvider
             }
 
             $records = $deduped;
-            $paginatedByIndex = false;
         }
 
         if (!$paginatedByIndex && ($offset > 0 || $limit !== null)) {
@@ -1212,6 +1248,24 @@ final class JsonDataProvider
     public function invalidateCache(string $tableName): void
     {
         $this->cache->invalidate($this->cacheKey($tableName));
+    }
+
+    /**
+     * Rebuilds every index of the table with the current encoder and
+     * stamps indexFormat 2. A single-index rebuild on a pre-v2 table
+     * escalates here: rebuilding one file in the new format while the
+     * rest stay v1 would poison the per-table format marker. Requires
+     * the table EX lock.
+     */
+    private function rebuildAllStamped(TableSchema $tableSchema): void
+    {
+        $records = $this->readAllForWrite($tableSchema->name);
+
+        $this->indexManager->rebuild($tableSchema, $records);
+
+        if ($this->meta->getIndexFormat($tableSchema->name) < 2) {
+            $this->meta->stampIndexFormat($tableSchema->name, 2);
+        }
     }
 
     /**
@@ -1629,6 +1683,16 @@ final class JsonDataProvider
         );
 
         if (!$metaInitialized && $expected === $actual) {
+            if ($this->meta->getIndexFormat($tableSchema->name) >= 2) {
+                return;
+            }
+
+            $this->indexManager->rebuild(
+                $tableSchema,
+                $this->readAllForWrite($tableSchema->name),
+            );
+            $this->meta->stampIndexFormat($tableSchema->name, 2);
+
             return;
         }
 
@@ -1686,11 +1750,24 @@ final class JsonDataProvider
         );
         $this->indexManager->rebuild($tableSchema, $records);
         $this->meta->commitRewrite($tableName, \count($records), $byteSize);
+
+        if ($this->meta->getIndexFormat($tableName) < 2) {
+            $this->meta->stampIndexFormat($tableName, 2);
+        }
+
         $this->cache->set($this->cacheKey($tableName), $records);
     }
 
     /**
-     * Selects records using an index.
+     * Selects records using an index, or returns null to degrade to a
+     * full scan.
+     *
+     * The trust gate runs first: a stale index (committed byteSize differs
+     * from the data file) or a pre-v2 format returns null silently — the
+     * next write under the table EX lock rebuilds and stamps it. A trusted
+     * (v2) index is then read with full structural validation; corruption
+     * throws INDEX_UNRELIABLE rather than serving wrong rows.
+     *
      * Ordering-index: reads lines in index order, then applies conditions.
      * Filter-index: reads only the lines found via index search, then
      * applies all conditions.
@@ -1698,7 +1775,7 @@ final class JsonDataProvider
      * @param array<int,FilterCondition> $conditions
      * @param array<int,OrderBy>         $ordering
      *
-     * @return array<int,array<string,null|scalar>>
+     * @return null|array<int,array<string,null|scalar>>
      */
     private function selectViaIndex(
         IndexSchema $index,
@@ -1707,12 +1784,27 @@ final class JsonDataProvider
         array $ordering,
         int | null $limit = null,
         int $offset = 0,
-    ): array {
-        if ($ordering !== [] && $index->matchesOrdering($ordering)) {
-            $entries = $this->indexManager->readIndex(
-                $tableSchema->name,
-                $index,
-            );
+    ): array | null {
+        if (!$this->indexTrustworthy($tableSchema)) {
+            return null;
+        }
+
+        $entries = $this->indexManager->readIndexValidated(
+            $tableSchema->name,
+            $index,
+            $this->meta->getLineCount($tableSchema->name),
+            true,
+        );
+
+        if ($entries === null) {
+            return null;
+        }
+
+        if (
+            $ordering !== []
+            && $index->matchesOrdering($ordering)
+            && $this->orderingIndexable($tableSchema, $ordering)
+        ) {
             $lineNumbers = array_column($entries, 'line');
 
             if ($conditions === []) {
@@ -1720,7 +1812,7 @@ final class JsonDataProvider
                     $lineNumbers = \array_slice($lineNumbers, $offset, $limit);
                 }
 
-                return $this->values->widenFloats(
+                $records = $this->values->widenFloats(
                     $tableSchema,
                     $this->ndjson->readLines(
                         $tableSchema->name,
@@ -1728,6 +1820,16 @@ final class JsonDataProvider
                         $lineNumbers,
                     ),
                 );
+
+                if (\count($records) !== \count($lineNumbers)) {
+                    throw StorageException::indexUnreliable(
+                        $tableSchema->name,
+                        $index->name,
+                        'indexed lines are missing from the data file',
+                    );
+                }
+
+                return $records;
             }
 
             return $this->readFilteredPaginated(
@@ -1742,8 +1844,13 @@ final class JsonDataProvider
         $lineNumbers = null;
 
         foreach ($conditions as $condition) {
+            if (!$this->conditionIndexServable($tableSchema, $condition)) {
+                continue;
+            }
+
             $lines = $this->indexManager->searchLines(
-                $tableSchema->name,
+                $tableSchema,
+                $entries,
                 $index,
                 $condition,
             );
@@ -1752,6 +1859,10 @@ final class JsonDataProvider
                 $lineNumbers = $lines;
                 break;
             }
+        }
+
+        if ($lineNumbers !== null) {
+            sort($lineNumbers);
         }
 
         $records = $this->values->widenFloats(
@@ -1780,6 +1891,72 @@ final class JsonDataProvider
         }
 
         return $records;
+    }
+
+    /**
+     * Lock-free full scan: reads all records (via cache), filters and
+     * sorts. The fallback for every query an index cannot serve.
+     *
+     * @param array<int,FilterCondition> $conditions
+     * @param array<int,OrderBy>         $ordering
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    private function selectFullScan(
+        string $tableName,
+        array $conditions,
+        array $ordering,
+    ): array {
+        $records = $this->readAllRaw($tableName);
+
+        if ($conditions !== []) {
+            $records = array_values(array_filter(
+                $records,
+                fn (array $r): bool => $this->matchesAll($r, $conditions),
+            ));
+        }
+
+        if ($ordering !== []) {
+            $this->sortByOrdering($records, $ordering);
+        }
+
+        return $records;
+    }
+
+    /**
+     * O(1) read-side trust gate for the table's indexes: they are used
+     * only when the committed byteSize matches the actual data file (the
+     * indexes describe exactly the committed state) and the on-disk key
+     * format is current. Any doubt — missing meta, unknown byteSize,
+     * foreign append, legacy format — degrades reads to a full scan; the
+     * next write heals and stamps under the table EX lock.
+     */
+    private function indexTrustworthy(TableSchema $tableSchema): bool
+    {
+        try {
+            $byteSize = $this->meta->getByteSize($tableSchema->name);
+            $format = $this->meta->getIndexFormat($tableSchema->name);
+        } catch (StorageException) {
+            return false;
+        }
+
+        if ($format < 2 || $byteSize === null) {
+            return false;
+        }
+
+        if (
+            !$this->ndjson->exists(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            )
+        ) {
+            return false;
+        }
+
+        return $byteSize === $this->ndjson->fileSizeBytes(
+            $tableSchema->name,
+            $tableSchema->getFileName(),
+        );
     }
 
     /**
@@ -2016,6 +2193,15 @@ final class JsonDataProvider
     }
 
     /**
+     * Picks an index for the query: first one matching the requested
+     * ordering, then one whose first field is filtered by an indexable
+     * condition.
+     *
+     * In Locale comparison mode the byte-ordered index disagrees with the
+     * collator, so string columns are excluded from index-driven ordering
+     * and ranges; string EQ/IN stay indexable (equality is byte-exact in
+     * both modes).
+     *
      * @param array<int,OrderBy>         $ordering
      * @param array<int,FilterCondition> $conditions
      */
@@ -2028,7 +2214,10 @@ final class JsonDataProvider
             return null;
         }
 
-        if ($ordering !== []) {
+        if (
+            $ordering !== []
+            && $this->orderingIndexable($tableSchema, $ordering)
+        ) {
             foreach ($tableSchema->indexes as $index) {
                 if ($index->matchesOrdering($ordering)) {
                     return $index;
@@ -2037,10 +2226,7 @@ final class JsonDataProvider
         }
 
         foreach ($conditions as $condition) {
-            if (
-                $condition->not
-                || $condition->operator === FilterOperatorEnum::LIKE
-            ) {
+            if (!$this->conditionIndexServable($tableSchema, $condition)) {
                 continue;
             }
 
@@ -2057,6 +2243,116 @@ final class JsonDataProvider
         }
 
         return null;
+    }
+
+    /**
+     * Whether an index may serve this condition. Equality (EQ/IN) always
+     * qualifies — the strict `===` post-filter corrects any key-space
+     * nuance. Range operators qualify only when the column's value order
+     * provably matches the index key order: known typed columns in Binary
+     * mode; string columns are excluded in Locale mode (collator vs byte
+     * order) and passthrough columns always (their cross-type comparator
+     * order differs from the key tag order).
+     */
+    private function conditionIndexServable(
+        TableSchema $tableSchema,
+        FilterCondition $condition,
+    ): bool {
+        if (
+            $condition->not
+            || $condition->operator === FilterOperatorEnum::LIKE
+        ) {
+            return false;
+        }
+
+        if (
+            $condition->operator === FilterOperatorEnum::EQ
+            || $condition->operator === FilterOperatorEnum::IN
+        ) {
+            return true;
+        }
+
+        if (!$this->rangeIndexableColumn($tableSchema, $condition->field)) {
+            return false;
+        }
+
+        return $this->comparisonMode !== ComparisonMode::Locale
+            || !$this->isStringColumn($tableSchema, $condition->field);
+    }
+
+    /**
+     * Ordering may ride an index only when every ordered column's value
+     * order matches the key order — same rule as range conditions.
+     *
+     * @param array<int,OrderBy> $ordering
+     */
+    private function orderingIndexable(
+        TableSchema $tableSchema,
+        array $ordering,
+    ): bool {
+        foreach ($ordering as $order) {
+            if (!$this->rangeIndexableColumn($tableSchema, $order->field)) {
+                return false;
+            }
+
+            if (
+                $this->comparisonMode === ComparisonMode::Locale
+                && $this->isStringColumn($tableSchema, $order->field)
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * A column whose engine value order provably matches the v2 key
+     * order: the known scalar types and the temporal types (stored as
+     * canonical strings whose strcmp order is chronological). Unknown
+     * (passthrough) types can hold mixed scalars whose comparator order
+     * differs from the key tag order — ranges and ordering over them
+     * never trust an index.
+     */
+    private function rangeIndexableColumn(
+        TableSchema $tableSchema,
+        string $field,
+    ): bool {
+        $type = $tableSchema->columns[$field] ?? null;
+
+        if ($type === null) {
+            return false;
+        }
+
+        $info = ColumnTypeInfo::parse($type);
+
+        if ($info->temporalKind() !== null) {
+            return true;
+        }
+
+        return match ($info->base) {
+            ColumnTypes::STRING,
+            ColumnTypes::INT,
+            ColumnTypes::FLOAT,
+            ColumnTypes::BOOL,
+            ColumnTypes::YEAR,
+            ColumnTypes::MONTH,
+            ColumnTypes::DAY => true,
+            default          => false,
+        };
+    }
+
+    private function isStringColumn(
+        TableSchema $tableSchema,
+        string $field,
+    ): bool {
+        $type = $tableSchema->columns[$field] ?? null;
+
+        if ($type === null) {
+            return false;
+        }
+
+        return ColumnTypeInfo::parse($type)->base === ColumnTypes::STRING;
     }
 
     /**
@@ -2232,7 +2528,7 @@ final class JsonDataProvider
     private function matchesAll(array $record, array $conditions): bool
     {
         foreach ($conditions as $condition) {
-            if (!$condition->matches($record)) {
+            if (!$condition->matches($record, $this->comparisonMode)) {
                 return false;
             }
         }
@@ -2244,27 +2540,7 @@ final class JsonDataProvider
         bool | float | int | string | null $a,
         bool | float | int | string | null $b,
     ): int {
-        if ($a === $b) {
-            return 0;
-        }
-
-        if ($a === null) {
-            return -1;
-        }
-
-        if ($b === null) {
-            return 1;
-        }
-
-        if (\is_string($a) && \is_string($b)) {
-            return strcmp($a, $b);
-        }
-
-        if ((\is_int($a) || \is_float($a)) && (\is_int($b) || \is_float($b))) {
-            return $a <=> $b;
-        }
-
-        return strcmp((string)$a, (string)$b);
+        return ValueComparator::compare($a, $b, $this->comparisonMode);
     }
 
     private function cacheKey(string $tableName): string
@@ -2281,6 +2557,7 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->json,
                 $this->indexManager,
+                $this->values,
             );
         }
 
@@ -2327,6 +2604,7 @@ final class JsonDataProvider
                 $this->meta,
                 $this->ndjson,
                 $this->indexManager,
+                $this->values,
             );
         }
 

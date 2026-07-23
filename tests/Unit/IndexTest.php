@@ -10,6 +10,7 @@ use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
+use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Tests\Support\Fixture;
 use Testo\Assert;
@@ -316,7 +317,19 @@ final class IndexTest
             4,
         );
 
-        $lines = $manager->searchLines('products', $indexSchema, $condition);
+        $tableSchema = TableSchema::create(
+            name: 'products',
+            uniqueConstraints: [],
+            columns: ['id' => 'int', 'category_id' => 'int'],
+            indexes: [$indexSchema],
+        );
+        $entries = $manager->readIndex('products', $indexSchema);
+        $lines = $manager->searchLines(
+            $tableSchema,
+            $entries,
+            $indexSchema,
+            $condition,
+        );
 
         Assert::notNull($lines);
         Assert::count($lines, 10);

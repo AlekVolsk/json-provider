@@ -16,6 +16,8 @@ enum IssueCategory: string
     case INDEX_FILE_MISSING = 'index_file_missing';
     case INDEX_FILE_CORRUPT = 'index_file_corrupt';
     case INDEX_DRIFT = 'index_drift';
+    case INDEX_UNRELIABLE = 'index_unreliable';
+    case INDEX_FORMAT_OUTDATED = 'index_format_outdated';
     case ORPHAN_INDEX_FILE = 'orphan_index_file';
     case ORPHAN_DB_ENTRY = 'orphan_db_entry';
     case RECORD_KEY_ORDER = 'record_key_order';

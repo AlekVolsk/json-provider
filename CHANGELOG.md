@@ -6,6 +6,42 @@ API changes an integrator must know when updating.
 
 ## Unreleased
 
+### Index format v2
+
+- Index keys use a new prefix-free typed encoding: numbers of equal value
+  share one key (`key(99) === key(99.0)`; beyond `2^53` numeric range
+  bounds select a superset trimmed by the exact post-filter), strings are
+  not truncated, composite keys are injective, `DESC` ranges are mirrored
+  correctly. The
+  format is versioned per table via `indexFormat` in `meta.json`; tables
+  without the marker are treated as legacy. No forced migration: legacy
+  tables are read via full scans, the first write (or `rebuildAllIndexes()`,
+  `repairTable()`, `optimizeTable()`, `restore()`) rebuilds the indexes and
+  stamps the format. Roll back to an older package version only after
+  running `rebuildAllIndexes()` with that older version.
+- A structurally corrupt v2 index now raises `INDEX_UNRELIABLE` instead of
+  silently serving (or dropping) rows; a merely stale index (foreign
+  append, byteSize desync) silently degrades to a full scan. `validate()`
+  reports these as `index_unreliable` (error) and `index_format_outdated`
+  (info); `repair()` rebuilds and stamps.
+- Index range/EQ/IN lookups are binary searches over the sorted entries.
+- `IndexManager::searchLines()` signature changed (takes the table schema
+  and pre-validated entries); `readIndexValidated()` and `eqExists()` are
+  new. `rebuildIndex()` on a legacy-format table escalates to rebuilding
+  all indexes of the table.
+
+### Query semantics
+
+- String ordering comparisons (`>`, `>=`, `<`, `<=`, `BETWEEN`, `ORDER BY`)
+  are bytewise (strcmp) — previously PHP loose comparison could coerce
+  numeric strings (`'9' < '10'`); now `'10' < '9'`, consistently across
+  full scans, ORDER BY and indexes. Natural-language ordering is available
+  via `setComparisonMode(ComparisonMode::Locale)` (ext-intl; order only,
+  equality stays exact).
+- With `isDistinct()`, `limit`/`offset` are never pushed into the index
+  path: pagination applies after deduplication (previously a page could be
+  sliced twice).
+
 ### Storage format
 
 - Float columns now keep their zero fraction on disk: `99.0` is written as

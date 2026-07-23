@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Services\Integrity;
 
+use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
@@ -12,6 +13,7 @@ use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Validation\ValueValidator;
 
 /**
  * Read-only consistency validator.
@@ -48,6 +50,7 @@ final class IntegrityValidator
         private readonly NdjsonStorage $ndjson,
         private readonly JsonStorage $json,
         private readonly IndexManager $indexManager,
+        private readonly ValueValidator $values,
     ) {}
 
     /**
@@ -113,7 +116,10 @@ final class IntegrityValidator
             return $issues;
         }
 
-        $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+        );
 
         foreach ($this->checkRecordKeyOrder($tableSchema, $records) as $i) {
             $issues[] = $i;
@@ -176,6 +182,18 @@ final class IntegrityValidator
     ): array {
         $issues = [];
         $maxLine = \count($records) - 1;
+        $formatCurrent = $this->indexFormatCurrent($tableSchema->name);
+
+        if (!$formatCurrent && $tableSchema->indexes !== []) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::INFO,
+                IssueCategory::INDEX_FORMAT_OUTDATED,
+                $tableSchema->name,
+                'index files use a pre-v2 key format; readers fall back '
+                    . 'to full scans until the next write (or repair) '
+                    . 'rebuilds and stamps them',
+            );
+        }
 
         foreach ($tableSchema->indexes as $index) {
             $fileName = $index->getFileName();
@@ -224,6 +242,8 @@ final class IntegrityValidator
                 continue;
             }
 
+            $dangling = false;
+
             foreach ($entries as $entry) {
                 if ($entry['line'] < 0 || $entry['line'] > $maxLine) {
                     $issues[] = new IntegrityIssue(
@@ -235,14 +255,51 @@ final class IntegrityValidator
                             . $entry['line'],
                         context: ['index' => $index->name],
                     );
+                    $dangling = true;
+
                     break;
                 }
             }
 
+            if ($dangling) {
+                continue;
+            }
+
+            $coverageIssue = $this->checkIndexCoverage(
+                $tableSchema->name,
+                $index->name,
+                $entries,
+                \count($records),
+            );
+
+            if ($coverageIssue !== null) {
+                $issues[] = $coverageIssue;
+
+                continue;
+            }
+
+            if (!$formatCurrent) {
+                continue;
+            }
+
             $expectedKeys = [];
 
-            foreach ($records as $line => $record) {
-                $expectedKeys[$line] = IndexKey::build($record, $index);
+            try {
+                foreach ($records as $line => $record) {
+                    $expectedKeys[$line] = IndexKey::build($record, $index);
+                }
+            } catch (StorageException $e) {
+                $issues[] = new IntegrityIssue(
+                    IssueSeverity::ERROR,
+                    IssueCategory::INDEX_DRIFT,
+                    $tableSchema->name,
+                    'index "' . $index->name . '" cannot be verified: '
+                        . 'a record holds a non-indexable value ('
+                        . $e->getMessage() . ')',
+                    context: ['index' => $index->name],
+                );
+
+                continue;
             }
 
             foreach ($entries as $entry) {
@@ -267,6 +324,61 @@ final class IntegrityValidator
         }
 
         return $issues;
+    }
+
+    /**
+     * Permutation check shared in definition with the select-path
+     * validation (readIndexValidated) and the FK backing-index probe:
+     * every data line must be covered by exactly one index entry. A miss
+     * or a duplicate makes the index structurally unreliable.
+     *
+     * @param array<int,array{key:string,line:int}> $entries
+     */
+    private function checkIndexCoverage(
+        string $tableName,
+        string $indexName,
+        array $entries,
+        int $lineCount,
+    ): IntegrityIssue | null {
+        $covered = array_fill(0, max(1, $lineCount), 0);
+
+        foreach ($entries as $entry) {
+            $covered[$entry['line']]++;
+        }
+
+        for ($line = 0; $line < $lineCount; $line++) {
+            if ($covered[$line] !== 1) {
+                return new IntegrityIssue(
+                    IssueSeverity::ERROR,
+                    IssueCategory::INDEX_UNRELIABLE,
+                    $tableName,
+                    \sprintf(
+                        'index "%s": line %d covered by %d entries '
+                            . '(expected exactly 1)',
+                        $indexName,
+                        $line,
+                        $covered[$line],
+                    ),
+                    context: ['index' => $indexName],
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the table's committed index format is current (v2). A
+     * missing meta entry reads as outdated — the meta checks report it
+     * separately.
+     */
+    private function indexFormatCurrent(string $tableName): bool
+    {
+        try {
+            return $this->meta->getIndexFormat($tableName) >= 2;
+        } catch (StorageException) {
+            return false;
+        }
     }
 
     /**

@@ -141,6 +141,10 @@ final class IntegrityRepairer
         $this->indexManager->rebuild($tableSchema, $records);
         $this->meta->commitRewrite($tableName, \count($records), $byteSize);
 
+        if ($this->meta->getIndexFormat($tableName) < 2) {
+            $this->meta->stampIndexFormat($tableName, 2);
+        }
+
         return new IntegrityIssue(
             IssueSeverity::INFO,
             IssueCategory::TABLE_OPTIMIZED,
@@ -173,7 +177,11 @@ final class IntegrityRepairer
             return match ($issue->category) {
                 IssueCategory::INDEX_FILE_MISSING,
                 IssueCategory::INDEX_FILE_CORRUPT,
-                IssueCategory::INDEX_DRIFT       => $this->repairIndex($issue),
+                IssueCategory::INDEX_UNRELIABLE,
+                IssueCategory::INDEX_DRIFT => $this
+                    ->repairIndex($issue),
+                IssueCategory::INDEX_FORMAT_OUTDATED => $this
+                    ->repairIndexFormat($issue),
                 IssueCategory::ORPHAN_INDEX_FILE => $this
                     ->repairOrphanIndexFile($issue),
                 IssueCategory::RECORD_KEY_ORDER => $this
@@ -207,16 +215,57 @@ final class IntegrityRepairer
         }
 
         $tableSchema = $this->schema->getTable($tableName);
+
+        if ($this->meta->getIndexFormat($tableName) < 2) {
+            $this->rebuildAllAndStamp($tableSchema);
+
+            return $issue->withRepaired();
+        }
+
         $indexSchema = $this->indexManager->findIndex($tableSchema, $indexName);
 
         if (!$this->ndjson->exists($tableName, $indexSchema->getFileName())) {
             $this->ndjson->createFile($tableName, $indexSchema->getFileName());
         }
 
-        $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+        );
         $this->indexManager->rebuildOne($tableName, $indexSchema, $records);
 
         return $issue->withRepaired();
+    }
+
+    /**
+     * Pre-v2 index format: every index of the table is rebuilt with the
+     * current encoder in one pass, then the format is stamped. Rebuilding
+     * a single file would leave the rest v1 under a v2 marker.
+     */
+    private function repairIndexFormat(IntegrityIssue $issue): IntegrityIssue
+    {
+        $tableName = (string)$issue->tableName;
+
+        $this->rebuildAllAndStamp($this->schema->getTable($tableName));
+
+        return $issue->withRepaired();
+    }
+
+    private function rebuildAllAndStamp(TableSchema $tableSchema): void
+    {
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            ),
+        );
+
+        $this->indexManager->rebuild($tableSchema, $records);
+
+        if ($this->meta->getIndexFormat($tableSchema->name) < 2) {
+            $this->meta->stampIndexFormat($tableSchema->name, 2);
+        }
     }
 
     private function repairOrphanIndexFile(

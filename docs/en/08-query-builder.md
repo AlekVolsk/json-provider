@@ -51,6 +51,12 @@ $cats  = $db->table('products')
 
 Multiple `where()` calls are joined with **AND**. The provider does not support `OR` directly — express `OR` by issuing separate queries or by broadening the data shape.
 
+## String comparison mode
+
+The ordering operators (`>`, `>=`, `<`, `<=`, `BETWEEN`) and `orderBy` compare string pairs **bytewise** by default (`ComparisonMode::Binary`): `'10' < '9'`, numeric strings are not coerced, and the order matches the byte order of indexes — a range, a sort and the index path give one answer. Numbers compare numerically; `null` sorts first; `=`/`IN` stay strict `===` always.
+
+`$db->setComparisonMode(ComparisonMode::Locale)` switches string pairs to the ext-intl collator (natural-language order). The mode affects **order only**: `=`/`IN`/`LIKE` remain exact and indexable, while ordering/ranges over string columns stop using indexes (the byte-ordered index disagrees with the collator) and run as full scans. Without ext-intl, `Locale` silently behaves as `Binary`; the dependency is declared in composer `suggest`.
+
 ## Ordering
 
 ```php

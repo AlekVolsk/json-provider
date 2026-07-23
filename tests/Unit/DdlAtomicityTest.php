@@ -63,6 +63,7 @@ final class DdlAtomicityTest
             'lastInsertedId' => 0,
             'lineCount'      => 0,
             'byteSize'       => 0,
+            'indexFormat'    => 2,
         ]);
 
         $id = $this->db->insert('users', ['name' => 'first']);

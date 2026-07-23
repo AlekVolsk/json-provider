@@ -45,6 +45,10 @@ enum LangEnEnum: string implements LocaleInterface
     case REORDER_COLUMNS_INCOMPLETE = 'reorderColumns for table "%s": '
         . 'missing column(s) "%s"';
     case INDEX_NOT_FOUND = 'Table "%s" has no index named "%s"';
+    case INDEX_UNRELIABLE = 'Index "%s" on table "%s" is structurally '
+        . 'corrupt and cannot be trusted: %s';
+    case INDEX_KEY_NON_FINITE = 'Index key for field "%s": NAN and INF '
+        . 'are not indexable';
     case MIGRATE_COLUMN_TYPE_CHANGE = 'migrateColumns for table "%s": column '
         . '"%s" type change (%s -> %s) is not supported; migrate the data '
         . 'separately';

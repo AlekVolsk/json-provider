@@ -113,3 +113,15 @@ foreach ((new InitialMigration())->tables() as $schema) {
 ```
 
 Later migrations rarely just create tables. To evolve or remove an existing one — add/drop/reorder columns, or drop the table outright — see [Schema mutations](12-schema-mutations.md); `hasTable()` / `columnNames()` help keep such steps idempotent.
+
+## Upgrading the index format
+
+The index key format is versioned per table (`indexFormat` in `meta.json`, see [Indexes](06-indexes.md)). No active migration is required after a package update: tables with the old format are read via full scans, and the first write into a table rebuilds its indexes and stamps the new format. To force-upgrade the whole database, run once:
+
+```php
+foreach ($db->tableNames() as $table) {
+    $db->table($table)->rebuildAllIndexes();
+}
+```
+
+Rolling back to a package version with the old format is safe only after the same `rebuildAllIndexes()` pass executed by that old version.

@@ -28,13 +28,19 @@ final class FilterCondition
      *
      * @param array<string,null|scalar> $record
      */
-    public function matches(array $record): bool
-    {
+    public function matches(
+        array $record,
+        ComparisonMode $mode = ComparisonMode::Binary,
+    ): bool {
         if (!\array_key_exists($this->field, $record)) {
             return $this->not;
         }
 
-        $result = $this->operator->matches($record[$this->field], $this->value);
+        $result = $this->operator->matches(
+            $record[$this->field],
+            $this->value,
+            $mode,
+        );
 
         return $this->not ? !$result : $result;
     }

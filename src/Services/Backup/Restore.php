@@ -10,6 +10,7 @@ use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Validation\ValueValidator;
 
 /**
  * Restores DB state from a .tar.gz archive produced by Backup::export.
@@ -36,6 +37,7 @@ final class Restore
         private readonly MetaRegistry $meta,
         private readonly NdjsonStorage $ndjson,
         private readonly IndexManager $indexManager,
+        private readonly ValueValidator $values,
     ) {}
 
     /**
@@ -207,7 +209,10 @@ final class Restore
                 );
             }
 
-            $records = $this->parseAndNormalize($raw, $tableSchema);
+            $records = $this->values->widenFloats(
+                $tableSchema,
+                $this->parseAndNormalize($raw, $tableSchema),
+            );
 
             $byteSize = $this->ndjson->writeRaw(
                 $tableName,
@@ -222,6 +227,7 @@ final class Restore
 
             $this->meta->setLastInsertedId($tableName, $this->maxId($records));
             $this->meta->commitRewrite($tableName, \count($records), $byteSize);
+            $this->meta->stampIndexFormat($tableName, 2);
         }
     }
 

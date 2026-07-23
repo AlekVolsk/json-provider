@@ -253,6 +253,19 @@ class StorageException extends JsonProviderException
         return new self('NON_FINITE_FLOAT', $table, $column);
     }
 
+    public static function indexKeyNonFinite(string $field): self
+    {
+        return new self('INDEX_KEY_NON_FINITE', $field);
+    }
+
+    public static function indexUnreliable(
+        string $table,
+        string $indexName,
+        string $reason,
+    ): self {
+        return new self('INDEX_UNRELIABLE', $indexName, $table, $reason);
+    }
+
     public static function invalidUtf8(string $table, string $column): self
     {
         return new self('INVALID_UTF8', $table, $column);

@@ -18,6 +18,7 @@
     },
     "suggest": {
         "ext-apcu": "Enables the APCu cache adapter (ApcuCache)",
+        "ext-intl": "Enables ComparisonMode::Locale (collator string ordering)",
         "ext-memcached": "Enables the Memcached cache adapter (MemcachedCache)",
         "ext-redis": "Enables the Redis cache adapter (RedisCache)"
     },
