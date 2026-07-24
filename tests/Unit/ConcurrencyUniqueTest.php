@@ -9,6 +9,7 @@ use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Tests\Support\CacheKeys;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -111,9 +112,13 @@ final class ConcurrencyUniqueTest
         $this->db->insert(self::TABLE, ['code' => 'seed']);
         $this->db->table(self::TABLE)->selectAllByArray();
 
+        // The key of the WARMED state: the external insert below moves
+        // the version tag, so the stale entry stays only under this one.
+        $warmedKey = CacheKeys::current($this->dbDir, self::TABLE);
+
         $this->insertExternally('dup');
 
-        $cached = $this->cache->get('table:' . self::TABLE);
+        $cached = $this->cache->get($warmedKey);
         Assert::notNull($cached);
         Assert::count($cached, 1, 'the cache must still be stale');
 

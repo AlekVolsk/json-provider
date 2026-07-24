@@ -7,26 +7,43 @@ namespace AV\JsonProvider\Services\Integrity;
 /**
  * The output of IntegrityValidator / IntegrityRepairer.
  *
- * Contains a typed list of issues plus aggregate counters. The format() method
- * produces a human-readable plain-text report (English, technical,
- * fixed-width).
+ * Contains a typed list of issues plus aggregate counters. Issues are
+ * ordered critical-first by IssueSeverity::rank() (emission order is kept
+ * within one severity). The format() method produces a human-readable
+ * plain-text report (English, technical, fixed-width).
  */
 final class IntegrityReport
 {
+    /** @var array<int,IntegrityIssue> */
+    public readonly array $issues;
+
     /**
      * @param array<int,IntegrityIssue> $issues
      */
     public function __construct(
-        public readonly array $issues,
+        array $issues,
         public readonly int $tablesChecked,
         public readonly int $tablesRepaired,
         public readonly float $durationSeconds,
-    ) {}
+    ) {
+        usort(
+            $issues,
+            static fn (IntegrityIssue $a, IntegrityIssue $b): int => $a
+                ->severity->rank() <=> $b->severity->rank(),
+        );
+        $this->issues = $issues;
+    }
 
+    /**
+     * Whether the report holds any issue of ERROR severity or worse
+     * (CRITICAL counts as an error).
+     */
     public function hasErrors(): bool
     {
         foreach ($this->issues as $issue) {
-            if ($issue->severity === IssueSeverity::ERROR) {
+            if (
+                $issue->severity->rank() <= IssueSeverity::ERROR->rank()
+            ) {
                 return true;
             }
         }

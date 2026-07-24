@@ -37,3 +37,11 @@ $db = JsonDataProvider::getInstance('/var/data/myapp', new ApcuCache(ttl: 60));
 ```
 
 См. [Кеширование](16-caching.md).
+
+## Передать PSR-3-логгер
+
+```php
+$db = JsonDataProvider::getInstance('/var/data/myapp', $cache, $psrLogger);
+```
+
+Логгер опционален. Провайдер пишет в него находки валидатора и рантайм-деградации по единой шкале severity — см. [Целостность](14-integrity.md). Оба параметра (`$cache`, `$logger`) применяются только при создании инстанса: живой сингтон сохраняет те, с которыми был создан.

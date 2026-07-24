@@ -22,5 +22,5 @@ final class NullCache implements CacheInterface
 
     public function invalidate(string $_key): void {}
 
-    public function flush(): void {}
+    public function flushDb(string $_keyPrefix): void {}
 }

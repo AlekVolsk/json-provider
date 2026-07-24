@@ -24,10 +24,12 @@ $db->table('products')->optimizeTable();
 A heavy-weight maintenance pass:
 
 1. read all records,
-2. normalize each one against the schema (key order, drop unknowns, null-fill missing),
+2. normalize each one against the schema (key order, drop unknowns, typed defaults for missing columns — `''`/`0`/`0.0`/`false`, `null` for nullable),
 3. sort records by `id` ASC,
 4. rewrite the data file,
 5. rebuild every index from the rewritten data,
 6. update `meta.lineCount` to the actual row count.
 
 Use it occasionally — after long delete-heavy sessions, or right before a backup, to keep the on-disk layout tidy. The provider's normal runtime does not require it.
+
+When the file holds unparseable NDJSON lines, `optimizeTable()` refuses to rewrite it (the rewrite would silently destroy them): resolve the lines `validate()` reports as `broken_record` findings first — see [Integrity](14-integrity.md).

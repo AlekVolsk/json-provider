@@ -46,9 +46,15 @@ use AV\JsonProvider\Validation\ValueValidator;
  *      and the meta entry — the createTable crash window; lost data is not
  *      invented.
  *
+ * Report-only categories (BROKEN_RECORD, PRESENT_NULL, FK_ORPHAN,
+ * UNIQUE_DUPLICATE) are returned untouched: repair fixes STRUCTURES, not
+ * data — it never quarantines, rewrites or deletes user records to make a
+ * finding go away.
+ *
  * After per-issue repair, an explicit "table optimize" pass is run for every
  * touched table (sort records by id ASC + rebuild every index), recorded as
- * a TABLE_OPTIMIZED info issue per table.
+ * a TABLE_OPTIMIZED info issue per table. The pass refuses tables holding
+ * unparseable lines (the rewrite would silently drop them).
  *
  * The repairer reads machine-readable data from IntegrityIssue::$context;
  * it does not parse the human-readable $message.
@@ -152,14 +158,36 @@ final class IntegrityRepairer
      * rewrite, so the pass also migrates legacy int-encoded float values
      * ("price":99) into the canonical zero-fraction form ("price":99.0).
      *
-     * Returns an INFO issue describing the result (TABLE_OPTIMIZED).
+     * DATA PROTECTION: refuses to rewrite a file holding unparseable
+     * lines — a read()+write() roundtrip would silently drop them; they
+     * must be resolved manually first (validate() lists each one as a
+     * broken_record finding).
+     *
+     * Returns an INFO issue describing the result (TABLE_OPTIMIZED), or
+     * an ERROR REPAIR_FAILED issue when the broken-line guard refuses.
      */
     public function optimizeTable(string $tableName): IntegrityIssue
     {
         $tableSchema = $this->schema->getTable($tableName);
+        $rawLines = $this->ndjson->readRawLines(
+            $tableName,
+            $tableSchema->getFileName(),
+        );
+
+        if ($rawLines['broken'] !== []) {
+            return new IntegrityIssue(
+                IssueSeverity::ERROR,
+                IssueCategory::REPAIR_FAILED,
+                $tableName,
+                'table has ' . \count($rawLines['broken'])
+                    . ' unparseable line(s); resolve manually before '
+                    . 'optimize',
+            );
+        }
+
         $records = $this->values->widenFloats(
             $tableSchema,
-            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+            $rawLines['records'],
         );
 
         $records = $this->normalizeAndSort($tableSchema, $records);
@@ -219,6 +247,8 @@ final class IntegrityRepairer
                     ->repairRecordKeyOrder($issue),
                 IssueCategory::META_ENTRY_MISSING => $this
                     ->repairMetaEntryMissing($issue),
+                IssueCategory::META_ENTRY_CORRUPT => $this
+                    ->repairMetaEntryCorrupt($issue),
                 IssueCategory::META_LINE_COUNT_DRIFT => $this
                     ->repairMetaLineCount($issue),
                 IssueCategory::META_LAST_ID_DRIFT => $this
@@ -232,6 +262,10 @@ final class IntegrityRepairer
                 IssueCategory::PK_DUPLICATE => $issue->withRepairError(
                     'duplicate primary keys require manual resolution',
                 ),
+                IssueCategory::BROKEN_RECORD,
+                IssueCategory::PRESENT_NULL,
+                IssueCategory::FK_ORPHAN,
+                IssueCategory::UNIQUE_DUPLICATE  => $issue,
                 IssueCategory::RENAME_INCOMPLETE => $issue->withRepairError(
                     'a pending rename spans two tables and the meta file; '
                         . 'run the database-level repair() to reconcile it',
@@ -555,13 +589,31 @@ final class IntegrityRepairer
         return $issue->withRepaired();
     }
 
+    /**
+     * Rewrites the table with schema-ordered record keys. The same
+     * broken-line guard as optimizeTable protects unparseable lines from
+     * being silently dropped by the read+write roundtrip.
+     */
     private function repairRecordKeyOrder(IntegrityIssue $issue): IntegrityIssue
     {
         $tableName = (string)$issue->tableName;
         $tableSchema = $this->schema->getTable($tableName);
+        $rawLines = $this->ndjson->readRawLines(
+            $tableName,
+            $tableSchema->getFileName(),
+        );
+
+        if ($rawLines['broken'] !== []) {
+            return $issue->withRepairError(
+                'table has ' . \count($rawLines['broken'])
+                    . ' unparseable line(s); resolve manually before '
+                    . 'the key-order rewrite',
+            );
+        }
+
         $records = $this->values->widenFloats(
             $tableSchema,
-            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+            $rawLines['records'],
         );
         $records = array_map(
             fn (array $r): array => $this->normalizeRecord($tableSchema, $r),
@@ -570,6 +622,10 @@ final class IntegrityRepairer
 
         $this->ndjson->write($tableName, $tableSchema->getFileName(), $records);
         $this->indexManager->rebuild($tableSchema, $records);
+
+        if ($this->meta->getIndexFormat($tableName) < 2) {
+            $this->meta->stampIndexFormat($tableName, 2);
+        }
 
         return $issue->withRepaired();
     }
@@ -591,6 +647,19 @@ final class IntegrityRepairer
         $this->meta->commitRewrite($tableName, \count($records), $tail['size']);
 
         return $issue->withRepaired();
+    }
+
+    /**
+     * A corrupt entry is repaired like a missing one — every counter is
+     * derivable from the data — after dropping the broken record first
+     * (initTable refuses to overwrite an existing entry).
+     */
+    private function repairMetaEntryCorrupt(
+        IntegrityIssue $issue,
+    ): IntegrityIssue {
+        $this->meta->dropEntry((string)$issue->tableName);
+
+        return $this->repairMetaEntryMissing($issue);
     }
 
     private function repairMetaLineCount(IntegrityIssue $issue): IntegrityIssue

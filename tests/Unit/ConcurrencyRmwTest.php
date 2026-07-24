@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Cache\InMemoryCache;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\CacheKeys;
 use AV\JsonProvider\Tests\Support\RecordingCache;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -96,9 +97,10 @@ final class ConcurrencyRmwTest
         // survive on disk.
         $this->db->table('items')->selectAllByArray();
 
-        $this->recordingCache->set('table:items', [
-            ['id' => 1, 'name' => 'a', 'qty' => 1],
-        ]);
+        $this->recordingCache->set(
+            CacheKeys::current($this->dbDir, 'items'),
+            [['id' => 1, 'name' => 'a', 'qty' => 1]],
+        );
 
         $this->insertExternally('items', ['name' => 'foreign', 'qty' => 42]);
 
@@ -122,9 +124,10 @@ final class ConcurrencyRmwTest
     public function reorderColumnsOnPoisonedCacheKeepsForeignRow(): void
     {
         $this->db->table('items')->selectAllByArray();
-        $this->recordingCache->set('table:items', [
-            ['id' => 1, 'name' => 'a', 'qty' => 1],
-        ]);
+        $this->recordingCache->set(
+            CacheKeys::current($this->dbDir, 'items'),
+            [['id' => 1, 'name' => 'a', 'qty' => 1]],
+        );
         $this->insertExternally('items', ['name' => 'foreign', 'qty' => 7]);
 
         $this->db->reorderColumns('items', ['id', 'qty', 'name']);
@@ -140,7 +143,10 @@ final class ConcurrencyRmwTest
     public function rebuildIndexUsesDiskNotCache(): void
     {
         $this->db->table('items')->selectAllByArray();
-        $this->recordingCache->set('table:items', []);
+        $this->recordingCache->set(
+            CacheKeys::current($this->dbDir, 'items'),
+            [],
+        );
         $this->recordingCache->getCalls = 0;
 
         $this->db->rebuildAllIndexes('items');

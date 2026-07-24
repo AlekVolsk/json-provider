@@ -518,6 +518,46 @@ final class SchemaRegistry
     }
 
     /**
+     * Parses and validates a raw information_schema snapshot (an already
+     * json-decoded array) WITHOUT touching the on-disk schema. The exact
+     * strict loaders of the live schema are reused — table and column
+     * names go through IdentifierRules (path-traversal protection),
+     * column types through the closed type list, relation entries and
+     * actions through the strict relation parser — so an invalid snapshot
+     * throws before anything is applied.
+     *
+     * Used by the restore service to vet an archived schema before
+     * adopting it.
+     *
+     * @param array<mixed> $raw
+     *
+     * @return SchemaState
+     */
+    public function parseSnapshot(array $raw): array
+    {
+        return [$this->parseTables($raw), $this->parseRelations($raw)];
+    }
+
+    /**
+     * Replaces the ENTIRE schema (tables and relations) with the given
+     * state and persists information_schema.json. The caller owns the
+     * consistency of the state (restore adopts a snapshot validated by
+     * parseSnapshot) and must hold the database EX lock.
+     *
+     * @param SchemaTables    $tables
+     * @param SchemaRelations $relations
+     */
+    public function replaceAll(array $tables, array $relations): void
+    {
+        $this->mutate(
+            static fn (
+                array $currentTables,
+                array $currentRelations,
+            ): array => [$tables, $relations],
+        );
+    }
+
+    /**
      * Forces a schema reload from disk (after external modifications).
      */
     public function reload(): void

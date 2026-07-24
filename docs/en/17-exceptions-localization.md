@@ -63,6 +63,7 @@ The custom locale class can live in any namespace.
 | `FOREIGN_KEY_RESTRICT` | `restrict` action blocked a delete/update |
 | `PK_CONTRACT_VIOLATED` | PK or PK index contract was broken |
 | `META_ENTRY_MISSING` | meta entry missing for a registered table |
+| `META_ENTRY_CORRUPT` | the meta entry is broken (a non-int counter) — `repair()` fixes it |
 | `INDEX_NOT_FOUND` | named index does not exist in the table schema |
 | `REORDER_COLUMNS_UNKNOWN` | reorderColumns: column not in schema |
 | `REORDER_COLUMNS_DUPLICATE` | reorderColumns: duplicate column name |
@@ -94,6 +95,7 @@ The custom locale class can live in any namespace.
 | `BACKUP_DESTINATION_INSIDE_DB` | backup target lies inside the DB directory |
 | `BACKUP_ARCHIVE_CORRUPT` | restore: archive missing/unreadable/wrong format |
 | `BACKUP_SCHEMA_MISMATCH` | restore: archive table set does not match schema |
+| `BACKUP_CHECKSUM_MISMATCH` | restore: an archive member failed the manifest's sha256 check |
 | `RESTORE_FAILED` | restore failed (rolled back if possible) |
 | `EXTENSION_REQUIRED` | a cache adapter cannot find its PHP extension |
 | `TYPE_MISMATCH` | a value does not match the column's declared type |

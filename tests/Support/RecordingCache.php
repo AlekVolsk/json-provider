@@ -35,8 +35,8 @@ final class RecordingCache implements CacheInterface
         $this->inner->invalidate($key);
     }
 
-    public function flush(): void
+    public function flushDb(string $keyPrefix): void
     {
-        $this->inner->flush();
+        $this->inner->flushDb($keyPrefix);
     }
 }

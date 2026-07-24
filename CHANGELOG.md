@@ -6,6 +6,130 @@ API changes an integrator must know when updating.
 
 ## Unreleased
 
+### Backup, restore, integrity, severity scale
+
+- **Manifest validation fields.** `backup()` writes per-table
+  `lastInsertedId` counters (from meta, not derived from data) and
+  sha256 checksums of every archive member into `manifest.json` (format
+  version stays 1). `restore()` verifies every member with a known
+  checksum BEFORE applying anything — a tampered or bit-rotten member
+  raises the new localized `BACKUP_CHECKSUM_MISMATCH` and the DB is
+  untouched. Legacy archives (no counters/checksums) restore without
+  verification; re-create critical backups with the new export to get
+  checksums and exact counters. `manifest.json` itself is not covered
+  (documented residual window).
+- **Restore no longer re-mints deleted high-water ids.** The id counter
+  after restore is `max(manifest counter, max(stored id))` — previously
+  it was derived from data alone, so an insert+delete+backup+restore
+  cycle handed the deleted id to the next insert. Rollback restores the
+  SNAPSHOT's counters (read from the snapshot's own manifest), never
+  the primary archive's.
+- **Backup runs under the database EX lock** (held through the
+  compression): every table comes from one committed generation, a
+  multi-table cascade can never be captured half-applied and no `*.tmp`
+  of a concurrent writer leaks into the archive. Restore serializes
+  under db EX plus EX locks on every involved table; the nested
+  safety-snapshot export re-enters the held lock.
+- **Adopting restore.** `restore($path, adoptArchivedSchema: true[,
+  pruneExtraTables: true])` replaces the current schema with the
+  archived one (validated by the same strict loaders as the live
+  schema, path-traversal-safe), materializes archive-only tables and —
+  only under the explicit prune flag — drops current tables absent from
+  the archive. Default behaviour (exact schema match) is unchanged.
+  Rollback re-adopts the snapshot's schema.
+- After a restore every table directory is swept of files the schema
+  does not declare (stray index files, abandoned `*.tmp`), so
+  `validate()` is clean of `orphan_index_file` right after a restore.
+- **Unified severity scale with a CRITICAL level.**
+  `IssueSeverity::CRITICAL` is added above ERROR;
+  `table_file_missing`, `meta_entry_missing` and `meta_entry_corrupt`
+  are now CRITICAL (they break reads or writes even at the full-scan
+  level), `fk_backing_index_missing` is promoted WARNING → ERROR.
+  `psrLevel()`/`rank()` map severities to PSR-3 levels and sort ranks;
+  reports are ordered critical-first and `hasErrors()` counts CRITICAL
+  as an error. The dead `RECORDS_NOT_SORTED_BY_PK` category is removed.
+- **Optional root PSR-3 logger.**
+  `getInstance($path, $cache, $logger)` /
+  `createDatabase($path, $cache, $logger)`: validator findings are
+  logged once per run at their severity's level; silent index
+  degradations to full scan log `info`, the `INDEX_UNRELIABLE` throw
+  logs `error`, lines skipped by restore log `warning`.
+- **Unparseable NDJSON lines are surfaced and protected.** Every line
+  `json_decode` cannot parse is a `broken_record` finding (WARNING,
+  raw text and physical line number in the context; report-only —
+  repair never quarantines or deletes data). `optimizeTable()` and the
+  key-order repair now REFUSE to rewrite a file holding such lines —
+  previously the read+write roundtrip silently dropped them.
+- **New report-only data findings**: `present_null` (an explicit null
+  stored in a non-nullable column), `unique_duplicate` (stored data
+  violating a declared unique constraint), `fk_orphan` (a child FK
+  value with no matching parent key; severity is contextual — INFO
+  under `noAction`, WARNING under an enforced action; relations
+  addressing missing tables/columns or differently-typed columns are
+  reported instead of silently skipped).
+- **Typed back-fill of missing columns everywhere.** The provider's
+  write-path normalization (full table rewrites of update), the
+  repairer and restore all back-fill a column ABSENT from a stored
+  record with the shared typed default (`''`/`0`/`0.0`/`false`, null
+  for nullable) instead of null; a PRESENT null is kept verbatim (and
+  reported as `present_null`); a missing non-nullable temporal column
+  has no safe default and fails loudly. Ghost keys of raw stored lines
+  no longer leak into `select`/`readAll` results.
+
+### Caching
+
+- **Namespaced, version-tagged cache keys.** Every key is now
+  `jdp:<format>:<db-hash>:<table>:<lineCount>-<fileSize>-<inode>`. The
+  path hash isolates databases sharing one backend pool (previously two
+  databases with a `users` table could serve each other's rows from a
+  shared Redis/APCu/Memcached); the tag binds an entry to one committed
+  table state, so any size- or count-changing write — including a
+  foreign append straight into the ndjson file — retires stale entries
+  with no cross-process invalidation, and the inode component (fresh on
+  every tmp+rename rewrite) rules out A-B-A collisions: a same-length
+  delete+insert, a truncate+re-import, a drop+recreate or a same-length
+  value update through the provider from ANY process always moves the
+  tag. The residual window is a foreign IN-PLACE same-length file edit
+  (closed manually by `invalidateCache()` or by TTL). Old `table:*`
+  keys live in a foreign namespace and expire; no active migration
+  needed (optionally clear them from shared pools on deploy).
+- Cache entries of a table are invalidated BEFORE dropTable/renameTable
+  dismantle its meta and files (afterwards the version tag is no longer
+  computable and the warm entry of the last real state would survive
+  the DROP/RENAME); truncate no longer tears down the fresh entry its
+  own rewrite just published.
+- A corrupt meta.json entry (hand-edited counter as a string, a missing
+  field) now raises a catchable, localized `META_ENTRY_CORRUPT` instead
+  of a bare TypeError that took down every read path including repair;
+  reads degrade to disk, `validate()` reports `meta_entry_corrupt` and
+  `repair()` rebuilds the entry from the data.
+- A structurally broken cache payload (a non-array row, a nested value)
+  now degrades the whole entry to a miss in every adapter — previously
+  the garbage was silently trimmed and partial rows reached the query
+  layer as data.
+- **`CacheInterface::flush()` is replaced by `flushDb(string
+  $keyPrefix)`** — adapters delete only the prefixed keys, never the
+  whole backend (previously RedisCache::flush ran FLUSHDB and
+  MemcachedCache::flush wiped the entire server, killing co-tenant
+  data). The provider's new public `flushDb()` scopes the flush to the
+  current database. Memcached, unable to enumerate keys, uses a
+  per-database generation counter (`<prefix>__gen`) spliced into
+  physical keys; see the caching doc for its two caveats. Custom
+  adapters must implement `flushDb` instead of `flush`.
+- **One degradation policy for every adapter** (now part of the
+  CacheInterface contract): any backend error turns `get()` into a miss
+  and the mutations into silent no-ops — a cache outage never fails a
+  database operation (previously a down Redis threw straight through
+  reads and writes). Bundled adapters take an optional PSR-3 logger
+  (new `psr/log` dependency) and report degradations at warning level.
+- **InMemoryCache is bounded**: `new InMemoryCache(ttl, maxEntries)` —
+  lazy TTL expiry plus FIFO eviction, default cap 1000 entries
+  (previously the store grew without limit for the process lifetime);
+  `maxEntries: 0` restores the unbounded behavior.
+- Dead constructor guards removed from RedisCache/MemcachedCache (the
+  client type hint requires the extension before the guard could ever
+  run); ApcuCache keeps its reachable check.
+
 ### Foreign keys and cascades
 
 - **Canonical FK direction.** The engine now resolves the child side (the

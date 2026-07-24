@@ -305,6 +305,13 @@ class StorageException extends JsonProviderException
         return new self('PK_CONTRACT_VIOLATED', $table, $reason);
     }
 
+    public static function metaEntryCorrupt(
+        string $table,
+        string $reason,
+    ): self {
+        return new self('META_ENTRY_CORRUPT', $table, $reason);
+    }
+
     public static function metaEntryMissing(string $table): self
     {
         return new self('META_ENTRY_MISSING', $table);
@@ -395,6 +402,11 @@ class StorageException extends JsonProviderException
     public static function backupSchemaMismatch(string $details): self
     {
         return new self('BACKUP_SCHEMA_MISMATCH', $details);
+    }
+
+    public static function backupChecksumMismatch(string $member): self
+    {
+        return new self('BACKUP_CHECKSUM_MISMATCH', $member);
     }
 
     public static function restoreFailed(string $details): self

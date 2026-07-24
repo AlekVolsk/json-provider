@@ -96,6 +96,8 @@ enum LangRuEnum: string implements LocaleInterface
         . '"%s": %s';
     case META_ENTRY_MISSING = 'В meta.json нет записи для таблицы "%s" — '
         . 'таблица не зарегистрирована провайдером';
+    case META_ENTRY_CORRUPT = 'Запись меты таблицы "%s" повреждена: %s — '
+        . 'выполните repair(), чтобы пересчитать счётчики из данных';
     case REORDER_COLUMNS_UNKNOWN = 'reorderColumns для таблицы "%s": '
         . 'неизвестная колонка "%s"';
     case REORDER_COLUMNS_DUPLICATE = 'reorderColumns для таблицы "%s": '
@@ -136,6 +138,9 @@ enum LangRuEnum: string implements LocaleInterface
     case BACKUP_ARCHIVE_CORRUPT = 'Архив резервной копии повреждён: %s';
     case BACKUP_SCHEMA_MISMATCH = 'Схема резервной копии не совпадает '
         . 'со схемой БД: %s';
+    case BACKUP_CHECKSUM_MISMATCH = 'Элемент архива резервной копии "%s" '
+        . 'не прошёл проверку контрольной суммы; архив повреждён или '
+        . 'подменён';
     case RESTORE_FAILED = 'Восстановление не удалось: %s';
     case TYPE_MISMATCH = 'Таблица "%s", колонка "%s": ожидался тип %s, '
         . 'получен %s';

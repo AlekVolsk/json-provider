@@ -92,6 +92,8 @@ enum LangEnEnum: string implements LocaleInterface
         . 'table "%s": %s';
     case META_ENTRY_MISSING = 'No meta entry for table "%s" — table is not '
         . 'registered with the provider';
+    case META_ENTRY_CORRUPT = 'Meta entry for table "%s" is corrupt: %s — '
+        . 'run repair() to rebuild the counters from the data';
     case REORDER_COLUMNS_UNKNOWN = 'reorderColumns for table "%s": '
         . 'unknown column "%s"';
     case REORDER_COLUMNS_DUPLICATE = 'reorderColumns for table "%s": '
@@ -131,6 +133,8 @@ enum LangEnEnum: string implements LocaleInterface
     case BACKUP_ARCHIVE_CORRUPT = 'Backup archive is invalid: %s';
     case BACKUP_SCHEMA_MISMATCH = 'Backup schema does not match current DB '
         . 'schema: %s';
+    case BACKUP_CHECKSUM_MISMATCH = 'Backup archive member "%s" failed the '
+        . 'integrity checksum; the archive is corrupt or was tampered with';
     case RESTORE_FAILED = 'Restore failed: %s';
     case TYPE_MISMATCH = 'Table "%s", column "%s": expected type %s, '
         . 'got %s';

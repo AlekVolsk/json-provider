@@ -437,6 +437,12 @@ final class MetaRegistry
     }
 
     /**
+     * The field types are validated on every read: a hand-edited or
+     * foreign-serialized meta.json (a numeric string in lineCount, a
+     * missing counter) must surface as a catchable, repairable
+     * META_ENTRY_CORRUPT — not as a bare TypeError that takes down every
+     * read path including repair itself.
+     *
      * @return array{
      *     lastInsertedId: int,
      *     lineCount: int,
@@ -446,7 +452,6 @@ final class MetaRegistry
      */
     private function getEntry(string $tableName): array
     {
-        /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int, indexFormat?: int}> $data */
         $data = $this->storage->read(self::META_FILE);
 
         if (!isset($data[$tableName])) {
@@ -455,11 +460,35 @@ final class MetaRegistry
 
         $entry = $data[$tableName];
 
+        if (!\is_array($entry)) {
+            throw StorageException::metaEntryCorrupt(
+                $tableName,
+                'the entry is not an object',
+            );
+        }
+
+        $lastInsertedId = $entry['lastInsertedId'] ?? null;
+        $lineCount = $entry['lineCount'] ?? null;
+        $byteSize = $entry['byteSize'] ?? null;
+        $indexFormat = $entry['indexFormat'] ?? 1;
+
+        if (
+            !\is_int($lastInsertedId)
+            || !\is_int($lineCount)
+            || ($byteSize !== null && !\is_int($byteSize))
+            || !\is_int($indexFormat)
+        ) {
+            throw StorageException::metaEntryCorrupt(
+                $tableName,
+                'a counter field is missing or not an integer',
+            );
+        }
+
         return [
-            'lastInsertedId' => $entry['lastInsertedId'],
-            'lineCount'      => $entry['lineCount'],
-            'byteSize'       => $entry['byteSize'] ?? null,
-            'indexFormat'    => $entry['indexFormat'] ?? 1,
+            'lastInsertedId' => $lastInsertedId,
+            'lineCount'      => $lineCount,
+            'byteSize'       => $byteSize,
+            'indexFormat'    => $indexFormat,
         ];
     }
 }

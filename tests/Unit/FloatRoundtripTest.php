@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\CacheKeys;
 use AV\JsonProvider\Tests\Support\Dto\FloatPriceDto;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -293,7 +294,9 @@ final class FloatRoundtripTest
 
         $this->db->table(self::TABLE)->selectAllByArray();
 
-        $cached = $this->cache->get('table:' . self::TABLE);
+        $cached = $this->cache->get(
+            CacheKeys::current($this->dbDir, self::TABLE),
+        );
         Assert::notNull($cached);
         Assert::same($cached[0]['price'], 99.0);
     }
@@ -319,7 +322,9 @@ final class FloatRoundtripTest
             ->where('name', '=', 'a')
             ->updateByArray(['name' => 'b']);
 
-        $cached = $this->cache->get('table:' . self::TABLE);
+        $cached = $this->cache->get(
+            CacheKeys::current($this->dbDir, self::TABLE),
+        );
         Assert::notNull($cached);
         Assert::same($cached[0]['price'], 99.0);
     }

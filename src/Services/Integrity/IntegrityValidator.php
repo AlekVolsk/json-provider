@@ -9,11 +9,16 @@ use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\PrimaryKey;
+use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Validation\ColumnTypeInfo;
 use AV\JsonProvider\Validation\ValueValidator;
+use Psr\Log\LoggerInterface;
 
 /**
  * Read-only consistency validator.
@@ -25,10 +30,16 @@ use AV\JsonProvider\Validation\ValueValidator;
  *
  *  - per-table:
  *    - the data file is present;
+ *    - every line of the data file parses (unparseable lines are
+ *      report-only broken_record findings — repair never quarantines or
+ *      deletes them);
  *    - every declared index has its file;
  *    - the table subdirectory holds no orphan files (everything not declared
  *      in the schema);
  *    - every record's key order matches the schema columns order;
+ *    - no present null sits in a non-nullable column (report-only);
+ *    - no declared unique constraint is violated by the stored data
+ *      (report-only);
  *    - every index file is internally well-formed (`{key, line}` lines);
  *    - every index entry points to a real line in the data file;
  *    - the meta entry exists and matches the actual lineCount and the
@@ -37,10 +48,18 @@ use AV\JsonProvider\Validation\ValueValidator;
  *  - per-database:
  *    - meta has no entries for tables not declared in the schema;
  *    - the DB root has no orphan directories or files (everything not
- *      `information_schema.json`, `meta.json`, or a known table subdir).
+ *      `information_schema.json`, `meta.json`, or a known table subdir);
+ *    - every declared relation resolves (tables and columns exist, base
+ *      types match) and every stored FK value points at an existing
+ *      parent key (report-only fk_orphan; severity is contextual — an
+ *      orphan under onDelete=noAction is an accepted fact of the data,
+ *      under an enforced action it means the enforcement was bypassed).
  *
  * "Records not sorted by id" is intentionally NOT a validator finding —
  * record order on disk is not a contract, only a repair preference.
+ *
+ * With a logger attached, every finding of a validation run is logged
+ * exactly once at its severity's PSR-3 level.
  */
 final class IntegrityValidator
 {
@@ -51,6 +70,7 @@ final class IntegrityValidator
         private readonly JsonStorage $json,
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
+        private readonly LoggerInterface | null $logger = null,
     ) {}
 
     /**
@@ -60,6 +80,7 @@ final class IntegrityValidator
     {
         $start = microtime(true);
         $issues = $this->collectTableIssues($tableName);
+        $this->logIssues($issues);
 
         return new IntegrityReport(
             issues: $issues,
@@ -89,12 +110,41 @@ final class IntegrityValidator
             $issues[] = $issue;
         }
 
+        foreach ($this->collectRelationalIssues($tables) as $issue) {
+            $issues[] = $issue;
+        }
+
+        $this->logIssues($issues);
+
         return new IntegrityReport(
             issues: $issues,
             tablesChecked: \count($tables),
             tablesRepaired: 0,
             durationSeconds: microtime(true) - $start,
         );
+    }
+
+    /**
+     * @param array<int,IntegrityIssue> $issues
+     */
+    private function logIssues(array $issues): void
+    {
+        if ($this->logger === null) {
+            return;
+        }
+
+        foreach ($issues as $issue) {
+            $this->logger->log(
+                $issue->severity->psrLevel(),
+                ($issue->tableName !== null
+                    ? 'table "' . $issue->tableName . '": '
+                    : '') . $issue->message,
+                [
+                    'category' => $issue->category->value,
+                    'context'  => $issue->context,
+                ],
+            );
+        }
     }
 
     /**
@@ -134,7 +184,7 @@ final class IntegrityValidator
 
         if (!$this->ndjson->exists($tableName, $tableSchema->getFileName())) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
+                IssueSeverity::CRITICAL,
                 IssueCategory::TABLE_FILE_MISSING,
                 $tableName,
                 'data file ' . $tableSchema->getFileName() . ' is missing',
@@ -143,12 +193,42 @@ final class IntegrityValidator
             return $issues;
         }
 
+        $rawLines = $this->ndjson->readRawLines(
+            $tableName,
+            $tableSchema->getFileName(),
+        );
+
+        foreach ($rawLines['broken'] as $broken) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::WARNING,
+                IssueCategory::BROKEN_RECORD,
+                $tableName,
+                \sprintf(
+                    'unparseable line %d: %s',
+                    $broken['line'],
+                    substr($broken['raw'], 0, 80),
+                ),
+                context: [
+                    'line' => (string)$broken['line'],
+                    'raw'  => $broken['raw'],
+                ],
+            );
+        }
+
         $records = $this->values->widenFloats(
             $tableSchema,
-            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+            $rawLines['records'],
         );
 
         foreach ($this->checkRecordKeyOrder($tableSchema, $records) as $i) {
+            $issues[] = $i;
+        }
+
+        foreach ($this->checkPresentNulls($tableSchema, $records) as $i) {
+            $issues[] = $i;
+        }
+
+        foreach ($this->checkUniqueDuplicates($tableSchema, $records) as $i) {
             $issues[] = $i;
         }
 
@@ -218,7 +298,7 @@ final class IntegrityValidator
             }
 
             $issues[] = new IntegrityIssue(
-                IssueSeverity::WARNING,
+                IssueSeverity::ERROR,
                 IssueCategory::FK_BACKING_INDEX_MISSING,
                 $tableSchema->name,
                 'relation ' . $relation->fromTable . '('
@@ -285,6 +365,120 @@ final class IntegrityValidator
                     . 'of any probing relation',
                 context: ['index' => $index->name],
             );
+        }
+
+        return $issues;
+    }
+
+    /**
+     * A present null in a non-nullable column is a data violation typed
+     * reads reject and the normalization back-fills never plant (a
+     * PRESENT key always keeps its value verbatim) — it can only come
+     * from a foreign edit or a pre-strictness write. Report-only: repair
+     * fixes structures, not data.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function checkPresentNulls(
+        TableSchema $tableSchema,
+        array $records,
+    ): array {
+        $nonNullable = [];
+
+        foreach ($tableSchema->columns as $column => $type) {
+            if (!ColumnTypeInfo::parse($type)->nullable) {
+                $nonNullable[] = $column;
+            }
+        }
+
+        if ($nonNullable === []) {
+            return [];
+        }
+
+        $issues = [];
+
+        foreach ($records as $line => $record) {
+            foreach ($nonNullable as $column) {
+                if (
+                    !\array_key_exists($column, $record)
+                    || $record[$column] !== null
+                ) {
+                    continue;
+                }
+
+                $issues[] = new IntegrityIssue(
+                    IssueSeverity::WARNING,
+                    IssueCategory::PRESENT_NULL,
+                    $tableSchema->name,
+                    \sprintf(
+                        'column "%s" is null in a non-nullable column '
+                            . 'at line %d',
+                        $column,
+                        $line,
+                    ),
+                    context: [
+                        'column' => $column,
+                        'line'   => (string)$line,
+                    ],
+                );
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Stored data must honor every declared unique constraint. Rows with
+     * a null (or missing) value in any constraint field do not
+     * participate (SQL semantics — keyOf returns null for them).
+     * Report-only: which duplicate is the authoritative one is the
+     * owner's call.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function checkUniqueDuplicates(
+        TableSchema $tableSchema,
+        array $records,
+    ): array {
+        $issues = [];
+
+        foreach ($tableSchema->uniqueConstraints as $constraint) {
+            $linesByKey = [];
+
+            foreach ($records as $line => $record) {
+                $key = $constraint->keyOf($record);
+
+                if ($key === null) {
+                    continue;
+                }
+
+                $linesByKey[$key][] = $line;
+            }
+
+            foreach ($linesByKey as $lines) {
+                if (\count($lines) < 2) {
+                    continue;
+                }
+
+                $issues[] = new IntegrityIssue(
+                    IssueSeverity::WARNING,
+                    IssueCategory::UNIQUE_DUPLICATE,
+                    $tableSchema->name,
+                    \sprintf(
+                        'unique "%s" duplicated on lines %s',
+                        $constraint->name,
+                        implode(', ', $lines),
+                    ),
+                    context: [
+                        'constraint' => $constraint->name,
+                        'lines'      => implode(',', $lines),
+                    ],
+                );
+            }
         }
 
         return $issues;
@@ -623,7 +817,7 @@ final class IntegrityValidator
     {
         if (!$this->meta->hasEntry($tableSchema->name)) {
             return [new IntegrityIssue(
-                IssueSeverity::ERROR,
+                IssueSeverity::CRITICAL,
                 IssueCategory::META_ENTRY_MISSING,
                 $tableSchema->name,
                 'meta entry is missing',
@@ -632,7 +826,17 @@ final class IntegrityValidator
 
         $issues = [];
         $actualCount = \count($records);
-        $declaredCount = $this->meta->getLineCount($tableSchema->name);
+
+        try {
+            $declaredCount = $this->meta->getLineCount($tableSchema->name);
+        } catch (StorageException $e) {
+            return [new IntegrityIssue(
+                IssueSeverity::CRITICAL,
+                IssueCategory::META_ENTRY_CORRUPT,
+                $tableSchema->name,
+                'meta entry is corrupt: ' . $e->getMessage(),
+            )];
+        }
 
         if ($actualCount !== $declaredCount) {
             $issues[] = new IntegrityIssue(
@@ -730,5 +934,208 @@ final class IntegrityValidator
         }
 
         return $issues;
+    }
+
+    /**
+     * Database-level relational data checks (report-only). For every
+     * declared relation, by its CANONICAL child/parent sides:
+     *
+     *  - a relation addressing a missing table or column, or joining
+     *    columns of different base types, is reported once as fk_orphan
+     *    with the reason — value comparison is skipped (it would be
+     *    meaningless);
+     *  - otherwise every non-null child FK value must match an existing
+     *    parent key (type-strict, the same keyPart encoding the unique
+     *    and cascade engines compare with); null FKs never participate.
+     *
+     * Severity is contextual: onDelete=noAction means orphans are an
+     * accepted fact of the data (INFO); an enforced action
+     * (cascade/restrict/setNull) that still left an orphan behind means
+     * the declared enforcement was bypassed (WARNING).
+     *
+     * @param array<string,TableSchema> $tables
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function collectRelationalIssues(array $tables): array
+    {
+        $issues = [];
+
+        /** @var array<string,array<int,array<string,null|scalar>>> $memo */
+        $memo = [];
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            $declarationIssue = $this->relationDeclarationIssue(
+                $tables,
+                $relation,
+            );
+
+            if ($declarationIssue !== null) {
+                $issues[] = $declarationIssue;
+
+                continue;
+            }
+
+            $childTable = $relation->childTable();
+            $parentTable = $relation->parentTable();
+            $childColumn = $relation->childColumn();
+            $parentColumn = $relation->parentColumn();
+
+            $parentKeys = [];
+
+            foreach (
+                $this->readForRelations($tables, $parentTable, $memo) as $row
+            ) {
+                $value = $row[$parentColumn] ?? null;
+
+                if ($value !== null) {
+                    $parentKeys[UniqueConstraint::keyPart($value)] = true;
+                }
+            }
+
+            $severity = $relation->onDelete === ForeignKeyActionEnum::NO_ACTION
+                ? IssueSeverity::INFO
+                : IssueSeverity::WARNING;
+
+            $childRows = $this->readForRelations($tables, $childTable, $memo);
+
+            foreach ($childRows as $line => $row) {
+                $value = $row[$childColumn] ?? null;
+
+                if ($value === null) {
+                    continue;
+                }
+
+                if (isset($parentKeys[UniqueConstraint::keyPart($value)])) {
+                    continue;
+                }
+
+                $issues[] = new IntegrityIssue(
+                    $severity,
+                    IssueCategory::FK_ORPHAN,
+                    $childTable,
+                    \sprintf(
+                        'table "%s"."%s"=%s has no matching "%s"."%s"',
+                        $childTable,
+                        $childColumn,
+                        (string)json_encode($value),
+                        $parentTable,
+                        $parentColumn,
+                    ),
+                    context: [
+                        'column' => $childColumn,
+                        'line'   => (string)$line,
+                        'value'  => (string)json_encode($value),
+                        'parent' => $parentTable . '.' . $parentColumn,
+                    ],
+                );
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Declaration-level problems of one relation: a missing table, a
+     * missing column, or a base-type mismatch between the joined columns.
+     * Reachable only through hand-edits of information_schema.json — the
+     * relations API validates all of this on declaration.
+     *
+     * @param array<string,TableSchema> $tables
+     */
+    private function relationDeclarationIssue(
+        array $tables,
+        RelationSchema $relation,
+    ): IntegrityIssue | null {
+        $address = $relation->fromTable . '(' . $relation->foreignKey
+            . ') -> ' . $relation->toTable . '(' . $relation->references
+            . ')';
+
+        foreach ([$relation->childTable(), $relation->parentTable()] as $t) {
+            if (!isset($tables[$t])) {
+                return new IntegrityIssue(
+                    IssueSeverity::WARNING,
+                    IssueCategory::FK_ORPHAN,
+                    null,
+                    'relation ' . $address
+                        . ' references a missing table "' . $t
+                        . '"; orphan check skipped',
+                    context: ['table' => $t],
+                );
+            }
+        }
+
+        $childSchema = $tables[$relation->childTable()];
+        $parentSchema = $tables[$relation->parentTable()];
+        $childType = $childSchema->columns[$relation->childColumn()] ?? null;
+        $parentType = $parentSchema
+            ->columns[$relation->parentColumn()] ?? null;
+
+        if ($childType === null || $parentType === null) {
+            $missing = $childType === null
+                ? $relation->childTable() . '.' . $relation->childColumn()
+                : $relation->parentTable() . '.' . $relation->parentColumn();
+
+            return new IntegrityIssue(
+                IssueSeverity::WARNING,
+                IssueCategory::FK_ORPHAN,
+                null,
+                'relation ' . $address
+                    . ' references a missing column ' . $missing
+                    . '; orphan check skipped',
+                context: ['column' => $missing],
+            );
+        }
+
+        $childBase = ColumnTypeInfo::parse($childType)->base;
+        $parentBase = ColumnTypeInfo::parse($parentType)->base;
+
+        if ($childBase !== $parentBase) {
+            return new IntegrityIssue(
+                IssueSeverity::WARNING,
+                IssueCategory::FK_ORPHAN,
+                $relation->childTable(),
+                'relation ' . $address . ' type mismatch: "'
+                    . $childBase . '" vs "' . $parentBase
+                    . '"; value comparison skipped',
+                context: [
+                    'childType'  => $childType,
+                    'parentType' => $parentType,
+                ],
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Reads (and memoizes) a table's records for the relational pass —
+     * float-widened, so keyPart compares the same canonical values the
+     * write paths use.
+     *
+     * @param array<string,TableSchema>                          $tables
+     * @param array<string,array<int,array<string,null|scalar>>> $memo
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    private function readForRelations(
+        array $tables,
+        string $tableName,
+        array &$memo,
+    ): array {
+        if (isset($memo[$tableName])) {
+            return $memo[$tableName];
+        }
+
+        $tableSchema = $tables[$tableName];
+
+        if (!$this->ndjson->exists($tableName, $tableSchema->getFileName())) {
+            return $memo[$tableName] = [];
+        }
+
+        return $memo[$tableName] = $this->values->widenFloats(
+            $tableSchema,
+            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+        );
     }
 }

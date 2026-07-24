@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Relations;
 
-use AV\JsonProvider\Cache\CacheInterface;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
@@ -56,8 +55,9 @@ use AV\JsonProvider\Validation\ValueValidator;
  * The engine reuses the provider's private consistency helpers through
  * injected closures: $ensureConsistent self-heals a table before its
  * first read (write-locked tables only), $readForWrite reads the
- * on-disk records with float widening, $cacheKey builds the cache key of
- * a table.
+ * on-disk records with float widening, $cacheInvalidate drops the cache
+ * entry of a table's current version tag, $cacheStore publishes records
+ * under the tag of a just-committed (lineCount, byteSize) state.
  *
  * @phpstan-type RecordSet array<int,array<string,null|scalar>>
  */
@@ -97,9 +97,10 @@ final class FkEngine
     private array $ctxProbeEntries = [];
 
     /**
-     * @param \Closure(TableSchema): void $ensureConsistent
-     * @param \Closure(string): RecordSet $readForWrite
-     * @param \Closure(string): string    $cacheKey
+     * @param \Closure(TableSchema): void            $ensureConsistent
+     * @param \Closure(string): RecordSet            $readForWrite
+     * @param \Closure(string): void                 $cacheInvalidate
+     * @param \Closure(string, int, RecordSet): void $cacheStore
      */
     public function __construct(
         private readonly SchemaRegistry $schema,
@@ -107,10 +108,10 @@ final class FkEngine
         private readonly NdjsonStorage $ndjson,
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
-        private readonly CacheInterface $cache,
         private readonly \Closure $ensureConsistent,
         private readonly \Closure $readForWrite,
-        private readonly \Closure $cacheKey,
+        private readonly \Closure $cacheInvalidate,
+        private readonly \Closure $cacheStore,
     ) {}
 
     /**
@@ -328,10 +329,11 @@ final class FkEngine
          * anywhere in the commit tail (index rebuild, meta, an external
          * cache adapter) must not leave this process serving pre-plan
          * rows from a warm cache over already-replaced files. The
-         * refreshed entries are set per table at the very end.
+         * refreshed entries are published per table at the very end,
+         * under the version tag of the state committed right here.
          */
         foreach ($plan->writeOrder as $table) {
-            $this->cache->invalidate(($this->cacheKey)($table));
+            ($this->cacheInvalidate)($table);
         }
 
         foreach ($plan->writeOrder as $table) {
@@ -351,7 +353,7 @@ final class FkEngine
                 $this->meta->stampIndexFormat($table, 2);
             }
 
-            $this->cache->set(($this->cacheKey)($table), $records);
+            ($this->cacheStore)($table, \count($records), $records);
         }
     }
 

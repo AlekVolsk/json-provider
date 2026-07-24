@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Services\Backup;
 
 use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Storage\TableLockManager;
 
 /**
  * Exports the current DB state to a single .tar.gz archive.
@@ -21,7 +23,19 @@ use AV\JsonProvider\Storage\NdjsonStorage;
  *     ...
  *
  * Indexes and meta.json are NOT included — both are derived from data and
- * will be rebuilt by Restore.
+ * will be rebuilt by Restore. Only the files DECLARED by the schema
+ * (getFileName per table) enter the archive — never a directory listing —
+ * so temp files (*.tmp) of a concurrent writer can never leak in.
+ *
+ * The whole export runs under the database EX lock: no writer is in
+ * flight, so all tables come from one committed generation and a
+ * cross-table FK can never dangle inside the archive. The lock is held
+ * through the compression as well. Nested acquisition inside restore
+ * (which already holds db EX plus table EX locks) re-enters.
+ *
+ * The manifest carries lastInsertedId counters (from meta, not derived
+ * from data) and sha256 checksums of every member, computed from the very
+ * bytes put into the archive.
  *
  * Built on top of the bundled PHP extensions ext-phar and ext-zlib; no
  * external commands or composer packages are required.
@@ -36,6 +50,8 @@ final class Backup
         private readonly SchemaRegistry $schema,
         private readonly JsonStorage $json,
         private readonly NdjsonStorage $ndjson,
+        private readonly MetaRegistry $meta,
+        private readonly TableLockManager $locks,
     ) {}
 
     /**
@@ -66,24 +82,22 @@ final class Backup
             throw StorageException::backupArchiveExists($tarPath);
         }
 
-        $tar = new \PharData($tarPath, 0, null, \Phar::TAR);
+        return $this->locks->withDatabase(
+            fn (): string => $this->doExport($archivePath, $tarPath),
+        );
+    }
 
+    /**
+     * The critical section of export, under the database EX lock: read
+     * every member into memory, checksum those exact bytes, build the
+     * manifest, then write and compress the archive.
+     */
+    private function doExport(string $archivePath, string $tarPath): string
+    {
+        $this->schema->reload();
         $tables = $this->schema->getTables();
         $tableNames = array_keys($tables);
         sort($tableNames);
-
-        $manifest = new BackupManifest(
-            createdAt: (new \DateTimeImmutable())->format(DATE_ATOM),
-            tables: $tableNames,
-        );
-
-        $manifestJson = json_encode($manifest->toArray(), JSON_PRETTY_PRINT);
-
-        if ($manifestJson === false) {
-            throw StorageException::fileNotWritable($archivePath);
-        }
-
-        $tar->addFromString('manifest.json', $manifestJson);
 
         $schemaJson = json_encode(
             $this->json->read('information_schema.json'),
@@ -94,7 +108,11 @@ final class Backup
             throw StorageException::fileNotWritable($archivePath);
         }
 
-        $tar->addFromString('information_schema.json', $schemaJson);
+        $tableContents = [];
+        $counters = [];
+        $checksums = [
+            'information_schema.json' => hash('sha256', $schemaJson),
+        ];
 
         foreach ($tableNames as $tableName) {
             $tableSchema = $tables[$tableName];
@@ -107,10 +125,37 @@ final class Backup
                     $tableSchema->getFileName(),
                 )
                 : '';
-            $tar->addFromString(
-                'tables/' . $tableSchema->getFileName(),
-                $contents,
-            );
+            $member = 'tables/' . $tableSchema->getFileName();
+            $tableContents[$member] = $contents;
+            $checksums[$member] = hash('sha256', $contents);
+
+            try {
+                $counters[$tableName] = $this->meta
+                    ->getLastInsertedId($tableName);
+            } catch (StorageException) {
+                continue;
+            }
+        }
+
+        $manifest = new BackupManifest(
+            createdAt: (new \DateTimeImmutable())->format(DATE_ATOM),
+            tables: $tableNames,
+            counters: $counters,
+            checksums: $checksums,
+        );
+
+        $manifestJson = json_encode($manifest->toArray(), JSON_PRETTY_PRINT);
+
+        if ($manifestJson === false) {
+            throw StorageException::fileNotWritable($archivePath);
+        }
+
+        $tar = new \PharData($tarPath, 0, null, \Phar::TAR);
+        $tar->addFromString('manifest.json', $manifestJson);
+        $tar->addFromString('information_schema.json', $schemaJson);
+
+        foreach ($tableContents as $member => $contents) {
+            $tar->addFromString($member, $contents);
         }
 
         $tar->compress(\Phar::GZ);

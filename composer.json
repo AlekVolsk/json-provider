@@ -14,7 +14,8 @@
         "php": ">=8.4",
         "ext-json": "*",
         "ext-phar": "*",
-        "ext-zlib": "*"
+        "ext-zlib": "*",
+        "psr/log": "^3"
     },
     "suggest": {
         "ext-apcu": "Enables the APCu cache adapter (ApcuCache)",

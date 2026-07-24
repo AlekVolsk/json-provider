@@ -40,6 +40,7 @@ use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Storage\TableLockManager;
 use AV\JsonProvider\Validation\ColumnTypeInfo;
 use AV\JsonProvider\Validation\ValueValidator;
+use Psr\Log\LoggerInterface;
 
 /**
  * Core data provider engine.
@@ -54,6 +55,13 @@ use AV\JsonProvider\Validation\ValueValidator;
  */
 final class JsonDataProvider
 {
+    /**
+     * Version of the cache entry format. Part of every cache key: bumping
+     * it on a format change strands the old keys in a foreign namespace
+     * (they expire by TTL/eviction) instead of serving stale shapes.
+     */
+    public const string CACHE_FORMAT_VERSION = '2';
+
     /** @var array<string,self> */
     private static array $instances = [];
 
@@ -73,13 +81,20 @@ final class JsonDataProvider
     private Backup | null $backup = null;
     private Restore | null $restore = null;
     private readonly string $dbPath;
+    private readonly string $cacheNs;
+    private readonly LoggerInterface | null $logger;
     private ComparisonMode $comparisonMode = ComparisonMode::Binary;
 
     private function __construct(
         string $dbPath,
         CacheInterface | null $cache = null,
+        LoggerInterface | null $logger = null,
     ) {
+        $this->logger = $logger;
         $this->dbPath = $dbPath;
+        $real = realpath($dbPath);
+        $this->cacheNs = 'jdp:' . self::CACHE_FORMAT_VERSION . ':'
+            . substr(sha1($real === false ? $dbPath : $real), 0, 16) . ':';
         $this->locks = new TableLockManager($dbPath);
         $this->ndjson = new NdjsonStorage($dbPath, $this->locks);
         $this->json = new JsonStorage($dbPath, $this->locks);
@@ -99,15 +114,19 @@ final class JsonDataProvider
      * The path is normalized (trailing slashes stripped): "/db" and "/db/"
      * resolve to the same instance — two instances over one directory
      * would hold independent lock managers and block each other.
+     *
+     * $cache and $logger apply only when the instance is created by this
+     * call; a live singleton keeps the ones it was built with.
      */
     public static function getInstance(
         string $dbPath,
         CacheInterface | null $cache = null,
+        LoggerInterface | null $logger = null,
     ): self {
         $dbPath = self::normalizePath($dbPath);
 
         if (!isset(self::$instances[$dbPath])) {
-            self::$instances[$dbPath] = new self($dbPath, $cache);
+            self::$instances[$dbPath] = new self($dbPath, $cache, $logger);
         }
 
         return self::$instances[$dbPath];
@@ -131,6 +150,7 @@ final class JsonDataProvider
     public static function createDatabase(
         string $dbPath,
         CacheInterface | null $cache = null,
+        LoggerInterface | null $logger = null,
     ): self {
         $dbPath = self::normalizePath($dbPath);
         $bootstrap = JsonStorage::createRoot($dbPath);
@@ -140,7 +160,7 @@ final class JsonDataProvider
         );
         $bootstrap->createObjectFile('meta.json');
 
-        self::$instances[$dbPath] = new self($dbPath, $cache);
+        self::$instances[$dbPath] = new self($dbPath, $cache, $logger);
 
         return self::$instances[$dbPath];
     }
@@ -300,6 +320,15 @@ final class JsonDataProvider
                         && $r->childTable() !== $tableName,
                 ));
 
+                /*
+                 * The cache entry must go while its version tag is still
+                 * computable — after the meta entry and the data file are
+                 * dropped, the tag degrades to a value that addresses
+                 * nothing, and the warm entry of the last real state
+                 * would survive the DROP.
+                 */
+                $this->invalidateCache($tableName);
+
                 $this->schema->unregisterTable($tableName);
 
                 foreach ($orphanedRelations as $relation) {
@@ -315,7 +344,6 @@ final class JsonDataProvider
                 $this->meta->dropEntry($tableName);
                 $this->ndjson->deleteTable($tableName);
                 $this->dtoRegistry->unregister($tableName);
-                $this->invalidateCache($tableName);
                 $this->locks->deleteTableLock($tableName);
             },
         );
@@ -374,6 +402,14 @@ final class JsonDataProvider
 
                 $tableSchema = $this->schema->getTable($from);
 
+                /*
+                 * While the old name's version tag is still computable:
+                 * after the meta entry moves and the files rename, the
+                 * tag degrades and the warm entry of the last real state
+                 * would survive under the old name.
+                 */
+                $this->invalidateCache($from);
+
                 $this->meta->setPendingRename($from, $to);
 
                 $this->schema->mutate(
@@ -423,7 +459,11 @@ final class JsonDataProvider
                 $this->meta->clearPendingRename();
 
                 $this->dtoRegistry->unregister($from);
-                $this->invalidateCache($from);
+                /*
+                 * Defensive: a leftover entry of a PREVIOUS table that
+                 * lived under $to could collide with the tag the renamed
+                 * table now carries.
+                 */
                 $this->invalidateCache($to);
                 $this->locks->deleteTableLock($from);
             },
@@ -579,7 +619,10 @@ final class JsonDataProvider
         $decoded = [];
 
         foreach ($records as $record) {
-            $decoded[] = $this->values->decodeRecord($tableSchema, $record);
+            $decoded[] = $this->projectOnSchema(
+                $tableSchema,
+                $this->values->decodeRecord($tableSchema, $record),
+            );
         }
 
         return $decoded;
@@ -923,10 +966,15 @@ final class JsonDataProvider
                 $this->schema->reload();
                 $tableSchema = $this->schema->getTable($tableName);
 
+                /*
+                 * Before the rewrite, while the old tag still resolves;
+                 * afterwards it would compute the NEW tag and tear down
+                 * the fresh entry writeAll just published.
+                 */
+                $this->invalidateCache($tableName);
                 $this->ensureTableConsistent($tableSchema);
                 $this->writeAll($tableName, $tableSchema, []);
                 $this->meta->setLastInsertedId($tableName, 0);
-                $this->invalidateCache($tableName);
             },
         );
     }
@@ -1914,7 +1962,10 @@ final class JsonDataProvider
 
     /**
      * Exports the current DB state to a .tar.gz archive at $destination.
-     * Returns the absolute path of the created archive.
+     * Returns the absolute path of the created archive. The export runs
+     * under the database EX lock, so all tables come from one committed
+     * generation; the manifest carries per-table id counters and sha256
+     * checksums of every member.
      *
      * If $destination is a directory, the file name is generated as
      * "backup-YYYY-MM-DD_HHMMSS.tar.gz" inside it. The destination must lie
@@ -1922,46 +1973,45 @@ final class JsonDataProvider
      */
     public function backup(string $destination): string
     {
-        return $this->locks->withLocks(
-            [],
-            'ex',
-            fn (): string => $this->backupService()->export($destination),
-        );
+        return $this->backupService()->export($destination);
     }
 
     /**
-     * Restores DB state from a .tar.gz archive previously produced by backup().
-     * The archive's table set must exactly match the current schema. On any
-     * failure mid-restore, the original DB state is rolled back from a safety
-     * snapshot taken automatically before the restore begins.
+     * Restores DB state from a .tar.gz archive previously produced by
+     * backup(). Member checksums from the manifest are verified before
+     * anything is applied. By default the archive's table set must exactly
+     * match the current schema; with $adoptArchivedSchema the archived
+     * schema replaces the current one (tables present locally but absent
+     * from the archive are dropped only under $pruneExtraTables). On any
+     * failure mid-restore, the original DB state — schema, data and
+     * counters — is rolled back from a safety snapshot taken automatically
+     * before the restore begins. The restore service serializes the whole
+     * operation under the database EX lock plus table EX locks.
      *
-     * Caches for all tables are invalidated.
+     * Caches are invalidated BEFORE the mutation, while the version tags
+     * are still computable (rewrites land on fresh inodes anyway, but a
+     * pruned table loses its meta and file — its tag must be dropped
+     * while it still resolves), and defensively after.
      */
-    public function restore(string $archivePath): void
-    {
-        $this->locks->withDatabase(
-            function () use ($archivePath): void {
-                $this->schema->reload();
-                $plan = array_fill_keys(
-                    array_keys($this->schema->getTables()),
-                    'ex',
-                );
+    public function restore(
+        string $archivePath,
+        bool $adoptArchivedSchema = false,
+        bool $pruneExtraTables = false,
+    ): void {
+        foreach (array_keys($this->schema->getTables()) as $table) {
+            $this->invalidateCache($table);
+        }
 
-                $this->locks->withLocks(
-                    $plan,
-                    null,
-                    function () use ($archivePath): void {
-                        $this->restoreService()->restore($archivePath);
-
-                        foreach (
-                            array_keys($this->schema->getTables()) as $table
-                        ) {
-                            $this->invalidateCache($table);
-                        }
-                    },
-                );
-            },
+        $this->restoreService()->restore(
+            $archivePath,
+            $adoptArchivedSchema,
+            $pruneExtraTables,
         );
+        $this->schema->reload();
+
+        foreach (array_keys($this->schema->getTables()) as $table) {
+            $this->invalidateCache($table);
+        }
     }
 
     /**
@@ -2134,7 +2184,10 @@ final class JsonDataProvider
         $decoded = [];
 
         foreach ($records as $record) {
-            $decoded[] = $this->values->decodeRecord($tableSchema, $record);
+            $decoded[] = $this->projectOnSchema(
+                $tableSchema,
+                $this->values->decodeRecord($tableSchema, $record),
+            );
         }
 
         return $decoded;
@@ -2165,12 +2218,46 @@ final class JsonDataProvider
     }
 
     /**
-     * Invalidates the table cache (call after external writes that bypass
-     * the provider).
+     * Invalidates the cache entry of the table's CURRENT version tag —
+     * the manual escape hatch for the documented same-size-update blind
+     * spot of the version-tagged keys; entries under other (stale) tags
+     * are already unreachable and expire by TTL/eviction.
      */
     public function invalidateCache(string $tableName): void
     {
-        $this->cache->invalidate($this->cacheKey($tableName));
+        $this->cache->invalidate($this->cacheKey(
+            $tableName,
+            $this->tableVersionTag($tableName),
+        ));
+    }
+
+    /**
+     * Removes every cache entry of THIS database from the backend (the
+     * per-database key namespace scopes the flush) — other databases and
+     * other applications sharing the pool are untouched.
+     */
+    public function flushDb(): void
+    {
+        $this->cache->flushDb($this->cacheNs);
+    }
+
+    /**
+     * Drops every key the schema does not declare from a record about to
+     * be returned to the caller: ghost fields of a raw stored line (a
+     * column dropped from the schema, a hand-added key) must not leak
+     * into query results on either read path. Keys are dropped only —
+     * a missing column stays missing (the ghost-row null semantics of
+     * the filter layer).
+     *
+     * @param array<string,null|scalar> $record
+     *
+     * @return array<string,null|scalar>
+     */
+    private function projectOnSchema(
+        TableSchema $tableSchema,
+        array $record,
+    ): array {
+        return array_intersect_key($record, $tableSchema->columns);
     }
 
     /**
@@ -2860,7 +2947,10 @@ final class JsonDataProvider
      */
     private function readAllRaw(string $tableName): array
     {
-        $cacheKey = $this->cacheKey($tableName);
+        $cacheKey = $this->cacheKey(
+            $tableName,
+            $this->tableVersionTag($tableName),
+        );
         $cached = $this->cache->get($cacheKey);
 
         if ($cached !== null) {
@@ -2871,6 +2961,14 @@ final class JsonDataProvider
         $raw = $this->ndjson->read($tableName, $tableSchema->getFileName());
         $this->assertStoredColumnNames($raw);
         $records = $this->values->widenFloats($tableSchema, $raw);
+
+        /*
+         * Lock-free set: a writer committing between the tag computation
+         * and this read can only make the entry hold a NEWER state than
+         * its tag claims — and the tag itself leaves circulation with the
+         * writer's meta commit, so no reader keeps resolving to it. The
+         * cache never travels back in time.
+         */
         $this->cache->set($cacheKey, $records);
 
         return $records;
@@ -2966,7 +3064,16 @@ final class JsonDataProvider
         try {
             $expected = $this->meta->getByteSize($tableSchema->name);
         } catch (StorageException $e) {
-            if ($e->getErrorKey() !== 'META_ENTRY_MISSING') {
+            /*
+             * Both a missing and a corrupt entry self-heal the same way:
+             * the counters are fully derivable from the data, so the
+             * entry is re-initialized and the rewrite below re-commits
+             * the true lineCount/byteSize (with the id watermark
+             * restored first).
+             */
+            if ($e->getErrorKey() === 'META_ENTRY_CORRUPT') {
+                $this->meta->dropEntry($tableSchema->name);
+            } elseif ($e->getErrorKey() !== 'META_ENTRY_MISSING') {
                 throw $e;
             }
 
@@ -3067,7 +3174,40 @@ final class JsonDataProvider
             $this->meta->stampIndexFormat($tableName, 2);
         }
 
-        $this->cache->set($this->cacheKey($tableName), $records);
+        $this->publishCacheEntry($tableName, \count($records), $records);
+    }
+
+    /**
+     * Publishes records under the tag of the state committed by THIS
+     * writer: the lineCount is the just-committed value (re-reading
+     * meta.json could pick up a foreign later state), the size and inode
+     * come from a stat of the file written moments ago under the still
+     * held table EX lock — no concurrent writer can slip a different
+     * file underneath within the critical section.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    private function publishCacheEntry(
+        string $tableName,
+        int $lineCount,
+        array $records,
+    ): void {
+        try {
+            $stat = $this->ndjson->fileStat(
+                $tableName,
+                $tableName . '.ndjson',
+            );
+        } catch (StorageException) {
+            return;
+        }
+
+        $this->cache->set(
+            $this->cacheKey(
+                $tableName,
+                $lineCount . '-' . $stat['size'] . '-' . $stat['ino'],
+            ),
+            $records,
+        );
     }
 
     /**
@@ -3090,6 +3230,41 @@ final class JsonDataProvider
      * @return null|array<int,array<string,null|scalar>>
      */
     private function selectViaIndex(
+        IndexSchema $index,
+        TableSchema $tableSchema,
+        array $conditions,
+        array $ordering,
+        int | null $limit = null,
+        int $offset = 0,
+    ): array | null {
+        try {
+            return $this->selectViaIndexTrusted(
+                $index,
+                $tableSchema,
+                $conditions,
+                $ordering,
+                $limit,
+                $offset,
+            );
+        } catch (StorageException $e) {
+            if ($e->getErrorKey() === 'INDEX_UNRELIABLE') {
+                $this->logger?->error($e->getMessage());
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * The trusted-index read pipeline behind selectViaIndex; every
+     * INDEX_UNRELIABLE it raises is logged at error level by the wrapper.
+     *
+     * @param array<int,FilterCondition> $conditions
+     * @param array<int,OrderBy>         $ordering
+     *
+     * @return null|array<int,array<string,null|scalar>>
+     */
+    private function selectViaIndexTrusted(
         IndexSchema $index,
         TableSchema $tableSchema,
         array $conditions,
@@ -3252,7 +3427,17 @@ final class JsonDataProvider
             return false;
         }
 
-        if ($format < 2 || $byteSize === null) {
+        if ($format < 2) {
+            $this->logger?->info(
+                'table "' . $tableSchema->name . '": pre-v2 index format, '
+                    . 'queries fall back to full scans until the next '
+                    . 'write rebuilds and stamps the indexes',
+            );
+
+            return false;
+        }
+
+        if ($byteSize === null) {
             return false;
         }
 
@@ -3265,10 +3450,23 @@ final class JsonDataProvider
             return false;
         }
 
-        return $byteSize === $this->ndjson->fileSizeBytes(
-            $tableSchema->name,
-            $tableSchema->getFileName(),
-        );
+        if (
+            $byteSize !== $this->ndjson->fileSizeBytes(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            )
+        ) {
+            $this->logger?->info(
+                'table "' . $tableSchema->name . '": committed byteSize '
+                    . 'differs from the data file (foreign append or stale '
+                    . 'indexes), queries fall back to full scans until the '
+                    . 'next write heals the drift',
+            );
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -3671,7 +3869,14 @@ final class JsonDataProvider
      * Normalizes a record against the schema contract:
      *  - keeps only fields declared in columns;
      *  - key order strictly follows columns order (id is always first);
-     *  - schema fields missing from the input are added as null.
+     *  - a PRESENT key keeps its value verbatim (including a present
+     *    null — a violation the validator must keep seeing);
+     *  - a schema column ABSENT from the input is back-filled: null for a
+     *    nullable column, the shared ColumnDefaults value for a
+     *    non-nullable one — never a blind null that typed reads and the
+     *    present_null check would reject. A missing non-nullable column
+     *    with no safe default (temporal) cannot be invented and fails
+     *    loudly before anything is written.
      *
      * @param array<string,null|scalar> $record
      *
@@ -3683,8 +3888,30 @@ final class JsonDataProvider
     ): array {
         $normalized = [];
 
-        foreach (array_keys($tableSchema->columns) as $column) {
-            $normalized[$column] = $record[$column] ?? null;
+        foreach ($tableSchema->columns as $column => $type) {
+            if (\array_key_exists($column, $record)) {
+                $normalized[$column] = $record[$column];
+
+                continue;
+            }
+
+            $info = ColumnTypeInfo::parse($type);
+
+            if ($info->nullable) {
+                $normalized[$column] = null;
+
+                continue;
+            }
+
+            if (!ColumnDefaults::hasSafeDefault($type)) {
+                throw StorageException::invalidRecord(
+                    $tableSchema->name,
+                    'column "' . $column . '" of type ' . $type
+                        . ' is missing and has no safe default',
+                );
+            }
+
+            $normalized[$column] = ColumnDefaults::forType($type);
         }
 
         return $normalized;
@@ -3712,9 +3939,59 @@ final class JsonDataProvider
         return ValueComparator::compare($a, $b, $this->comparisonMode);
     }
 
-    private function cacheKey(string $tableName): string
+    /**
+     * Builds the namespaced, version-tagged cache key of a table:
+     * "jdp:<format>:<db-hash>:<table>:<tag>". The database hash isolates
+     * databases sharing one backend pool; the tag binds the entry to one
+     * committed state of the table, so a foreign or cross-process write
+     * (which changes lineCount/byteSize) makes every stale entry
+     * unreachable instead of served.
+     */
+    private function cacheKey(string $tableName, string $tag): string
     {
-        return 'table:' . $tableName;
+        return $this->cacheNs . $tableName . ':' . $tag;
+    }
+
+    /**
+     * Version tag of the table's CURRENT state:
+     * "<meta lineCount>-<physical file size>-<inode>". The size and
+     * inode come from a stat of the data file, not from meta.json — a
+     * foreign append straight into the file (no provider, no meta
+     * commit) must move the tag too. The inode kills the A-B-A class:
+     * every full rewrite lands on a fresh tmp+rename inode, so a
+     * delete+insert of the same byte length, a truncate+reimport or a
+     * same-size value update — through ANY process — can never
+     * reproduce an earlier tag and resurrect a warm entry of the old
+     * state. The lineCount comes from meta.json read on every call
+     * (cross-process freshness). A missing meta entry or data file
+     * yields a component no writer ever commits, so such keys never
+     * collide with real ones.
+     *
+     * The residual blind spot (documented, accepted): a FOREIGN in-place
+     * edit of the file that keeps its byte size (same-length value swap
+     * without a rename) moves nothing — warm entries keep serving until
+     * TTL/eviction; invalidateCache() is the manual escape hatch. Every
+     * write the provider itself performs moves the tag.
+     */
+    private function tableVersionTag(string $tableName): string
+    {
+        try {
+            $lineCount = (string)$this->meta->getLineCount($tableName);
+        } catch (StorageException) {
+            $lineCount = 'nometa';
+        }
+
+        try {
+            $stat = $this->ndjson->fileStat(
+                $tableName,
+                $tableName . '.ndjson',
+            );
+            $fileState = $stat['size'] . '-' . $stat['ino'];
+        } catch (StorageException) {
+            $fileState = 'nofile';
+        }
+
+        return $lineCount . '-' . $fileState;
     }
 
     private function validator(): IntegrityValidator
@@ -3727,6 +4004,7 @@ final class JsonDataProvider
                 $this->json,
                 $this->indexManager,
                 $this->values,
+                $this->logger,
             );
         }
 
@@ -3764,10 +4042,16 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->indexManager,
                 $this->values,
-                $this->cache,
-                fn (TableSchema $t)    => $this->ensureTableConsistent($t),
-                fn (string $t): array  => $this->readAllForWrite($t),
-                fn (string $t): string => $this->cacheKey($t),
+                fn (TableSchema $t)   => $this->ensureTableConsistent($t),
+                fn (string $t): array => $this->readAllForWrite($t),
+                fn (string $t)        => $this->invalidateCache($t),
+                function (
+                    string $t,
+                    int $lineCount,
+                    array $records,
+                ): void {
+                    $this->publishCacheEntry($t, $lineCount, $records);
+                },
             );
         }
 
@@ -3782,6 +4066,8 @@ final class JsonDataProvider
                 $this->schema,
                 $this->json,
                 $this->ndjson,
+                $this->meta,
+                $this->locks,
             );
         }
 
@@ -3798,6 +4084,8 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->indexManager,
                 $this->values,
+                $this->locks,
+                $this->logger,
             );
         }
 

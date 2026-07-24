@@ -72,6 +72,67 @@ final class NdjsonStorage
     }
 
     /**
+     * Reads the whole NDJSON file, separating parseable records from
+     * broken lines. Every non-empty line that read() would silently skip —
+     * invalid JSON, a JSON scalar, or a row that sanitizes to nothing —
+     * is reported in 'broken' with its 0-based PHYSICAL line number and
+     * the raw text, while 'records' holds exactly what read() returns.
+     * Empty lines are neither records nor broken (an in-flight append may
+     * legitimately end mid-line, and read() skips them too).
+     *
+     * The integrity validator reports broken lines; optimize/repair
+     * rewrites refuse to run over a file that has any, because a
+     * read()+write() roundtrip would silently drop them.
+     *
+     * @return array{
+     *     records: array<int,array<string,null|scalar>>,
+     *     broken: array<int,array{line:int,raw:string}>
+     * }
+     */
+    public function readRawLines(string $tableName, string $fileName): array
+    {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+
+        $records = [];
+        $broken = [];
+        $file = new \SplFileObject($path, 'r');
+        $file->setFlags(\SplFileObject::DROP_NEW_LINE);
+
+        foreach ($file as $lineNumber => $raw) {
+            if (!\is_string($raw) || $raw === '') {
+                continue;
+            }
+
+            $item = json_decode($raw, true);
+
+            if (!\is_array($item)) {
+                $broken[] = ['line' => $lineNumber, 'raw' => $raw];
+
+                continue;
+            }
+
+            $row = [];
+
+            foreach ($item as $key => $val) {
+                if (\is_string($key) && (\is_scalar($val) || $val === null)) {
+                    $row[$key] = $val;
+                }
+            }
+
+            if ($row === []) {
+                $broken[] = ['line' => $lineNumber, 'raw' => $raw];
+
+                continue;
+            }
+
+            $records[] = $row;
+        }
+
+        return ['records' => $records, 'broken' => $broken];
+    }
+
+    /**
      * Reads a single NDJSON line by 0-based line number.
      * Returns null if the line is missing or its content is invalid.
      *
@@ -559,6 +620,29 @@ final class NdjsonStorage
         }
 
         return $size;
+    }
+
+    /**
+     * Size and inode of the file in one fresh stat. Every full rewrite
+     * goes through tmp+rename and lands on a NEW inode, so the pair
+     * identifies a committed file state far more precisely than the size
+     * alone — the cache version tag builds on that.
+     *
+     * @return array{size:int,ino:int}
+     */
+    public function fileStat(string $tableName, string $fileName): array
+    {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+
+        clearstatcache(true, $path);
+        $stat = @stat($path);
+
+        if ($stat === false) {
+            throw StorageException::fileNotReadable($path);
+        }
+
+        return ['size' => $stat['size'], 'ino' => $stat['ino']];
     }
 
     /**

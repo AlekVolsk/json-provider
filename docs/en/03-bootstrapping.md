@@ -37,3 +37,11 @@ $db = JsonDataProvider::getInstance('/var/data/myapp', new ApcuCache(ttl: 60));
 ```
 
 See [Caching](16-caching.md).
+
+## Pass a PSR-3 logger
+
+```php
+$db = JsonDataProvider::getInstance('/var/data/myapp', $cache, $psrLogger);
+```
+
+The logger is optional. The provider reports validator findings and runtime degradations to it on the unified severity scale — see [Integrity](14-integrity.md). Both parameters (`$cache`, `$logger`) apply only when the instance is created: a live singleton keeps the ones it was built with.

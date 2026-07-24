@@ -63,6 +63,7 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `FOREIGN_KEY_RESTRICT` | действие `restrict` заблокировало удаление/обновление |
 | `PK_CONTRACT_VIOLATED` | нарушение контракта PK или PK-индекса |
 | `META_ENTRY_MISSING` | нет записи в мете для зарегистрированной таблицы |
+| `META_ENTRY_CORRUPT` | запись меты повреждена (счётчик не int) — чинится `repair()` |
 | `INDEX_NOT_FOUND` | названного индекса нет в схеме таблицы |
 | `REORDER_COLUMNS_UNKNOWN` | reorderColumns: колонка не из схемы |
 | `REORDER_COLUMNS_DUPLICATE` | reorderColumns: дубликат имени колонки |
@@ -94,6 +95,7 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `BACKUP_DESTINATION_INSIDE_DB` | целевой путь бэкапа внутри каталога БД |
 | `BACKUP_ARCHIVE_CORRUPT` | restore: архив отсутствует/нечитаем/неверный формат |
 | `BACKUP_SCHEMA_MISMATCH` | restore: набор таблиц в архиве не совпадает со схемой |
+| `BACKUP_CHECKSUM_MISMATCH` | restore: член архива не прошёл sha256-проверку манифеста |
 | `RESTORE_FAILED` | restore не удался (откачен, если возможно) |
 | `EXTENSION_REQUIRED` | кеш-адаптер не нашёл своё PHP-расширение |
 | `TYPE_MISMATCH` | значение не соответствует заявленному типу колонки |
