@@ -168,6 +168,125 @@ final class IntegrityValidator
             $issues[] = $i;
         }
 
+        foreach ($this->checkFkBackingIndexes($tableSchema) as $i) {
+            $issues[] = $i;
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Every relation with a probing action (cascade/restrict on delete or
+     * update) whose child is this table must point to a declared
+     * single-column index covering the FK column. A missing, dangling or
+     * non-covering backing leaves restrict probes dead-ended in a
+     * configuration error — repair provisions the service index.
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function checkFkBackingIndexes(TableSchema $tableSchema): array
+    {
+        $issues = [];
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            if (
+                $relation->childTable() !== $tableSchema->name
+                || !$relation->needsBackingIndex()
+            ) {
+                continue;
+            }
+
+            $covering = false;
+
+            if ($relation->backingIndex !== null) {
+                foreach ($tableSchema->indexes as $index) {
+                    if (
+                        $index->name === $relation->backingIndex
+                        && \count($index->fields) === 1
+                        && $index->fields[0]
+                            ->field === $relation->childColumn()
+                    ) {
+                        $covering = true;
+
+                        break;
+                    }
+                }
+            }
+
+            if ($covering) {
+                continue;
+            }
+
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::WARNING,
+                IssueCategory::FK_BACKING_INDEX_MISSING,
+                $tableSchema->name,
+                'relation ' . $relation->fromTable . '('
+                    . $relation->foreignKey . ') -> ' . $relation->toTable
+                    . ' has no covering FK backing index on column "'
+                    . $relation->childColumn() . '"',
+                context: [
+                    'from'       => $relation->fromTable,
+                    'foreignKey' => $relation->foreignKey,
+                    'to'         => $relation->toTable,
+                    'column'     => $relation->childColumn(),
+                ],
+            );
+        }
+
+        foreach ($this->checkOrphanedServiceIndexes($tableSchema) as $i) {
+            $issues[] = $i;
+        }
+
+        return $issues;
+    }
+
+    /**
+     * A service index no probing relation points to is dead weight
+     * maintained on every write and undroppable through the index DDL
+     * (its name is reserved) — left behind by dropTable of the parent or
+     * a crashed dropRelation. Reported for repair to remove.
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function checkOrphanedServiceIndexes(
+        TableSchema $tableSchema,
+    ): array {
+        $issues = [];
+
+        foreach ($tableSchema->indexes as $index) {
+            if (!$index->isService) {
+                continue;
+            }
+
+            $used = false;
+
+            foreach ($this->schema->getAllRelations() as $relation) {
+                if (
+                    $relation->childTable() === $tableSchema->name
+                    && $relation->needsBackingIndex()
+                    && $relation->backingIndex === $index->name
+                ) {
+                    $used = true;
+
+                    break;
+                }
+            }
+
+            if ($used) {
+                continue;
+            }
+
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::WARNING,
+                IssueCategory::FK_BACKING_INDEX_ORPHANED,
+                $tableSchema->name,
+                'service index "' . $index->name . '" is not the backing '
+                    . 'of any probing relation',
+                context: ['index' => $index->name],
+            );
+        }
+
         return $issues;
     }
 

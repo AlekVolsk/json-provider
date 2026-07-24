@@ -48,6 +48,27 @@ enum LangEnEnum: string implements LocaleInterface
         . 'information_schema.json: %s';
     case RELATION_ACTION_INVALID = 'Invalid relation %s action "%s": allowed '
         . 'values are noAction, cascade, setNull, restrict';
+    case RELATION_COLUMN_NOT_FOUND = 'Relation %s(%s) -> %s(%s): column "%s" '
+        . 'does not exist in table "%s" (belongsTo holds the FK column in '
+        . 'its from-table; hasMany/hasOne hold it in their to-table)';
+    case RELATION_TYPE_MISMATCH = 'Relation type mismatch: FK column '
+        . '"%s"."%s" (%s) must share the base type of the referenced column '
+        . '"%s"."%s" (%s); the "|null" suffix is ignored';
+    case RELATION_ALREADY_EXISTS = 'Relation %s(%s) -> %s already declared '
+        . 'as: %s (one FK edge may be declared once, in either notation)';
+    case RELATION_NOT_FOUND = 'Relation %s(%s) -> %s is not declared';
+    case RELATION_REFERENCES_NOT_UNIQUE = 'Relation references a non-unique '
+        . 'column: "%s"."%s" must be the primary key or be covered by a '
+        . 'single-column unique constraint';
+    case RELATION_ON_UPDATE_ON_PK = 'Relation %s -> %s: onUpdate is declared '
+        . 'on the immutable primary key "id" and could never fire — drop '
+        . 'the onUpdate action or reference a non-PK unique column';
+    case FOREIGN_KEY_SET_NULL_NOT_NULLABLE = 'SET NULL is declared on '
+        . 'relation FK column "%s"."%s", which is not nullable — make the '
+        . 'column "|null" or change the action';
+    case FK_BACKING_INDEX_MISSING = 'FK backing index for "%s"."%s" is '
+        . 'missing or does not cover the FK column — run repair() to '
+        . 'provision it';
     case INDEX_ALREADY_EXISTS = 'Table "%s" already has an index named "%s"';
     case UNIQUE_CONSTRAINT_ALREADY_EXISTS = 'Table "%s" already has a unique '
         . 'constraint named "%s"';

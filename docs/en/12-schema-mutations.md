@@ -55,7 +55,8 @@ Guards — each throws a `StorageException` and writes nothing:
 - the table does not exist → `TABLE_NOT_FOUND`;
 - a retained column changes type → `MIGRATE_COLUMN_TYPE_CHANGE`. `migrateColumns` never re-encodes stored values, so a type change (including turning a column nullable) is out of its contract — see the recipe below;
 - a not-null column with no zero-value default (`date` / `time` / `datetime`, `year` / `month` / `day`) is added to a **non-empty** table → `MIGRATE_COLUMN_NO_DEFAULT`. Declare it nullable, or add it while the table is still empty;
-- an existing unique constraint or index of the table references a column being dropped → `MIGRATE_FIELD_UNKNOWN_COLUMN` — drop the index/constraint first (`dropIndex`/`dropUniqueConstraint`).
+- an existing unique constraint or index of the table references a column being dropped → `MIGRATE_FIELD_UNKNOWN_COLUMN` — drop the index/constraint first (`dropIndex`/`dropUniqueConstraint`);
+- a column being dropped is a side of a declared relation (the child FK column or the parent referenced column) → `MIGRATE_FIELD_UNKNOWN_COLUMN` with a hint — `dropRelation` first. Without this guard a setNull relation (which has no backing index to block the drop) would leave every parent delete failing with `RELATION_COLUMN_NOT_FOUND`.
 
 Crash safety: the full migrated record set is **encoded into a buffer before** any mutation — an unencodable stored value (foreign bytes in the file) aborts the operation with the disk untouched (`INVALID_RECORD`). Then the schema is published and only then are the data rewritten (temp+fsync+rename), indexes rebuilt, meta committed and the cache refreshed. A crash between the schema and the data is healed by `repair()` toward the **target** state: added not-null columns are back-filled with their type defaults, not null.
 
@@ -65,7 +66,7 @@ No mutation implements a type change (the loud `MIGRATE_COLUMN_TYPE_CHANGE`). Th
 
 ## renameColumn — rename a column
 
-`renameColumn()` renames a column everywhere at once: the schema key (same position and type), index and unique-constraint fields, the column comment, relation sides (the child-side `foreignKey` and the parent-side `references`) and the stored data. A bound DTO is recompiled against the new schema; if the DTO still references the old name, the binding is dropped and object reads fail with a loud `DTO_NOT_REGISTERED` instead of silently broken hydration.
+`renameColumn()` renames a column everywhere at once: the schema key (same position and type), index and unique-constraint fields, the column comment, relation sides (the child-side `foreignKey` and the parent-side `references`) and the stored data. A service FK index of the renamed column follows with its NAME (`_fk_<old>` → `_fk_<new>`, the file is rebuilt and the relations' `backingIndex` re-pointed) — the service index name encodes the column. A bound DTO is recompiled against the new schema; if the DTO still references the old name, the binding is dropped and object reads fail with a loud `DTO_NOT_REGISTERED` instead of silently broken hydration.
 
 ```php
 $db->renameColumn('users', 'phone', 'phone_number');
@@ -87,9 +88,9 @@ $db->addIndex('users', new IndexSchema(
 $db->dropIndex('users', 'idx_users_email');
 ```
 
-- a taken name → `INDEX_ALREADY_EXISTS`; a field outside the columns → `MIGRATE_FIELD_UNKNOWN_COLUMN`; the PK index cannot be added or dropped → `PK_CONTRACT_VIOLATED`; an unknown name on dropIndex → `INDEX_NOT_FOUND`;
+- a taken name → `INDEX_ALREADY_EXISTS`; a field outside the columns → `MIGRATE_FIELD_UNKNOWN_COLUMN`; the PK index cannot be added or dropped → `PK_CONTRACT_VIOLATED`; an unknown name on dropIndex → `INDEX_NOT_FOUND`; service `_fk_` indexes cannot be created or dropped through this API → `RESERVED_INDEX_NAME`;
 - `addIndex`: the file is provisioned and built first, the schema published last — a crash in between leaves an undeclared file that `validate()` reports as orphan and `repair()` removes. On a legacy-format table every index is rebuilt with the current codec and `indexFormat=2` is stamped;
-- `dropIndex`: schema first, then the file — a crash in between leaves an orphan file with the same fate.
+- `dropIndex`: schema first, then the file — a crash in between leaves an orphan file with the same fate. When the user index being dropped serves as the backing of an FK relation, a service replacement `_fk_<column>` is built in the same schema change and the relation is re-pointed (see [indexes](06-indexes.md)).
 
 ## addUniqueConstraint / dropUniqueConstraint — unique constraints
 
@@ -100,7 +101,29 @@ $db->addUniqueConstraint('users', new UniqueConstraint('uq_users_email', ['email
 $db->dropUniqueConstraint('users', 'uq_users_email');
 ```
 
-A taken name → `UNIQUE_CONSTRAINT_ALREADY_EXISTS`; a field outside the columns → `MIGRATE_FIELD_UNKNOWN_COLUMN`; an unknown name on drop → `UNIQUE_CONSTRAINT_NOT_FOUND`.
+A taken name → `UNIQUE_CONSTRAINT_ALREADY_EXISTS`; a field outside the columns → `MIGRATE_FIELD_UNKNOWN_COLUMN`; an unknown name on drop → `UNIQUE_CONSTRAINT_NOT_FOUND`. A single-column constraint grounding the uniqueness of a declared relation's referenced column cannot be dropped while the relation lives (and no other single-column unique on the same column remains) → `RELATION_REFERENCES_NOT_UNIQUE`: with duplicates allowed in the parent column, a cascade would delete the children of a still-living duplicate parent. `dropRelation` first.
+
+## addRelation / dropRelation — relations
+
+`addRelation()` declares an FK relation (declaration validation is described in [the schema model](04-schema-model.md)); for probing actions (`cascade`/`restrict`) the same operation provisions the child-table backing index — a single-column user index on the FK column is reused, otherwise a service `_fk_<column>` is built. `dropRelation()` removes the relation by its declared `(from, foreignKey, to)` triple; a service backing with no other probing relations is dropped with it, a user one stays. Both are DDL under the database + child table EX locks; the relation is active immediately.
+
+```php
+$db->addRelation(new RelationSchema(
+    fromTable: 'boards',
+    foreignKey: 'ownerId',
+    toTable: 'users',
+    references: 'id',
+    type: RelationTypeEnum::BELONGS_TO,
+    onDelete: ForeignKeyActionEnum::CASCADE,
+));
+$db->dropRelation('boards', 'ownerId', 'users');
+$db->relations();           // every relation
+$db->relations('users');    // relations involving users
+```
+
+A duplicate of the canonical edge (in either notation) → `RELATION_ALREADY_EXISTS`; dropping a missing one → `RELATION_NOT_FOUND`. The `backingIndex` field of the passed descriptor is ignored — the engine owns it.
+
+Crash model of `addRelation` with a service index: the index file is built first, then one RMW publishes the index in the child schema, then (a separate RMW) the relation itself. A crash between the steps leaves either an orphan `_fk_*.index.ndjson` file (removed by `repair()`) or a declared but not yet referenced service index — harmless, reused by a repeated `addRelation`.
 
 ## renameTable — rename a table
 
@@ -125,7 +148,8 @@ $db->dropTable('audit_log');
 Notes:
 
 - the operation runs under exclusive database and table locks; the schema entry is removed first (schema → meta → files), so the "every registered table has a meta entry" invariant is never broken mid-operation;
-- foreign keys are **not** enforced: dropping a parent table silently removes its relations and leaves any child FK columns/values dangling (like SQL `DROP TABLE`, not `DROP TABLE ... RESTRICT`). Drop or migrate the children first if that matters.
+- foreign keys are **not** enforced: dropping a parent table silently removes its relations and leaves any child FK columns/values dangling (like SQL `DROP TABLE`, not `DROP TABLE ... RESTRICT`). Drop or migrate the children first if that matters;
+- service backing indexes the removed relations provisioned in their **child** tables are released with them (the children are EX-locked for that); a service index orphaned for any other reason is caught by the validator as `fk_backing_index_orphaned` and removed by `repair()`.
 
 ## Introspection
 

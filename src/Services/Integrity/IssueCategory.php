@@ -28,6 +28,8 @@ enum IssueCategory: string
     case META_LAST_ID_DRIFT = 'meta_last_id_drift';
     case META_ORPHAN_ENTRY = 'meta_orphan_entry';
     case RENAME_INCOMPLETE = 'rename_incomplete';
+    case FK_BACKING_INDEX_MISSING = 'fk_backing_index_missing';
+    case FK_BACKING_INDEX_ORPHANED = 'fk_backing_index_orphaned';
     case TABLE_OPTIMIZED = 'table_optimized';
     case REPAIR_FAILED = 'repair_failed';
 }

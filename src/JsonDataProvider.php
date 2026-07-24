@@ -21,6 +21,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Query\ValueComparator;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Relations\FkEngine;
 use AV\JsonProvider\Schema\ColumnDefaults;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\IdentifierRules;
@@ -68,6 +69,7 @@ final class JsonDataProvider
     private readonly DtoMapper $dtoMapper;
     private IntegrityValidator | null $validator = null;
     private IntegrityRepairer | null $repairer = null;
+    private FkEngine | null $fkEngine = null;
     private Backup | null $backup = null;
     private Restore | null $restore = null;
     private readonly string $dbPath;
@@ -263,14 +265,26 @@ final class JsonDataProvider
      * Foreign keys are not enforced here: dropping a parent table silently
      * removes its relations and leaves any child FK columns/values dangling
      * (cf. SQL DROP TABLE, not DROP TABLE ... RESTRICT). Drop or migrate the
-     * children first if that matters.
+     * children first if that matters. Service backing indexes the removed
+     * relations provisioned in their CHILD tables are released with them
+     * (the children are EX-locked for that); one left behind by a raced
+     * schema change is caught by the fk_backing_index_orphaned validator
+     * finding.
      */
     public function dropTable(string $tableName): void
     {
         IdentifierRules::assertTableName($tableName);
 
+        $lockPlan = [$tableName => 'ex'];
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            if ($relation->parentTable() === $tableName) {
+                $lockPlan[$relation->childTable()] ??= 'ex';
+            }
+        }
+
         $this->locks->withLocks(
-            [$tableName => 'ex'],
+            $lockPlan,
             'ex',
             function () use ($tableName): void {
                 $this->schema->reload();
@@ -279,7 +293,25 @@ final class JsonDataProvider
                     return;
                 }
 
+                $orphanedRelations = array_values(array_filter(
+                    $this->schema->getAllRelations(),
+                    static fn (RelationSchema $r): bool => $r
+                        ->parentTable() === $tableName
+                        && $r->childTable() !== $tableName,
+                ));
+
                 $this->schema->unregisterTable($tableName);
+
+                foreach ($orphanedRelations as $relation) {
+                    if (
+                        !$this->locks->isHeld($relation->childTable(), 'ex')
+                    ) {
+                        continue;
+                    }
+
+                    $this->releaseServiceBacking($relation);
+                }
+
                 $this->meta->dropEntry($tableName);
                 $this->ndjson->deleteTable($tableName);
                 $this->dtoRegistry->unregister($tableName);
@@ -499,6 +531,10 @@ final class JsonDataProvider
                     array_diff($currentColumns, $desiredColumns),
                 );
 
+                $this->assertDroppedColumnsFreeOfRelations(
+                    $target->name,
+                    $dropped,
+                );
                 $this->ensureTableConsistent($current);
                 $records = $this->readAllForWrite($target->name);
 
@@ -569,7 +605,9 @@ final class JsonDataProvider
     public function insert(string $tableName, array $record): int
     {
         return $this->locks->withLocks(
-            $this->insertLockPlan($this->schema->getTable($tableName)),
+            $this->fkEngine()->insertLockPlan(
+                $this->schema->getTable($tableName),
+            ),
             'sh',
             function () use ($tableName, $record): int {
                 $tableSchema = $this->schema->getTable($tableName);
@@ -655,6 +693,11 @@ final class JsonDataProvider
      * Returns the number of updated records (0 if no matches — empty match set
      * is not a failure). The 'id' key in $data is silently ignored.
      *
+     * The FK closure (cascade/setNull patches, restrict probes) and the
+     * unique checks of the final state are planned entirely before the
+     * first write; the multi-table write set is then committed two-phase
+     * (see FkEngine).
+     *
      * @param array<int,FilterCondition> $conditions
      * @param array<string,null|scalar>  $data
      */
@@ -663,15 +706,13 @@ final class JsonDataProvider
         array $conditions,
         array $data,
     ): int {
-        return $this->locks->withLocks(
-            $this->mutationLockPlan($this->schema->getTable($tableName)),
-            'sh',
-            function () use (
-                $tableName,
+        return $this->withMutationLocks(
+            $tableName,
+            function (TableSchema $tableSchema) use (
                 $conditions,
                 $data,
             ): int {
-                $tableSchema = $this->schema->getTable($tableName);
+                $tableName = $tableSchema->name;
                 $conditions = $this->values->encodeConditions(
                     $tableSchema,
                     $conditions,
@@ -698,32 +739,15 @@ final class JsonDataProvider
                     return 0;
                 }
 
-                foreach ($targetIndexes as $index) {
-                    $oldRecord = $records[$index];
-                    $updated = array_merge($oldRecord, $data);
-                    $excludeId = isset($oldRecord['id'])
-                        && \is_int($oldRecord['id'])
-                        ? $oldRecord['id']
-                        : null;
+                $plan = $this->fkEngine()->planFkUpdate(
+                    $tableSchema,
+                    $records,
+                    $targetIndexes,
+                    $data,
+                );
+                $this->fkEngine()->applyFkPlan($plan);
 
-                    $this->checkUniqueConstraints(
-                        $tableSchema,
-                        $records,
-                        $updated,
-                        $excludeId,
-                    );
-                    $this->processForeignKeysOnUpdate(
-                        $tableName,
-                        $oldRecord,
-                        $updated,
-                    );
-
-                    $records[$index] = $updated;
-                }
-
-                $this->writeAll($tableName, $tableSchema, $records);
-
-                return \count($targetIndexes);
+                return $plan->affected;
             },
         );
     }
@@ -732,21 +756,45 @@ final class JsonDataProvider
      * Deletes records matching all conditions. Returns the number of deleted
      * records (0 if no matches — empty set is not a failure).
      *
+     * The FK closure (cascades, setNull patches, restrict probes) is
+     * planned entirely before the first write; the multi-table write set
+     * is then committed two-phase, children before parents (see FkEngine).
+     *
      * @param array<int,FilterCondition> $conditions
      */
     public function delete(string $tableName, array $conditions): int
     {
-        return $this->locks->withLocks(
-            $this->mutationLockPlan($this->schema->getTable($tableName)),
-            'sh',
-            function () use ($tableName, $conditions): int {
-                $tableSchema = $this->schema->getTable($tableName);
+        return $this->withMutationLocks(
+            $tableName,
+            function (TableSchema $tableSchema) use ($conditions): int {
+                $tableName = $tableSchema->name;
                 $conditions = $this->values->encodeConditions(
                     $tableSchema,
                     $conditions,
                 );
+                $this->ensureTableConsistent($tableSchema);
+                $records = $this->readAllForWrite($tableName);
 
-                return $this->deleteMatching($tableSchema, $conditions);
+                $deleteIndexes = [];
+
+                foreach ($records as $index => $record) {
+                    if ($this->matchesAll($record, $conditions)) {
+                        $deleteIndexes[] = $index;
+                    }
+                }
+
+                if ($deleteIndexes === []) {
+                    return 0;
+                }
+
+                $plan = $this->fkEngine()->planFkDelete(
+                    $tableSchema,
+                    $records,
+                    $deleteIndexes,
+                );
+                $this->fkEngine()->applyFkPlan($plan);
+
+                return $plan->affected;
             },
         );
     }
@@ -989,19 +1037,47 @@ final class JsonDataProvider
                         $updated = [];
 
                         foreach ($relations as $relation) {
-                            $updated[] = self::renameColumnInRelation(
+                            $renamedRelation = self::renameColumnInRelation(
                                 $relation,
                                 $tableName,
                                 $from,
                                 $to,
                             );
+
+                            $oldBacking
+                                = IdentifierRules::serviceIndexNameFor($from);
+                            $newBacking
+                                = IdentifierRules::serviceIndexNameFor($to);
+
+                            if (
+                                $renamedRelation->childTable() === $tableName
+                                && $renamedRelation
+                                    ->backingIndex === $oldBacking
+                            ) {
+                                $renamedRelation = $renamedRelation
+                                    ->withBackingIndex($newBacking);
+                            }
+
+                            $updated[] = $renamedRelation;
                         }
 
                         return [$tables, $updated];
                     },
                 );
 
+                $this->createMissingIndexFiles($newSchema);
                 $this->writeAll($tableName, $newSchema, $renamed);
+
+                /*
+                 * writeAll has already built the index files of the NEW
+                 * schema (including a renamed service backing); the file
+                 * under the old service name is now an undeclared
+                 * leftover — the same shape repair would sweep as an
+                 * orphan, removed eagerly here.
+                 */
+                $oldServiceFile = IdentifierRules::serviceIndexNameFor($from)
+                    . '.index.ndjson';
+                $this->ndjson->deleteFile($tableName, $oldServiceFile);
                 $this->recompileDto($tableName, $newSchema);
             },
         );
@@ -1309,6 +1385,13 @@ final class JsonDataProvider
      * be dropped (PK_CONTRACT_VIOLATED); an unknown name raises
      * INDEX_NOT_FOUND. Schema first, file second: a crash in between
      * leaves an orphan file that validate() reports and repair() removes.
+     *
+     * Service (FK backing) indexes cannot be dropped here — their
+     * lifecycle belongs to the relation DDL (RESERVED_INDEX_NAME). A USER
+     * index serving as the backing of a relation is dropped, but the FK
+     * must not lose its probe: a service replacement is built first and
+     * the relations are re-pointed to it in the same schema RMW that
+     * removes the user index.
      */
     public function dropIndex(string $tableName, string $indexName): void
     {
@@ -1350,22 +1433,88 @@ final class JsonDataProvider
                     );
                 }
 
-                $this->schema->updateTable(
+                if ($found->isService) {
+                    throw StorageException::reservedIndexName($indexName);
+                }
+
+                $replacement = $this->backingReplacementFor(
                     $tableName,
-                    static fn (TableSchema $t): TableSchema => new TableSchema(
-                        name: $t->name,
-                        uniqueConstraints: $t->uniqueConstraints,
-                        columns: $t->columns,
-                        indexes: array_values(array_filter(
-                            $t->indexes,
-                            static fn (IndexSchema $i): bool => $i
-                                ->name !== $indexName,
-                        )),
-                        tableComment: $t->tableComment,
-                        columnComment: $t->columnComment,
-                    ),
+                    $found,
                 );
 
+                if ($replacement !== null) {
+                    $this->provisionServiceIndexFile(
+                        $tableName,
+                        $replacement,
+                    );
+                }
+
+                $this->schema->mutate(
+                    static function (
+                        array $tables,
+                        array $relations,
+                    ) use (
+                        $tableName,
+                        $indexName,
+                        $replacement,
+                    ): array {
+                        $table = $tables[$tableName]
+                            ?? throw StorageException::tableNotFound(
+                                $tableName,
+                            );
+                        $indexes = array_values(array_filter(
+                            $table->indexes,
+                            static fn (IndexSchema $i): bool => $i
+                                ->name !== $indexName,
+                        ));
+
+                        if ($replacement !== null) {
+                            $present = array_filter(
+                                $indexes,
+                                static fn (IndexSchema $i): bool => $i
+                                    ->name === $replacement->name,
+                            );
+
+                            if ($present === []) {
+                                $indexes[] = $replacement;
+                            }
+
+                            $relations = array_map(
+                                static function (
+                                    RelationSchema $r,
+                                ) use (
+                                    $tableName,
+                                    $indexName,
+                                    $replacement,
+                                ): RelationSchema {
+                                    $isRepointed = $r
+                                        ->childTable() === $tableName
+                                        && $r->backingIndex === $indexName;
+
+                                    return $isRepointed
+                                        ? $r->withBackingIndex(
+                                            $replacement->name,
+                                        )
+                                        : $r;
+                                },
+                                $relations,
+                            );
+                        }
+
+                        $tables[$tableName] = new TableSchema(
+                            name: $table->name,
+                            uniqueConstraints: $table->uniqueConstraints,
+                            columns: $table->columns,
+                            indexes: $indexes,
+                            tableComment: $table->tableComment,
+                            columnComment: $table->columnComment,
+                        );
+
+                        return [$tables, $relations];
+                    },
+                );
+
+                $this->invalidateCache($tableName);
                 $this->ndjson->deleteFile($tableName, $found->getFileName());
             },
         );
@@ -1459,6 +1608,12 @@ final class JsonDataProvider
      * Drops a unique constraint by name under the database + table EX
      * locks. An unknown name raises UNIQUE_CONSTRAINT_NOT_FOUND.
      * Schema-only mutation.
+     *
+     * A single-column constraint that is the uniqueness ground of a
+     * declared relation's referenced column cannot be dropped while the
+     * relation exists (RELATION_REFERENCES_NOT_UNIQUE) — with duplicates
+     * allowed in the parent column, a cascade would delete the children
+     * of a still-living duplicate parent. Drop the relation first.
      */
     public function dropUniqueConstraint(
         string $tableName,
@@ -1471,22 +1626,27 @@ final class JsonDataProvider
                 $this->schema->reload();
                 $tableSchema = $this->schema->getTable($tableName);
 
-                $found = false;
+                $found = null;
 
                 foreach ($tableSchema->uniqueConstraints as $existing) {
                     if ($existing->name === $name) {
-                        $found = true;
+                        $found = $existing;
 
                         break;
                     }
                 }
 
-                if (!$found) {
+                if ($found === null) {
                     throw StorageException::uniqueConstraintNotFound(
                         $tableName,
                         $name,
                     );
                 }
+
+                $this->assertUniqueNotBackingRelations(
+                    $tableSchema,
+                    $found,
+                );
 
                 $this->schema->updateTable(
                     $tableName,
@@ -1505,6 +1665,161 @@ final class JsonDataProvider
                 );
             },
         );
+    }
+
+    /**
+     * Declares a relation (DDL, under the database EX + child table EX
+     * locks): validates it against the fresh schema (tables and columns
+     * exist, base types match, the referenced column is unique, onUpdate
+     * is not declared on the PK, SET NULL lands on a nullable column),
+     * rejects a canonical duplicate, provisions the FK backing index for
+     * probing (cascade/restrict) actions, and persists. The relation is
+     * active immediately — no restart or migration step.
+     *
+     * Backing resolution: an existing single-column USER index on the FK
+     * column is reused; otherwise a service index "_fk_<column>" is built
+     * (file first, then the schema RMW that also records the relation, so
+     * a crash in between leaves only an orphan index file for repair to
+     * sweep). Any backingIndex preset on the passed descriptor is
+     * ignored — the engine owns that field.
+     */
+    public function addRelation(RelationSchema $relation): void
+    {
+        $child = $relation->childTable();
+
+        $this->locks->withLocks(
+            [$child => 'ex'],
+            'ex',
+            function () use ($relation, $child): void {
+                $this->schema->reload();
+                SchemaRegistry::assertRelationValid(
+                    $this->schema->getTables(),
+                    $relation,
+                );
+
+                $backing = null;
+
+                if ($relation->needsBackingIndex()) {
+                    $backing = $this->resolveBackingIndex(
+                        $child,
+                        $relation->childColumn(),
+                    );
+
+                    if (
+                        $backing->isService
+                        && !$this->indexDeclared($child, $backing->name)
+                    ) {
+                        $this->provisionServiceIndexFile($child, $backing);
+                        $this->schema->updateTable(
+                            $child,
+                            static fn (
+                                TableSchema $t,
+                            ): TableSchema => new TableSchema(
+                                name: $t->name,
+                                uniqueConstraints: $t->uniqueConstraints,
+                                columns: $t->columns,
+                                indexes: array_merge(
+                                    $t->indexes,
+                                    [$backing],
+                                ),
+                                tableComment: $t->tableComment,
+                                columnComment: $t->columnComment,
+                            ),
+                        );
+                    }
+                }
+
+                $this->schema->addRelation(
+                    $relation->withBackingIndex($backing?->name),
+                );
+            },
+        );
+    }
+
+    /**
+     * Removes the relation(s) matching the declared (fromTable,
+     * foreignKey, toTable) triple, under the database EX + child table EX
+     * locks. Nothing matched — RELATION_NOT_FOUND. A service backing
+     * index left without any other probing relation on the same child
+     * column is dropped with the relation; a reused user index is always
+     * kept.
+     */
+    public function dropRelation(
+        string $fromTable,
+        string $foreignKey,
+        string $toTable,
+    ): void {
+        IdentifierRules::assertTableName($fromTable);
+        IdentifierRules::assertTableName($toTable);
+        IdentifierRules::assertColumnName($foreignKey);
+
+        $childCandidates = array_values(array_unique(
+            array_map(
+                static fn (RelationSchema $r): string => $r->childTable(),
+                array_filter(
+                    $this->schema->getAllRelations(),
+                    static fn (RelationSchema $r): bool => $r
+                        ->fromTable === $fromTable
+                        && $r->foreignKey === $foreignKey
+                        && $r->toTable === $toTable,
+                ),
+            ),
+        ));
+
+        if ($childCandidates === []) {
+            throw StorageException::relationNotFound(
+                $fromTable,
+                $foreignKey,
+                $toTable,
+            );
+        }
+
+        $lockPlan = [];
+
+        foreach ($childCandidates as $childTable) {
+            $lockPlan[$childTable] = 'ex';
+        }
+
+        $this->locks->withLocks(
+            $lockPlan,
+            'ex',
+            function () use ($fromTable, $foreignKey, $toTable): void {
+                $this->schema->reload();
+                $removed = $this->schema->removeRelation(
+                    $fromTable,
+                    $foreignKey,
+                    $toTable,
+                );
+
+                foreach ($removed as $relation) {
+                    /*
+                     * The lock plan was derived from the pre-lock schema
+                     * snapshot; a same-triple relation added concurrently
+                     * with a different child table would not be covered.
+                     * Its removal is already persisted (correct), but its
+                     * backing cleanup must not touch an unlocked table.
+                     */
+                    if (!$this->locks->isHeld($relation->childTable(), 'ex')) {
+                        continue;
+                    }
+
+                    $this->releaseServiceBacking($relation);
+                }
+            },
+        );
+    }
+
+    /**
+     * Returns the declared relations: all of them, or (with a table name)
+     * the ones involving that table on either side.
+     *
+     * @return array<int,RelationSchema>
+     */
+    public function relations(string | null $tableName = null): array
+    {
+        return $tableName === null
+            ? $this->schema->getAllRelations()
+            : $this->schema->getRelations($tableName);
     }
 
     /**
@@ -1859,6 +2174,327 @@ final class JsonDataProvider
     }
 
     /**
+     * A migration may not drop a column that is a side of a declared
+     * relation (the FK column of its child or the referenced column of
+     * its parent): a setNull edge has no backing index to block the drop
+     * and would leave every parent delete failing with
+     * RELATION_COLUMN_NOT_FOUND. Drop the relation first.
+     *
+     * @param array<int,string> $dropped
+     */
+    private function assertDroppedColumnsFreeOfRelations(
+        string $tableName,
+        array $dropped,
+    ): void {
+        if ($dropped === []) {
+            return;
+        }
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            foreach ($dropped as $column) {
+                $isChildSide = $relation->childTable() === $tableName
+                    && $relation->childColumn() === $column;
+                $isParentSide = $relation->parentTable() === $tableName
+                    && $relation->parentColumn() === $column;
+
+                if ($isChildSide || $isParentSide) {
+                    throw StorageException::migrateFieldUnknownColumn(
+                        $tableName,
+                        'relation ' . $relation->fromTable . '('
+                            . $relation->foreignKey . ') -> '
+                            . $relation->toTable
+                            . ' (drop the relation first)',
+                        $column,
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Refuses to drop a single-column unique constraint whose column is
+     * the referenced (parent) column of a declared relation, unless
+     * another single-column unique constraint on the same column remains.
+     * Multi-column constraints never ground a relation (the declaration
+     * check accepts only single-column coverage), so they always pass.
+     */
+    private function assertUniqueNotBackingRelations(
+        TableSchema $tableSchema,
+        UniqueConstraint $constraint,
+    ): void {
+        if (\count($constraint->fields) !== 1) {
+            return;
+        }
+
+        $column = $constraint->fields[0];
+
+        if ($column === PrimaryKey::FIELD) {
+            return;
+        }
+
+        foreach ($tableSchema->uniqueConstraints as $other) {
+            if (
+                $other->name !== $constraint->name
+                && $other->fields === [$column]
+            ) {
+                return;
+            }
+        }
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            if (
+                $relation->parentTable() === $tableSchema->name
+                && $relation->parentColumn() === $column
+            ) {
+                throw StorageException::relationReferencesNotUnique(
+                    $tableSchema->name,
+                    $column,
+                );
+            }
+        }
+    }
+
+    /**
+     * Runs a mutation body under the FK-aware lock plan of the table,
+     * closing the plan-staleness window: the plan is computed from the
+     * pre-lock schema snapshot, and a relation added by a concurrent
+     * addRelation (db EX) between planning and the db SH acquisition
+     * could make the engine cascade into a table the frame never locked.
+     * The body therefore re-derives the plan from the fresh in-section
+     * schema and retries with the new plan when the held set no longer
+     * covers it; under the held db SH lock the schema cannot change
+     * again, so a covered plan stays covered for the whole section.
+     *
+     * @template T
+     *
+     * @param callable(TableSchema): T $body
+     *
+     * @return T
+     */
+    private function withMutationLocks(string $tableName, callable $body)
+    {
+        $attempts = 0;
+
+        while (true) {
+            $plan = $this->fkEngine()->mutationLockPlan(
+                $this->schema->getTable($tableName),
+            );
+
+            // null = the plan went stale, retry; a completed body is
+            // wrapped in a one-element envelope so its own null survives.
+            $outcome = $this->locks->withLocks(
+                $plan,
+                'sh',
+                function () use ($tableName, $body): array | null {
+                    $tableSchema = $this->schema->getTable($tableName);
+                    $freshPlan = $this->fkEngine()->mutationLockPlan(
+                        $tableSchema,
+                    );
+
+                    foreach ($freshPlan as $table => $mode) {
+                        if (!$this->locks->isHeld($table, $mode)) {
+                            return null;
+                        }
+                    }
+
+                    return [$body($tableSchema)];
+                },
+            );
+
+            if ($outcome !== null) {
+                return $outcome[0];
+            }
+
+            if (++$attempts >= 5) {
+                throw StorageException::lockOrderViolation(
+                    'mutation lock plan for table "' . $tableName
+                        . '" kept going stale (concurrent relation DDL)',
+                );
+            }
+        }
+    }
+
+    /**
+     * When the index being dropped is the backing of at least one probing
+     * relation on this child table, returns the service index descriptor
+     * that must replace it (or an already existing service index on the
+     * same column); null when no relation depends on it.
+     */
+    private function backingReplacementFor(
+        string $tableName,
+        IndexSchema $dropped,
+    ): IndexSchema | null {
+        $needed = false;
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            if (
+                $relation->childTable() === $tableName
+                && $relation->backingIndex === $dropped->name
+                && $relation->needsBackingIndex()
+            ) {
+                $needed = true;
+
+                break;
+            }
+        }
+
+        if (!$needed) {
+            return null;
+        }
+
+        $column = $dropped->fields[0]->field;
+
+        return new IndexSchema(
+            name: IdentifierRules::serviceIndexNameFor($column),
+            fields: [
+                new Schema\IndexFieldSchema(
+                    $column,
+                    SortDirectionEnum::ASC,
+                ),
+            ],
+            isService: true,
+        );
+    }
+
+    /**
+     * Builds the physical file of a service index from the current
+     * on-disk records (index machinery identical to addIndex): file
+     * first, schema second — a crash in between leaves an orphan
+     * *.index.ndjson that repair removes. Requires the table EX lock.
+     */
+    private function provisionServiceIndexFile(
+        string $tableName,
+        IndexSchema $index,
+    ): void {
+        $tableSchema = $this->schema->getTable($tableName);
+        $this->ensureTableConsistent($tableSchema);
+        $records = $this->readAllForWrite($tableName);
+
+        $this->ndjson->createFileFresh($tableName, $index->getFileName());
+
+        if ($this->meta->getIndexFormat($tableName) < 2) {
+            $this->indexManager->rebuild($tableSchema, $records);
+        }
+
+        $this->indexManager->rebuildOne($tableName, $index, $records);
+
+        if ($this->meta->getIndexFormat($tableName) < 2) {
+            $this->meta->stampIndexFormat($tableName, 2);
+        }
+    }
+
+    /**
+     * Picks the backing index for a probing relation on the child column:
+     * an existing single-column USER index on that column is reused;
+     * otherwise the service descriptor "_fk_<column>" is returned (which
+     * may itself already be declared by another relation on the same
+     * column and is then shared).
+     */
+    private function resolveBackingIndex(
+        string $childTable,
+        string $column,
+    ): IndexSchema {
+        $tableSchema = $this->schema->getTable($childTable);
+
+        foreach ($tableSchema->indexes as $index) {
+            if (
+                !$index->isService
+                && !$index->isPrimary
+                && \count($index->fields) === 1
+                && $index->fields[0]->field === $column
+            ) {
+                return $index;
+            }
+        }
+
+        return new IndexSchema(
+            name: IdentifierRules::serviceIndexNameFor($column),
+            fields: [
+                new Schema\IndexFieldSchema(
+                    $column,
+                    SortDirectionEnum::ASC,
+                ),
+            ],
+            isService: true,
+        );
+    }
+
+    private function indexDeclared(string $tableName, string $name): bool
+    {
+        foreach ($this->schema->getTable($tableName)->indexes as $index) {
+            if ($index->name === $name) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Drops the SERVICE backing index of a removed relation when no other
+     * probing relation on the same child still points to it. User indexes
+     * reused as backing are never dropped here.
+     */
+    private function releaseServiceBacking(RelationSchema $removed): void
+    {
+        $backing = $removed->backingIndex;
+
+        if (
+            $backing === null
+            || !str_starts_with(
+                $backing,
+                IdentifierRules::SERVICE_INDEX_PREFIX,
+            )
+        ) {
+            return;
+        }
+
+        $child = $removed->childTable();
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            if (
+                $relation->childTable() === $child
+                && $relation->backingIndex === $backing
+                && $relation->needsBackingIndex()
+            ) {
+                return;
+            }
+        }
+
+        $tableSchema = $this->schema->getTable($child);
+        $file = null;
+
+        foreach ($tableSchema->indexes as $index) {
+            if ($index->name === $backing && $index->isService) {
+                $file = $index->getFileName();
+
+                break;
+            }
+        }
+
+        if ($file === null) {
+            return;
+        }
+
+        $this->schema->updateTable(
+            $child,
+            static fn (TableSchema $t): TableSchema => new TableSchema(
+                name: $t->name,
+                uniqueConstraints: $t->uniqueConstraints,
+                columns: $t->columns,
+                indexes: array_values(array_filter(
+                    $t->indexes,
+                    static fn (IndexSchema $i): bool => $i
+                        ->name !== $backing,
+                )),
+                tableComment: $t->tableComment,
+                columnComment: $t->columnComment,
+            ),
+        );
+        $this->ndjson->deleteFile($child, $file);
+    }
+
+    /**
      * Rewrites a relation after a table rename: both sides are checked —
      * a relation may reference the renamed table as its from- and
      * to-table at once (self-reference).
@@ -1882,54 +2518,8 @@ final class JsonDataProvider
             type: $relation->type,
             onDelete: $relation->onDelete,
             onUpdate: $relation->onUpdate,
+            backingIndex: $relation->backingIndex,
         );
-    }
-
-    /**
-     * Delete body over ALREADY-ENCODED conditions. The public delete()
-     * validates and encodes user input first; FK cascades call this
-     * directly — their conditions are built from STORED values (already
-     * in the on-disk form), so running them through encodeConditions
-     * would double-encode temporal values (shifting an already-UTC string
-     * again) and apply user-input typing to engine-built conditions.
-     * Requires the table EX lock (held transitively by the caller's
-     * mutation lock plan).
-     *
-     * @param array<int,FilterCondition> $conditions
-     */
-    private function deleteMatching(
-        TableSchema $tableSchema,
-        array $conditions,
-    ): int {
-        $tableName = $tableSchema->name;
-        $this->ensureTableConsistent($tableSchema);
-        $records = $this->readAllForWrite($tableName);
-
-        $toDelete = array_filter(
-            $records,
-            fn (array $r): bool => $this->matchesAll(
-                $r,
-                $conditions,
-            ),
-        );
-
-        if ($toDelete === []) {
-            return 0;
-        }
-
-        $this->processForeignKeys($tableName, $toDelete, 'delete');
-
-        $filtered = array_values(array_filter(
-            $records,
-            fn (array $r): bool => !$this->matchesAll(
-                $r,
-                $conditions,
-            ),
-        ));
-
-        $this->writeAll($tableName, $tableSchema, $filtered);
-
-        return \count($toDelete);
     }
 
     /**
@@ -1964,7 +2554,11 @@ final class JsonDataProvider
     /**
      * Builds the table descriptor with one column renamed: the column key
      * keeps its position and type; indexes, unique constraints and the
-     * column comment map follow the rename.
+     * column comment map follow the rename. A service FK backing index of
+     * the renamed column follows with its NAME ("_fk_<from>" becomes
+     * "_fk_<to>") — the name encodes the column, and keeping the old one
+     * would collide with a later backing provision for a new column named
+     * like the old one.
      */
     private static function renameColumnInSchema(
         TableSchema $tableSchema,
@@ -2001,10 +2595,20 @@ final class JsonDataProvider
                 );
             }
 
+            $name = $index->name;
+
+            if (
+                $index->isService
+                && $name === IdentifierRules::serviceIndexNameFor($from)
+            ) {
+                $name = IdentifierRules::serviceIndexNameFor($to);
+            }
+
             $indexes[] = new IndexSchema(
-                $index->name,
+                $name,
                 $fields,
                 $index->isPrimary,
+                $index->isService,
             );
         }
 
@@ -2070,6 +2674,7 @@ final class JsonDataProvider
             type: $relation->type,
             onDelete: $relation->onDelete,
             onUpdate: $relation->onUpdate,
+            backingIndex: $relation->backingIndex,
         );
     }
 
@@ -2237,105 +2842,6 @@ final class JsonDataProvider
         foreach (array_keys($first) as $column) {
             IdentifierRules::assertColumnName($column);
         }
-    }
-
-    /**
-     * Lock plan for an insert: the table itself EX plus SH on parents of
-     * its enforced relations (rows of the parents provide FK context).
-     *
-     * @return array<string,string>
-     */
-    private function insertLockPlan(TableSchema $tableSchema): array
-    {
-        $plan = [$tableSchema->name => 'ex'];
-        $this->addParentShLocks($tableSchema->name, $plan);
-
-        return $plan;
-    }
-
-    /**
-     * Lock plan for an update/delete: the table EX, transitively every
-     * CASCADE/SET_NULL child EX (their rows are rewritten and their own
-     * children may cascade further), every RESTRICT child SH (their rows
-     * are only read), and SH on the parents of every EX table (FK context
-     * of the nested mutations). Derived from the relations graph of the
-     * schema, not from data; cycles terminate via the visited set.
-     *
-     * @return array<string,string>
-     */
-    private function mutationLockPlan(TableSchema $tableSchema): array
-    {
-        $plan = [$tableSchema->name => 'ex'];
-        $queue = [$tableSchema->name];
-        $visited = [$tableSchema->name => true];
-
-        while ($queue !== []) {
-            $table = array_shift($queue);
-            $this->addParentShLocks($table, $plan);
-
-            foreach ($this->schema->getChildRelations($table) as $relation) {
-                $child = $relation->fromTable;
-                $actions = [$relation->onDelete, $relation->onUpdate];
-
-                if (
-                    \in_array(
-                        Schema\ForeignKeyActionEnum::CASCADE,
-                        $actions,
-                        true,
-                    )
-                    || \in_array(
-                        Schema\ForeignKeyActionEnum::SET_NULL,
-                        $actions,
-                        true,
-                    )
-                ) {
-                    $plan[$child] = 'ex';
-
-                    if (!isset($visited[$child])) {
-                        $visited[$child] = true;
-                        $queue[] = $child;
-                    }
-                } elseif (
-                    \in_array(
-                        Schema\ForeignKeyActionEnum::RESTRICT,
-                        $actions,
-                        true,
-                    )
-                ) {
-                    $plan[$child] ??= 'sh';
-                }
-            }
-        }
-
-        return $plan;
-    }
-
-    /**
-     * Adds SH locks for the parents of the table's enforced relations to
-     * the plan (never downgrading an already planned EX).
-     *
-     * @param array<string,string> $plan
-     */
-    private function addParentShLocks(string $tableName, array &$plan): void
-    {
-        foreach ($this->schema->getRelations($tableName) as $relation) {
-            if (
-                $relation->fromTable !== $tableName
-                || $relation->toTable === $tableName
-            ) {
-                continue;
-            }
-
-            if (self::relationEnforced($relation)) {
-                $plan[$relation->toTable] ??= 'sh';
-            }
-        }
-    }
-
-    private static function relationEnforced(RelationSchema $relation): bool
-    {
-        return $relation->onDelete !== Schema\ForeignKeyActionEnum::NO_ACTION
-            || $relation->onUpdate !== Schema\ForeignKeyActionEnum::NO_ACTION;
     }
 
     /**
@@ -2814,177 +3320,6 @@ final class JsonDataProvider
     }
 
     /**
-     * Processes foreign key actions for deleted records.
-     *
-     * @param array<int, array<string,null|scalar>> $deletedRecords
-     */
-    private function processForeignKeys(
-        string $tableName,
-        array $deletedRecords,
-        string $event,
-    ): void {
-        $childRelations = $this->schema->getChildRelations($tableName);
-
-        foreach ($childRelations as $relation) {
-            $action = $event === 'delete'
-                ? $relation->onDelete
-                : $relation->onUpdate;
-
-            if ($action === Schema\ForeignKeyActionEnum::NO_ACTION) {
-                continue;
-            }
-
-            $parentValues = [];
-
-            foreach ($deletedRecords as $record) {
-                $val = $record[$relation->references] ?? null;
-
-                if ($val !== null) {
-                    $parentValues[] = $val;
-                }
-            }
-
-            if ($parentValues === []) {
-                continue;
-            }
-
-            $childTable = $relation->fromTable;
-            $fk = $relation->foreignKey;
-            $conditions = [
-                new FilterCondition($fk, FilterOperatorEnum::IN, $parentValues),
-            ];
-
-            if ($action === Schema\ForeignKeyActionEnum::RESTRICT) {
-                $count = $this->countMatchingOnDisk($childTable, $conditions);
-
-                if ($count > 0) {
-                    throw StorageException::foreignKeyRestrict(
-                        $childTable,
-                        $fk,
-                        $tableName,
-                    );
-                }
-            } elseif ($action === Schema\ForeignKeyActionEnum::CASCADE) {
-                $this->deleteMatching(
-                    $this->schema->getTable($childTable),
-                    $conditions,
-                );
-            } elseif ($action === Schema\ForeignKeyActionEnum::SET_NULL) {
-                $childSchema = $this->schema->getTable($childTable);
-                $this->ensureTableConsistent($childSchema);
-                $childRecords = $this->readAllForWrite($childTable);
-                $changed = false;
-
-                foreach ($childRecords as &$childRecord) {
-                    $childVal = $childRecord[$fk] ?? null;
-
-                    if (
-                        $childVal !== null
-                        && \in_array($childVal, $parentValues, true)
-                    ) {
-                        $childRecord[$fk] = null;
-                        $changed = true;
-                    }
-                }
-
-                unset($childRecord);
-
-                if ($changed) {
-                    $this->writeAll($childTable, $childSchema, $childRecords);
-                }
-            }
-        }
-    }
-
-    /**
-     * Processes foreign key actions when a record is updated.
-     *
-     * @param array<string,null|scalar> $oldRecord
-     * @param array<string,null|scalar> $newRecord
-     */
-    private function processForeignKeysOnUpdate(
-        string $tableName,
-        array $oldRecord,
-        array $newRecord,
-    ): void {
-        $childRelations = $this->schema->getChildRelations($tableName);
-
-        foreach ($childRelations as $relation) {
-            $refField = $relation->references;
-            $oldVal = $oldRecord[$refField] ?? null;
-            $newVal = $newRecord[$refField] ?? null;
-
-            if ($oldVal === $newVal) {
-                continue;
-            }
-
-            $action = $relation->onUpdate;
-
-            if ($action === Schema\ForeignKeyActionEnum::NO_ACTION) {
-                continue;
-            }
-
-            if ($oldVal === null) {
-                continue;
-            }
-
-            $childTable = $relation->fromTable;
-            $fk = $relation->foreignKey;
-            $conditions = [
-                new FilterCondition($fk, FilterOperatorEnum::EQ, $oldVal),
-            ];
-
-            if ($action === Schema\ForeignKeyActionEnum::RESTRICT) {
-                $count = $this->countMatchingOnDisk($childTable, $conditions);
-
-                if ($count > 0) {
-                    throw StorageException::foreignKeyRestrict(
-                        $childTable,
-                        $fk,
-                        $tableName,
-                    );
-                }
-            } elseif ($action === Schema\ForeignKeyActionEnum::CASCADE) {
-                $childSchema = $this->schema->getTable($childTable);
-                $this->ensureTableConsistent($childSchema);
-                $childRecords = $this->readAllForWrite($childTable);
-                $changed = false;
-
-                foreach ($childRecords as &$childRecord) {
-                    if (($childRecord[$fk] ?? null) === $oldVal) {
-                        $childRecord[$fk] = $newVal;
-                        $changed = true;
-                    }
-                }
-
-                unset($childRecord);
-
-                if ($changed) {
-                    $this->writeAll($childTable, $childSchema, $childRecords);
-                }
-            } elseif ($action === Schema\ForeignKeyActionEnum::SET_NULL) {
-                $childSchema = $this->schema->getTable($childTable);
-                $this->ensureTableConsistent($childSchema);
-                $childRecords = $this->readAllForWrite($childTable);
-                $changed = false;
-
-                foreach ($childRecords as &$childRecord) {
-                    if (($childRecord[$fk] ?? null) === $oldVal) {
-                        $childRecord[$fk] = null;
-                        $changed = true;
-                    }
-                }
-
-                unset($childRecord);
-
-                if ($changed) {
-                    $this->writeAll($childTable, $childSchema, $childRecords);
-                }
-            }
-        }
-    }
-
-    /**
      * @param array<string,null|scalar> $record
      */
     private function appendIndexes(
@@ -3039,7 +3374,9 @@ final class JsonDataProvider
     /**
      * Picks an index for the query: first one matching the requested
      * ordering, then one whose first field is filtered by an indexable
-     * condition.
+     * condition. Service (FK backing) indexes are invisible here — they
+     * exist for FK probes only, and a select over the FK column behaves
+     * exactly as if the column were unindexed.
      *
      * In Locale comparison mode the byte-ordered index disagrees with the
      * collator, so string columns are excluded from index-driven ordering
@@ -3063,6 +3400,10 @@ final class JsonDataProvider
             && $this->orderingIndexable($tableSchema, $ordering)
         ) {
             foreach ($tableSchema->indexes as $index) {
+                if ($index->isService) {
+                    continue;
+                }
+
                 if ($index->matchesOrdering($ordering)) {
                     return $index;
                 }
@@ -3075,6 +3416,10 @@ final class JsonDataProvider
             }
 
             foreach ($tableSchema->indexes as $index) {
+                if ($index->isService) {
+                    continue;
+                }
+
                 $firstField = $index->fields[0] ?? null;
 
                 if (
@@ -3346,28 +3691,6 @@ final class JsonDataProvider
     }
 
     /**
-     * Counts records matching the conditions by scanning the on-disk state
-     * (never the cache) — the FK restrict probe inside a write critical
-     * section.
-     *
-     * @param array<int,FilterCondition> $conditions
-     */
-    private function countMatchingOnDisk(
-        string $tableName,
-        array $conditions,
-    ): int {
-        $count = 0;
-
-        foreach ($this->readAllForWrite($tableName) as $record) {
-            if ($this->matchesAll($record, $conditions)) {
-                $count++;
-            }
-        }
-
-        return $count;
-    }
-
-    /**
      * @param array<string,null|scalar>  $record
      * @param array<int,FilterCondition> $conditions
      */
@@ -3425,6 +3748,30 @@ final class JsonDataProvider
         }
 
         return $this->repairer;
+    }
+
+    /**
+     * The FK cascade engine, wired to the provider's private consistency
+     * helpers through closures (they need the provider's self-healing and
+     * cache-key logic without widening its public surface).
+     */
+    private function fkEngine(): FkEngine
+    {
+        if ($this->fkEngine === null) {
+            $this->fkEngine = new FkEngine(
+                $this->schema,
+                $this->meta,
+                $this->ndjson,
+                $this->indexManager,
+                $this->values,
+                $this->cache,
+                fn (TableSchema $t)    => $this->ensureTableConsistent($t),
+                fn (string $t): array  => $this->readAllForWrite($t),
+                fn (string $t): string => $this->cacheKey($t),
+            );
+        }
+
+        return $this->fkEngine;
     }
 
     private function backupService(): Backup

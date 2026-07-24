@@ -207,19 +207,50 @@ $db->table('events')
             "to": "users",
             "references": "id",
             "type": "belongsTo",
-            "onDelete": "cascade"
+            "onDelete": "cascade",
+            "backingIndex": "_fk_ownerId"
         }
     ]
 }
 ```
 
-`type` is one of `belongsTo`, `hasMany`, `hasOne`. `onDelete` and `onUpdate` support `noAction`, `cascade`, `setNull`, `restrict`. The provider enforces the action when records are deleted or the referenced field is updated.
+`type` is one of `belongsTo`, `hasMany`, `hasOne`. `onDelete` and `onUpdate` support `noAction`, `cascade`, `setNull`, `restrict`. The provider enforces the action when a parent record is deleted or its referenced field is updated. `backingIndex` is engine-managed: the name of the child-table index serving FK probes (see [indexes](06-indexes.md)); it is set by the relation API, never by hand.
+
+### Canonical edge direction
+
+Which side is the **child** (physically holds the FK column) depends on the relation type:
+
+- `belongsTo`: the child is the **from** (declaring) table, the parent is to. `boards.ownerId -> users.id` is declared from `boards`.
+- `hasMany` / `hasOne`: the child is the **to** table, the parent is from. The same edge in the mirrored notation: `from: users, to: boards, foreignKey: ownerId`.
+
+`foreignKey` is always a column of the **child**, `references` a column of the **parent**. Both notations describe the same canonical edge; the engine (cascades, restrict, lock plans) works only with the canonical resolution, so both notations enforce identically.
+
+> **Upgrade warning.** Previously the engine treated the from table as the child for ANY relation type. Legacy `hasMany`/`hasOne` declarations face two outcomes: (a) those declared "engine-style" (from = child) now fail with a loud `RELATION_COLUMN_NOT_FOUND` — the FK column does not exist in the canonical child table; (b) those declared "intuitively" (the FK column really lives in the to table) were a no-op for years and now **SILENTLY ACTIVATE** — including cascade deletion of children. Audit every `hasMany`/`hasOne` in your schemas before upgrading.
+
+### What the actions mean
+
+- `onDelete` fires when a parent row is deleted: `cascade` deletes the referencing children (transitively), `setNull` nulls their FK, `restrict` refuses the delete while at least one reference exists (MySQL-immediate semantics: a reference counts even when the referencing child is deleted by the same statement — a self-referential restrict table cannot be emptied by one delete-all; delete leaves before roots).
+- `onUpdate` fires when the referenced column value of the parent changes. It cannot be declared on the primary key `id` (`RELATION_ON_UPDATE_ON_PK`): `id` is immutable, so the action could never fire. It works only for relations referencing a non-PK unique column — there `cascade` really rewrites the children's FK values.
+
+### Declaring relations — API only
+
+Relations are declared and removed via `addRelation()` / `dropRelation()` (see [DDL operations](12-schema-mutations.md)); hand-editing `information_schema.json` is unsupported. `addRelation` validates the declaration:
+
+1. both tables exist → otherwise `TABLE_NOT_FOUND`;
+2. the FK column exists in the child and the referenced column in the parent → `RELATION_COLUMN_NOT_FOUND` (with a hint on which table holds the FK for the declared type);
+3. the base column types match, the `|null` suffix is ignored (`int|null` → `int` is legal) → `RELATION_TYPE_MISMATCH`;
+4. the referenced column is `id` or is covered by a single-column unique constraint → `RELATION_REFERENCES_NOT_UNIQUE`;
+5. `onUpdate` is not declared on the PK → `RELATION_ON_UPDATE_ON_PK`;
+6. `setNull` requires a nullable FK column → `FOREIGN_KEY_SET_NULL_NOT_NULLABLE`;
+7. no edge with the same canonical quadruple (child.column → parent.column) is declared yet — in either notation → `RELATION_ALREADY_EXISTS`.
+
+Legacy edges loaded from the schema are not re-validated on load (loading is strict structurally only). The FK engine re-checks their semantics in the plan phase — but **only for executable edges** (action ≠ `noAction` for the current event): a dead edge with mismatched types does not block working deletes/updates, while an executable one fails with the same `RELATION_COLUMN_NOT_FOUND`/`RELATION_TYPE_MISMATCH` before anything is written.
 
 ### Strict schema loading
 
 `information_schema.json` is parsed strictly: a structurally broken entry is not silently skipped — it fails the load with the exact address of the problem. A silently dropped relation would mean a cascade or restrict the author believed was enforced simply stopped executing.
 
-- a relation entry that is not an object, or lacks string `from`/`foreignKey`/`to`/`references` keys (catches typos like `form`), or has an unknown `type` → `RELATION_ENTRY_INVALID`;
+- a relation entry that is not an object, or lacks string `from`/`foreignKey`/`to`/`references` keys (catches typos like `form`), or has an unknown `type`, or carries a non-string `backingIndex` → `RELATION_ENTRY_INVALID`; table/column names inside relations pass the same identifier whitelist the tables themselves do;
 - a **present** `onDelete`/`onUpdate` outside `noAction`/`cascade`/`setNull`/`restrict` (e.g. `CASCADE` or `set_null`) → `RELATION_ACTION_INVALID`; an absent key is the legal `noAction` default;
 - a broken index entry (missing name, empty `fields`, a direction outside case-sensitive `asc`/`desc`), unique constraint (missing name or fields) or table definition (non-object definition, non-string column type, missing `tables` key) → `INVALID_SCHEMA` with details; an empty `tables` collection stays valid.
 

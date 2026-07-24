@@ -6,6 +6,93 @@ API changes an integrator must know when updating.
 
 ## Unreleased
 
+### Foreign keys and cascades
+
+- **Canonical FK direction.** The engine now resolves the child side (the
+  table physically holding the FK column) by the relation type: belongsTo
+  — the from table, hasMany/hasOne — the to table. Previously the from
+  table was treated as the child for ANY type, so hasMany/hasOne edges
+  were mis-wired. **Review every legacy hasMany/hasOne before
+  upgrading**: an edge declared engine-style (from = child) now fails
+  loudly with `RELATION_COLUMN_NOT_FOUND`, while an edge declared
+  intuitively (the FK column really lives in the to table) was a no-op
+  for years and now SILENTLY ACTIVATES its onDelete/onUpdate actions —
+  including cascade deletion of children.
+- **Relation DDL API.** New `addRelation()` / `dropRelation()` /
+  `relations()`. addRelation validates the declaration (tables and
+  columns exist — `RELATION_COLUMN_NOT_FOUND`; base types match, `|null`
+  ignored — `RELATION_TYPE_MISMATCH`; the referenced column is the PK or
+  single-column-unique — `RELATION_REFERENCES_NOT_UNIQUE`; onUpdate is
+  undeclarable on the PK — `RELATION_ON_UPDATE_ON_PK`; SET NULL requires
+  a nullable FK — `FOREIGN_KEY_SET_NULL_NOT_NULLABLE`) and rejects a
+  duplicate of the canonical edge in either notation
+  (`RELATION_ALREADY_EXISTS`). Hand-editing information_schema.json
+  remains unsupported; relation entries now also validate table/column
+  names against the identifier whitelist and a non-string backingIndex
+  is rejected on load.
+- **Cascade engine.** The multi-table effect of delete/update is planned
+  entirely before the first write: one disk read per affected table,
+  cyclic (A<->B) and self-referential cascades terminate and delete
+  their full closure (previously transitive descendants could survive),
+  onUpdate cascades propagate transitively, and every validation —
+  executable-edge schema checks (dead noAction edges stay exempt), SET
+  NULL nullability, cascade patch typing through the insert/update
+  codec, unique checks against the FINAL batch state (inter-target
+  duplicates included) — aborts with the disk untouched. The apply
+  phase is two-phase: PREPARE fsyncs every table to a temp sibling (a
+  failing table aborts the whole set), COMMIT renames children before
+  parents, so a mid-commit crash cannot orphan children invisibly and
+  re-running the statement converges. A batch update that previously
+  committed row-by-row (partial state on a later-row unique failure) is
+  now all-or-nothing.
+- **Restrict is MySQL-immediate.** The probe runs against the ORIGINAL
+  child state: a violation counts even when the referencing child row is
+  deleted by the same statement. A self-referential restrict table can
+  no longer be emptied by one delete-all — delete leaves before roots.
+- **FK backing indexes.** Relations with probing actions
+  (cascade/restrict on delete or update) carry a backing index on the
+  child FK column: addRelation reuses a single-column user index or
+  builds a service `_fk_<column>` one (`isService`, invisible to query
+  planning, undropable via dropIndex — `RESERVED_INDEX_NAME`).
+  dropRelation removes an unshared service backing; dropIndex of a user
+  backing re-points the relation to a freshly built service replacement.
+  Probes ride the same trust pipeline as selects (stale index — honest
+  scan; structural corruption — `INDEX_UNRELIABLE`). A restrict probe
+  with no covering backing is a configuration error
+  (`FK_BACKING_INDEX_MISSING`); `validate()` reports it
+  (`fk_backing_index_missing`, warning) and `repair()` provisions the
+  service index — run repair once after upgrading a database with
+  cascade/restrict relations.
+- Type-skewed executable edges now fail the statement loudly
+  (`RELATION_TYPE_MISMATCH`) instead of silently matching nothing; a
+  cascaded temporal value keeps its stored UTC form (never re-encoded).
+- The mutation lock plan is re-derived inside the critical section and
+  the statement retries when a concurrently added relation made the
+  pre-lock plan stale — a cascade can never reach a table the lock frame
+  does not hold.
+- A SET_NULL on delete is a value change the grandchildren's onUpdate
+  edges observe: a restrict grandchild now blocks the delete (previously
+  the declared restrict was silently bypassed) and cascade/setNull
+  grandchildren follow the null instead of dangling.
+- DDL guards around live relations: `dropUniqueConstraint` refuses to
+  drop the uniqueness ground of a relation's referenced column
+  (`RELATION_REFERENCES_NOT_UNIQUE`), `migrateColumns` refuses to drop a
+  column that is a side of a declared relation
+  (`MIGRATE_FIELD_UNKNOWN_COLUMN` with a drop-the-relation-first hint) —
+  both previously let a schema change corrupt FK semantics (a cascade
+  deleting the children of a living duplicate parent; every parent
+  delete failing on a vanished FK column).
+- `renameColumn` renames a service backing index with its column
+  (`_fk_<old>` → `_fk_<new>`, relations re-pointed); `dropTable` of a
+  parent releases the service backings its relations provisioned in the
+  child tables; a service index orphaned any other way is reported as
+  `fk_backing_index_orphaned` and removed by `repair()` (it is
+  invisible to `dropIndex` by design, so repair is the only exit).
+- The per-process cache of every table in an FK write set is dropped
+  before the files flip, so a failure in the commit tail can no longer
+  leave the writing process serving pre-plan rows over already-replaced
+  files.
+
 ### DDL, schema and identifiers
 
 - Table, column and index names are validated against a whitelist

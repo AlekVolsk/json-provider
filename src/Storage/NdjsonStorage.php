@@ -342,6 +342,57 @@ final class NdjsonStorage
     }
 
     /**
+     * PREPARE half of a two-phase full rewrite: encodes the record set and
+     * writes it to a fsynced temp sibling of the data file, leaving the
+     * target untouched. The multi-table FK commit prepares every affected
+     * table first, so any encode or I/O failure aborts the whole write set
+     * with every data file still in its old state; the commit phase is
+     * then nothing but renames. Requires the same table EX lock as
+     * write().
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    public function prepareRewrite(
+        string $tableName,
+        string $fileName,
+        array $records,
+    ): PreparedRewrite {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+
+        \assert(
+            $this->locks === null || $this->locks->isHeld($tableName, 'ex'),
+            'NdjsonStorage::prepareRewrite requires the table EX lock',
+        );
+
+        $bytes = $this->encodeRecords($tableName, $records);
+
+        return new PreparedRewrite(
+            tableName: $tableName,
+            fileName: $fileName,
+            tmpPath: AtomicFileWriter::prepare($path, $bytes),
+            targetPath: $path,
+            byteSize: \strlen($bytes),
+        );
+    }
+
+    /**
+     * COMMIT half: renames the prepared temp file over the data file.
+     */
+    public function commitPrepared(PreparedRewrite $prepared): void
+    {
+        AtomicFileWriter::commit($prepared->tmpPath, $prepared->targetPath);
+    }
+
+    /**
+     * Drops a prepared temp file, leaving the data file untouched.
+     */
+    public function abortPrepared(PreparedRewrite $prepared): void
+    {
+        AtomicFileWriter::abort($prepared->tmpPath);
+    }
+
+    /**
      * Appends a single record to the end of an NDJSON file under an
      * exclusive file lock (which excludes concurrent appends; exclusion
      * against full rewrites comes from the caller's table EX lock), fsyncing

@@ -67,4 +67,32 @@ final class IdentifierRules
             throw StorageException::reservedIndexName($name);
         }
     }
+
+    /**
+     * Engine-managed FK backing indexes live in the reserved namespace:
+     * the "_fk_" prefix followed by the FK column name, which itself must
+     * be a valid identifier. Only IndexSchema instances flagged isService
+     * are validated through here.
+     */
+    public static function assertServiceIndexName(string $name): void
+    {
+        if (
+            !str_starts_with($name, self::SERVICE_INDEX_PREFIX)
+            || preg_match(
+                self::PATTERN,
+                substr($name, \strlen(self::SERVICE_INDEX_PREFIX)),
+            ) !== 1
+        ) {
+            throw StorageException::invalidIndexName($name);
+        }
+    }
+
+    /**
+     * The reserved name of the service index backing FK probes on the
+     * given child column.
+     */
+    public static function serviceIndexNameFor(string $column): string
+    {
+        return self::SERVICE_INDEX_PREFIX . $column;
+    }
 }

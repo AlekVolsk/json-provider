@@ -9,12 +9,14 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
+use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\JsonStorageTxHandle;
+use AV\JsonProvider\Validation\ColumnTypeInfo;
 
 /**
  * Schema registry — parses information_schema.json and exposes table and
@@ -106,7 +108,23 @@ final class SchemaRegistry
     }
 
     /**
-     * Returns relations where the given table is the parent (toTable).
+     * Returns every declared relation.
+     *
+     * @return array<int,RelationSchema>
+     */
+    public function getAllRelations(): array
+    {
+        $this->ensureLoaded();
+
+        return array_values($this->relations ?? []);
+    }
+
+    /**
+     * Returns relations where the given table is the CANONICAL parent —
+     * the side whose rows are referenced by the FK. For belongsTo edges
+     * that is the toTable, for hasMany/hasOne the fromTable; filtering by
+     * the raw toTable would mis-wire hasMany edges (their child is the
+     * toTable) and fire cascades into the parent.
      *
      * @return array<int,RelationSchema>
      */
@@ -116,8 +134,236 @@ final class SchemaRegistry
 
         return array_values(array_filter(
             $this->relations ?? [],
-            static fn (RelationSchema $r): bool => $r->toTable === $tableName,
+            static fn (RelationSchema $r): bool => $r
+                ->parentTable() === $tableName,
         ));
+    }
+
+    /**
+     * Declares a new relation: validates it against the fresh on-disk
+     * state, rejects a duplicate of an already declared edge by its
+     * CANONICAL identity (one edge declared as belongsTo and again as the
+     * mirrored hasMany must not create two enforcing copies), then
+     * persists. Runs inside mutate(), so a concurrent DDL cannot slip
+     * between the checks and the write.
+     */
+    public function addRelation(RelationSchema $relation): void
+    {
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use ($relation): array {
+                self::assertRelationValid($tables, $relation);
+
+                foreach ($relations as $existing) {
+                    if (
+                        $existing->canonicalKey() === $relation->canonicalKey()
+                    ) {
+                        throw StorageException::relationAlreadyExists(
+                            $relation->fromTable,
+                            $relation->foreignKey,
+                            $relation->toTable,
+                            $existing->type->value . ' ' . $existing->fromTable
+                                . '(' . $existing->foreignKey . ') -> '
+                                . $existing->toTable
+                                . '(' . $existing->references . ')',
+                        );
+                    }
+                }
+
+                $relations[] = $relation;
+
+                return [$tables, $relations];
+            },
+        );
+    }
+
+    /**
+     * Removes every relation matching the raw (fromTable, foreignKey,
+     * toTable) triple and returns the removed descriptors (the caller
+     * decides the fate of their backing indexes). Nothing matched —
+     * RELATION_NOT_FOUND.
+     *
+     * @return array<int,RelationSchema>
+     */
+    public function removeRelation(
+        string $fromTable,
+        string $foreignKey,
+        string $toTable,
+    ): array {
+        $removed = [];
+
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use (
+                $fromTable,
+                $foreignKey,
+                $toTable,
+                &$removed,
+            ): array {
+                $kept = [];
+
+                foreach ($relations as $relation) {
+                    $matches = $relation->fromTable === $fromTable
+                        && $relation->foreignKey === $foreignKey
+                        && $relation->toTable === $toTable;
+
+                    if ($matches) {
+                        $removed[] = $relation;
+                    } else {
+                        $kept[] = $relation;
+                    }
+                }
+
+                if ($removed === []) {
+                    throw StorageException::relationNotFound(
+                        $fromTable,
+                        $foreignKey,
+                        $toTable,
+                    );
+                }
+
+                return [$tables, $kept];
+            },
+        );
+
+        return $removed;
+    }
+
+    /**
+     * Rewrites every relation through the given transform in one schema
+     * RMW — the hook for keeping RelationSchema::backingIndex in sync when
+     * index DDL touches a backing index.
+     *
+     * @param callable(RelationSchema): RelationSchema $transform
+     */
+    public function mapRelations(callable $transform): void
+    {
+        $this->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use ($transform): array {
+                return [$tables, array_map($transform, $relations)];
+            },
+        );
+    }
+
+    /**
+     * Semantic validation of a relation declaration against a table set,
+     * by the canonical sides:
+     *
+     *  1. both tables exist — TABLE_NOT_FOUND;
+     *  2. the FK column exists in the child table and the referenced
+     *     column in the parent table — RELATION_COLUMN_NOT_FOUND with a
+     *     hint on which side holds the FK for the declared type;
+     *  3. the base column types match, the "|null" suffix is ignored —
+     *     RELATION_TYPE_MISMATCH;
+     *  4. the referenced column is the PK or is covered by a
+     *     single-column unique constraint — RELATION_REFERENCES_NOT_UNIQUE
+     *     (a non-unique parent column would make one FK value address an
+     *     unpredictable row set);
+     *  5. onUpdate on the PK is undeclarable — the engine never rewrites
+     *     id, so the action could not ever fire — RELATION_ON_UPDATE_ON_PK;
+     *  6. a SET_NULL action requires a nullable FK column —
+     *     FOREIGN_KEY_SET_NULL_NOT_NULLABLE.
+     *
+     * Used by the relation DDL; legacy relations loaded from disk are NOT
+     * re-validated here (load is structurally strict only) — the FK
+     * engine re-checks the edges it is about to execute.
+     *
+     * @param array<string,TableSchema> $tables
+     */
+    public static function assertRelationValid(
+        array $tables,
+        RelationSchema $relation,
+    ): void {
+        $childTable = $relation->childTable();
+        $parentTable = $relation->parentTable();
+
+        foreach ([$childTable, $parentTable] as $tableName) {
+            if (!isset($tables[$tableName])) {
+                throw StorageException::tableNotFound($tableName);
+            }
+        }
+
+        $childColumns = $tables[$childTable]->columns;
+        $parentColumns = $tables[$parentTable]->columns;
+
+        foreach (
+            [
+                [$relation->childColumn(), $childTable, $childColumns],
+                [$relation->parentColumn(), $parentTable, $parentColumns],
+            ] as [$column, $holder, $columns]
+        ) {
+            if (!\array_key_exists($column, $columns)) {
+                throw StorageException::relationColumnNotFound(
+                    $relation->fromTable,
+                    $relation->foreignKey,
+                    $relation->toTable,
+                    $relation->references,
+                    $column,
+                    $holder,
+                );
+            }
+        }
+
+        $childInfo = ColumnTypeInfo::parse(
+            $childColumns[$relation->childColumn()],
+        );
+        $parentInfo = ColumnTypeInfo::parse(
+            $parentColumns[$relation->parentColumn()],
+        );
+
+        if ($childInfo->base !== $parentInfo->base) {
+            throw StorageException::relationTypeMismatch(
+                $childTable,
+                $relation->childColumn(),
+                $childColumns[$relation->childColumn()],
+                $parentTable,
+                $relation->parentColumn(),
+                $parentColumns[$relation->parentColumn()],
+            );
+        }
+
+        if (
+            $relation->parentColumn() !== PrimaryKey::FIELD
+            && !self::coveredBySingleColumnUnique(
+                $tables[$parentTable],
+                $relation->parentColumn(),
+            )
+        ) {
+            throw StorageException::relationReferencesNotUnique(
+                $parentTable,
+                $relation->parentColumn(),
+            );
+        }
+
+        if (
+            $relation->parentColumn() === PrimaryKey::FIELD
+            && $relation->onUpdate !== ForeignKeyActionEnum::NO_ACTION
+        ) {
+            throw StorageException::relationOnUpdateOnPk(
+                $relation->fromTable,
+                $relation->toTable,
+            );
+        }
+
+        $setNull = ForeignKeyActionEnum::SET_NULL;
+
+        if (
+            ($relation->onDelete === $setNull
+                || $relation->onUpdate === $setNull)
+            && !$childInfo->nullable
+        ) {
+            throw StorageException::foreignKeySetNullNotNullable(
+                $childTable,
+                $relation->childColumn(),
+            );
+        }
     }
 
     /**
@@ -282,6 +528,19 @@ final class SchemaRegistry
         $this->loadedSize = null;
         $this->loadedIno = null;
         $this->ensureLoaded();
+    }
+
+    private static function coveredBySingleColumnUnique(
+        TableSchema $table,
+        string $column,
+    ): bool {
+        foreach ($table->uniqueConstraints as $constraint) {
+            if ($constraint->fields === [$column]) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -597,8 +856,14 @@ final class SchemaRegistry
             }
 
             $isPrimary = isset($def['isPrimary']) && $def['isPrimary'] === true;
+            $isService = isset($def['isService']) && $def['isService'] === true;
 
-            $indexes[] = new IndexSchema($indexName, $fields, $isPrimary);
+            $indexes[] = new IndexSchema(
+                $indexName,
+                $fields,
+                $isPrimary,
+                $isService,
+            );
         }
 
         return $indexes;
@@ -674,6 +939,19 @@ final class SchemaRegistry
                 );
             }
 
+            $backingIndex = null;
+
+            if (\array_key_exists('backingIndex', $def)) {
+                if (!\is_string($def['backingIndex'])) {
+                    throw StorageException::relationEntryInvalid(
+                        'entry #' . $position
+                            . ': key "backingIndex" is not a string',
+                    );
+                }
+
+                $backingIndex = $def['backingIndex'];
+            }
+
             $relations[] = new RelationSchema(
                 fromTable: $def['from'],
                 foreignKey: $def['foreignKey'],
@@ -682,6 +960,7 @@ final class SchemaRegistry
                 type: $type,
                 onDelete: $this->parseRelationAction($def, 'onDelete'),
                 onUpdate: $this->parseRelationAction($def, 'onUpdate'),
+                backingIndex: $backingIndex,
             );
         }
 
@@ -763,6 +1042,10 @@ final class SchemaRegistry
                     $indexEntry['isPrimary'] = true;
                 }
 
+                if ($index->isService) {
+                    $indexEntry['isService'] = true;
+                }
+
                 $indexes[] = $indexEntry;
             }
 
@@ -799,6 +1082,10 @@ final class SchemaRegistry
 
             if ($relation->onUpdate !== ForeignKeyActionEnum::NO_ACTION) {
                 $entry['onUpdate'] = $relation->onUpdate->value;
+            }
+
+            if ($relation->backingIndex !== null) {
+                $entry['backingIndex'] = $relation->backingIndex;
             }
 
             $data['relations'][] = $entry;

@@ -30,6 +30,8 @@ if ($report->hasErrors()) {
 | `orphan_db_entry` | warning | DB root has a file or directory not part of the schema |
 | `pk_duplicate` | error | one id is stored in two or more records (id and lines in the context) |
 | `rename_incomplete` | error | a `_pendingRename` marker is left in meta.json — `renameTable` did not complete |
+| `fk_backing_index_missing` | warning | a cascade/restrict relation has no covering backing index on the child FK column (legacy schema) |
+| `fk_backing_index_orphaned` | warning | a service `_fk_` index is not the backing of any probing relation (dead weight) |
 | `table_optimized` | info | table was sorted by id and reindexed (only emitted by repair) |
 | `repair_failed` | error | a repair attempt threw |
 
@@ -69,6 +71,8 @@ What gets repaired:
 | `table_file_missing` | provision an empty data file, missing index files and the meta entry (the `createTable` crash window); lost data is not invented |
 | `pk_duplicate` | **not repaired**: marked with `repairError` — duplicate PKs are resolved manually |
 | `rename_incomplete` | roll the `renameTable` forward/back by the actual schema state (see below) |
+| `fk_backing_index_missing` | reuse a covering single-column user index, or build the service index `_fk_<column>` from current data, and set the relation's `backingIndex` (structural repair, data untouched) |
+| `fk_backing_index_orphaned` | remove the service index from the schema along with its file |
 
 The `rename_incomplete` reconciliation runs **before** per-issue repair (otherwise a half-renamed table would be "repaired" as `table_file_missing` with fresh empty files under the new name): if the schema already holds the new name, meta and the filesystem are rolled forward under it (the directory and data-file renames are idempotent); if the schema still holds the old name, the rename never committed, the filesystem was never touched and only the marker is dropped. Only the database-level `repair()` reconciles: a single-table `repairTable()` holds the lock of one name only and honestly refuses (`repairError`) — as does any write into an affected table (a `RENAME_INCOMPLETE` exception) while the marker is alive. The `orphan_index_file` repair deletes only files shaped `*.index.ndjson` or empty ones: a non-empty file under any other name may be stranded data of a crashed rename and requires a manual (or reconcile) decision.
 

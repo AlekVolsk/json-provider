@@ -6,10 +6,15 @@ namespace AV\JsonProvider\Services\Integrity;
 
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Index\IndexManager;
+use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ColumnDefaults;
+use AV\JsonProvider\Schema\IdentifierRules;
+use AV\JsonProvider\Schema\IndexFieldSchema;
+use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
+use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
@@ -231,11 +236,226 @@ final class IntegrityRepairer
                     'a pending rename spans two tables and the meta file; '
                         . 'run the database-level repair() to reconcile it',
                 ),
+                IssueCategory::FK_BACKING_INDEX_MISSING => $this
+                    ->repairFkBackingIndex($issue),
+                IssueCategory::FK_BACKING_INDEX_ORPHANED => $this
+                    ->repairOrphanedServiceIndex($issue),
                 default => $issue,
             };
         } catch (\Throwable $e) {
             return $issue->withRepairError($e->getMessage());
         }
+    }
+
+    /**
+     * Removes a service index no probing relation points to: the schema
+     * entry first, then the file (a crash in between leaves an orphan
+     * *.index.ndjson swept by the orphan repair). Re-verifies the
+     * orphanhood against the fresh schema before touching anything.
+     */
+    private function repairOrphanedServiceIndex(
+        IntegrityIssue $issue,
+    ): IntegrityIssue {
+        $tableName = (string)$issue->tableName;
+        $indexName = $issue->context['index'] ?? null;
+
+        if ($indexName === null) {
+            return $issue->withRepairError('issue context has no "index" key');
+        }
+
+        foreach ($this->schema->getAllRelations() as $relation) {
+            if (
+                $relation->childTable() === $tableName
+                && $relation->needsBackingIndex()
+                && $relation->backingIndex === $indexName
+            ) {
+                return $issue->withRepairError(
+                    'a probing relation references the index now',
+                );
+            }
+        }
+
+        $found = null;
+
+        foreach ($this->schema->getTable($tableName)->indexes as $index) {
+            if ($index->name === $indexName && $index->isService) {
+                $found = $index;
+
+                break;
+            }
+        }
+
+        if ($found === null) {
+            return $issue->withRepaired();
+        }
+
+        $this->schema->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use (
+                $tableName,
+                $indexName,
+            ): array {
+                $table = $tables[$tableName]
+                    ?? throw StorageException::tableNotFound($tableName);
+
+                $tables[$tableName] = new TableSchema(
+                    name: $table->name,
+                    uniqueConstraints: $table->uniqueConstraints,
+                    columns: $table->columns,
+                    indexes: array_values(array_filter(
+                        $table->indexes,
+                        static fn (IndexSchema $i): bool => $i
+                            ->name !== $indexName,
+                    )),
+                    tableComment: $table->tableComment,
+                    columnComment: $table->columnComment,
+                );
+
+                return [$tables, $relations];
+            },
+        );
+        $this->ndjson->deleteFile($tableName, $found->getFileName());
+
+        return $issue->withRepaired();
+    }
+
+    /**
+     * Structural FK repair: builds the service index "_fk_<column>" on
+     * the child table from the current data and points the relation's
+     * backingIndex at it in one schema RMW. A covering single-column USER
+     * index on the FK column is reused instead (mirroring the addRelation
+     * provisioning), so repair never plants a duplicate index. File
+     * first, schema second — a crash in between leaves an orphan
+     * *.index.ndjson swept by the orphan repair. Data is never touched.
+     */
+    private function repairFkBackingIndex(
+        IntegrityIssue $issue,
+    ): IntegrityIssue {
+        $tableName = (string)$issue->tableName;
+        $from = $issue->context['from'] ?? null;
+        $foreignKey = $issue->context['foreignKey'] ?? null;
+        $to = $issue->context['to'] ?? null;
+        $column = $issue->context['column'] ?? null;
+
+        if (
+            $from === null
+            || $foreignKey === null
+            || $to === null
+            || $column === null
+        ) {
+            return $issue->withRepairError(
+                'issue context lacks the relation address',
+            );
+        }
+
+        $tableSchema = $this->schema->getTable($tableName);
+
+        if (!\array_key_exists($column, $tableSchema->columns)) {
+            return $issue->withRepairError(
+                'FK column "' . $column . '" does not exist in table "'
+                    . $tableName . '" — fix the relation declaration first',
+            );
+        }
+
+        $backing = null;
+
+        foreach ($tableSchema->indexes as $index) {
+            if (
+                !$index->isService
+                && !$index->isPrimary
+                && \count($index->fields) === 1
+                && $index->fields[0]->field === $column
+            ) {
+                $backing = $index;
+
+                break;
+            }
+        }
+
+        if ($backing === null) {
+            $backing = new IndexSchema(
+                name: IdentifierRules::serviceIndexNameFor($column),
+                fields: [
+                    new IndexFieldSchema($column, SortDirectionEnum::ASC),
+                ],
+                isService: true,
+            );
+
+            $this->ndjson->createFileFresh(
+                $tableName,
+                $backing->getFileName(),
+            );
+            $records = $this->values->widenFloats(
+                $tableSchema,
+                $this->ndjson->read($tableName, $tableSchema->getFileName()),
+            );
+
+            if ($this->meta->getIndexFormat($tableName) < 2) {
+                $this->rebuildAllAndStamp($tableSchema);
+            }
+
+            $this->indexManager->rebuildOne($tableName, $backing, $records);
+        }
+
+        $this->schema->mutate(
+            static function (
+                array $tables,
+                array $relations,
+            ) use (
+                $tableName,
+                $from,
+                $foreignKey,
+                $to,
+                $backing,
+            ): array {
+                $table = $tables[$tableName]
+                    ?? throw StorageException::tableNotFound($tableName);
+
+                if ($backing->isService) {
+                    $indexes = array_values(array_filter(
+                        $table->indexes,
+                        static fn (IndexSchema $i): bool => $i
+                            ->name !== $backing->name,
+                    ));
+                    $indexes[] = $backing;
+
+                    $tables[$tableName] = new TableSchema(
+                        name: $table->name,
+                        uniqueConstraints: $table->uniqueConstraints,
+                        columns: $table->columns,
+                        indexes: $indexes,
+                        tableComment: $table->tableComment,
+                        columnComment: $table->columnComment,
+                    );
+                }
+
+                $relations = array_map(
+                    static function (
+                        RelationSchema $r,
+                    ) use (
+                        $from,
+                        $foreignKey,
+                        $to,
+                        $backing,
+                    ): RelationSchema {
+                        $matches = $r->fromTable === $from
+                            && $r->foreignKey === $foreignKey
+                            && $r->toTable === $to;
+
+                        return $matches
+                            ? $r->withBackingIndex($backing->name)
+                            : $r;
+                    },
+                    $relations,
+                );
+
+                return [$tables, $relations];
+            },
+        );
+
+        return $issue->withRepaired();
     }
 
     private function repairIndex(IntegrityIssue $issue): IntegrityIssue

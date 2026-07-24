@@ -49,6 +49,27 @@ enum LangRuEnum: string implements LocaleInterface
         . 'information_schema.json: %s';
     case RELATION_ACTION_INVALID = 'Некорректное действие %s связи: "%s"; '
         . 'допустимые значения — noAction, cascade, setNull, restrict';
+    case RELATION_COLUMN_NOT_FOUND = 'Связь %s(%s) -> %s(%s): колонка "%s" '
+        . 'не существует в таблице "%s" (у belongsTo FK-колонка лежит в '
+        . 'from-таблице; у hasMany/hasOne — в to-таблице)';
+    case RELATION_TYPE_MISMATCH = 'Несовпадение типов связи: FK-колонка '
+        . '"%s"."%s" (%s) должна иметь тот же базовый тип, что и целевая '
+        . 'колонка "%s"."%s" (%s); суффикс "|null" не учитывается';
+    case RELATION_ALREADY_EXISTS = 'Связь %s(%s) -> %s уже объявлена как: '
+        . '%s (одно FK-ребро объявляется один раз, в любой из нотаций)';
+    case RELATION_NOT_FOUND = 'Связь %s(%s) -> %s не объявлена';
+    case RELATION_REFERENCES_NOT_UNIQUE = 'Связь ссылается на неуникальную '
+        . 'колонку: "%s"."%s" должна быть первичным ключом либо покрываться '
+        . 'одноколоночным уникальным ограничением';
+    case RELATION_ON_UPDATE_ON_PK = 'Связь %s -> %s: onUpdate объявлен на '
+        . 'неизменяемом первичном ключе "id" и не сработает никогда — '
+        . 'уберите onUpdate или сошлитесь на не-PK уникальную колонку';
+    case FOREIGN_KEY_SET_NULL_NOT_NULLABLE = 'SET NULL объявлен на '
+        . 'FK-колонке "%s"."%s", которая не допускает null — сделайте '
+        . 'колонку "|null" или смените действие';
+    case FK_BACKING_INDEX_MISSING = 'Служебный FK-индекс для "%s"."%s" '
+        . 'отсутствует или не покрывает FK-колонку — выполните repair(), '
+        . 'чтобы достроить его';
     case INDEX_ALREADY_EXISTS = 'В таблице "%s" уже есть индекс с именем '
         . '"%s"';
     case UNIQUE_CONSTRAINT_ALREADY_EXISTS = 'В таблице "%s" уже есть '

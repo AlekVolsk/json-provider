@@ -17,6 +17,12 @@ use AV\JsonProvider\Query\SortDirectionEnum;
  *
  * The name 'pk' is reserved for the primary key index: it is auto-created
  * by TableSchema::create() and marked with isPrimary=true.
+ *
+ * Service indexes (isService=true) are engine-managed FK backing indexes:
+ * they carry the reserved "_fk_" name prefix, are maintained by the
+ * regular index write machinery, but are invisible to query planning
+ * (resolveIndex skips them) and cannot be created or dropped through the
+ * public index DDL — relation DDL owns their lifecycle.
  */
 final class IndexSchema
 {
@@ -28,13 +34,20 @@ final class IndexSchema
      *                                               order
      * @param bool                        $isPrimary true only for the PK index
      *                                               (id ASC)
+     * @param bool                        $isService true for engine-managed
+     *                                               FK backing indexes
      */
     public function __construct(
         public readonly string $name,
         public readonly array $fields,
         public readonly bool $isPrimary = false,
+        public readonly bool $isService = false,
     ) {
-        IdentifierRules::assertIndexName($name);
+        if ($isService) {
+            IdentifierRules::assertServiceIndexName($name);
+        } else {
+            IdentifierRules::assertIndexName($name);
+        }
     }
 
     /**

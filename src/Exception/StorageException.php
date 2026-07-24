@@ -112,6 +112,108 @@ class StorageException extends JsonProviderException
         return new self('RELATION_ACTION_INVALID', $field, $value);
     }
 
+    public static function relationColumnNotFound(
+        string $fromTable,
+        string $foreignKey,
+        string $toTable,
+        string $references,
+        string $missingColumn,
+        string $holderTable,
+    ): self {
+        return new self(
+            'RELATION_COLUMN_NOT_FOUND',
+            $fromTable,
+            $foreignKey,
+            $toTable,
+            $references,
+            $missingColumn,
+            $holderTable,
+        );
+    }
+
+    public static function relationTypeMismatch(
+        string $childTable,
+        string $childColumn,
+        string $childType,
+        string $parentTable,
+        string $parentColumn,
+        string $parentType,
+    ): self {
+        return new self(
+            'RELATION_TYPE_MISMATCH',
+            $childTable,
+            $childColumn,
+            $childType,
+            $parentTable,
+            $parentColumn,
+            $parentType,
+        );
+    }
+
+    public static function relationAlreadyExists(
+        string $fromTable,
+        string $foreignKey,
+        string $toTable,
+        string $existingDeclaration,
+    ): self {
+        return new self(
+            'RELATION_ALREADY_EXISTS',
+            $fromTable,
+            $foreignKey,
+            $toTable,
+            $existingDeclaration,
+        );
+    }
+
+    public static function relationNotFound(
+        string $fromTable,
+        string $foreignKey,
+        string $toTable,
+    ): self {
+        return new self(
+            'RELATION_NOT_FOUND',
+            $fromTable,
+            $foreignKey,
+            $toTable,
+        );
+    }
+
+    public static function relationReferencesNotUnique(
+        string $parentTable,
+        string $parentColumn,
+    ): self {
+        return new self(
+            'RELATION_REFERENCES_NOT_UNIQUE',
+            $parentTable,
+            $parentColumn,
+        );
+    }
+
+    public static function relationOnUpdateOnPk(
+        string $fromTable,
+        string $toTable,
+    ): self {
+        return new self('RELATION_ON_UPDATE_ON_PK', $fromTable, $toTable);
+    }
+
+    public static function foreignKeySetNullNotNullable(
+        string $childTable,
+        string $fkColumn,
+    ): self {
+        return new self(
+            'FOREIGN_KEY_SET_NULL_NOT_NULLABLE',
+            $childTable,
+            $fkColumn,
+        );
+    }
+
+    public static function fkBackingIndexMissing(
+        string $childTable,
+        string $fkColumn,
+    ): self {
+        return new self('FK_BACKING_INDEX_MISSING', $childTable, $fkColumn);
+    }
+
     public static function indexAlreadyExists(
         string $table,
         string $indexName,

@@ -89,7 +89,7 @@ final class FkCascadeConditionsTest
     }
 
     #[Test]
-    public function typeSkewedFkSchemaDoesNotMakeParentUndeletable(): void
+    public function typeSkewedExecutableEdgeFailsLoudlyBeforeAnyWrite(): void
     {
         $this->db->createTable(TableSchema::create(
             name: 'parents',
@@ -114,15 +114,58 @@ final class FkCascadeConditionsTest
         $parentId = $this->db->insert('parents', ['ref' => 5.5]);
         $this->db->insert('children', ['fk' => 7]);
 
+        try {
+            $this->db->table('parents')->deleteById($parentId);
+            Assert::fail(
+                'a type-skewed EXECUTABLE edge must fail loudly in the '
+                    . 'plan phase instead of silently matching nothing',
+            );
+        } catch (\AV\JsonProvider\Exception\StorageException $e) {
+            Assert::same($e->getErrorKey(), 'RELATION_TYPE_MISMATCH');
+        }
+
+        Assert::same(
+            $this->db->table('parents')->count(),
+            1,
+            'the delete must abort with the disk untouched',
+        );
+        Assert::same($this->db->table('children')->count(), 1);
+    }
+
+    #[Test]
+    public function typeSkewedDeadNoActionEdgeDoesNotBlockDelete(): void
+    {
+        $this->db->createTable(TableSchema::create(
+            name: 'parents',
+            uniqueConstraints: [],
+            columns: ['id' => 'int', 'ref' => 'float'],
+            indexes: [],
+        ));
+        $this->db->createTable(TableSchema::create(
+            name: 'children',
+            uniqueConstraints: [],
+            columns: ['id' => 'int', 'fk' => 'int|null'],
+            indexes: [],
+        ));
+        $this->injectRelation(
+            from: 'children',
+            foreignKey: 'fk',
+            to: 'parents',
+            references: 'ref',
+            onDelete: 'noAction',
+        );
+
+        $parentId = $this->db->insert('parents', ['ref' => 5.5]);
+        $this->db->insert('children', ['fk' => 7]);
+
         $deleted = $this->db->table('parents')->deleteById($parentId);
 
-        Assert::true($deleted, 'the parent must stay deletable');
-        Assert::same($this->db->table('parents')->count(), 0);
-        Assert::same(
-            $this->db->table('children')->count(),
-            1,
-            'no child matches the skewed value; nothing cascades',
+        Assert::true(
+            $deleted,
+            'a dead NO_ACTION edge, even type-skewed, must not block',
         );
+        Assert::same($this->db->table('parents')->count(), 0);
+        Assert::same($this->db->table('children')->count(), 1);
     }
 
     #[Test]

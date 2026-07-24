@@ -30,6 +30,22 @@ final class AtomicFileWriter
      */
     public static function write(string $path, string $bytes): int
     {
+        $tmp = self::prepare($path, $bytes);
+        self::commit($tmp, $path);
+
+        return \strlen($bytes);
+    }
+
+    /**
+     * The PREPARE half of the atomic replacement: writes $bytes to a
+     * writer-unique temp sibling of $path, flushed to hardware, WITHOUT
+     * renaming it over the target. Returns the temp path for a later
+     * commit()/abort(). Lets a multi-file writer surface every encode and
+     * I/O failure while all targets are still untouched, then flip the
+     * files with nothing but cheap renames.
+     */
+    public static function prepare(string $path, string $bytes): string
+    {
         self::sweepOrphans($path);
 
         $tmp = $path . '.' . getmypid() . '.'
@@ -71,13 +87,29 @@ final class AtomicFileWriter
             throw StorageException::fileNotWritable($tmp);
         }
 
+        return $tmp;
+    }
+
+    /**
+     * The COMMIT half: renames a prepared temp file over its target.
+     */
+    public static function commit(string $tmp, string $path): void
+    {
         if (!@rename($tmp, $path)) {
             @unlink($tmp);
 
             throw StorageException::fileNotWritable($path);
         }
+    }
 
-        return $length;
+    /**
+     * Drops a prepared temp file without touching the target. Safe to call
+     * after a failed prepare of a sibling — a missing temp file is not an
+     * error.
+     */
+    public static function abort(string $tmp): void
+    {
+        @unlink($tmp);
     }
 
     /**

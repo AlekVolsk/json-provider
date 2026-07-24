@@ -49,7 +49,24 @@ NOT *   ✗  always full scan
 ## Naming and reserved names
 
 - Index name `pk` is reserved for the primary key index. Declaring a user index with this name (without `isPrimary=true`) raises `PK_CONTRACT_VIOLATED`.
+- The `_fk_` prefix is reserved for engine-managed FK backing indexes: `addIndex('_fk_...')` raises `RESERVED_INDEX_NAME`.
 - Index file name is **not** stored in the schema — it is derived from the index name (`<index-name>.index.ndjson`). You read it via `IndexSchema::getFileName()` if you need the path.
+
+## Service FK (backing) indexes
+
+A relation with a probing action (`cascade`/`restrict` on delete or update) must have a **backing index** — a single-column index on the child's FK column the engine uses for existence probes. The relation API (`addRelation`) provisions it:
+
+- if the child already has a single-column **user** index on the FK column, it is reused (`RelationSchema::backingIndex` = its name);
+- otherwise a **service** index `_fk_<column>` is built (`isService: true` in the schema). Several relations on the same column share one service index.
+
+Service index properties:
+
+- maintained by the regular index write machinery (append/rebuild/repair) like any index;
+- **invisible to query planning**: a select over the FK column behaves as if the column were unindexed — the service index exists for FK probes only;
+- their lifecycle belongs to the relation API: `dropIndex` of a service name raises `RESERVED_INDEX_NAME`; `dropRelation` removes the service index unless another probing relation still uses it (a reused user backing is never touched);
+- `dropIndex` of a **user** index serving as a backing does not strand the FK: a service replacement is built in the same schema change and the relation is re-pointed to it.
+
+FK probes pass the same trust pipeline as the select path: the O(1) byteSize+format gate (a stale index degrades to an honest scan of the already-read rows), then full structural validation (corruption raises `INDEX_UNRELIABLE`). A restrict probe with a missing/non-covering backing is a loud configuration error, `FK_BACKING_INDEX_MISSING`, never a silent scan: for existing databases the first `repair()` closes it (reuses a covering user index or provisions `_fk_<column>`, and sets `backingIndex` — structural repair, data untouched).
 
 ## Adding indexes at table creation
 

@@ -77,6 +77,14 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `INVALID_COLUMN_TYPE` | тип колонки вне закрытого списка 24 типов |
 | `RELATION_ENTRY_INVALID` | битая запись relation в information_schema.json (ключи/тип) |
 | `RELATION_ACTION_INVALID` | onDelete/onUpdate вне noAction/cascade/setNull/restrict |
+| `RELATION_COLUMN_NOT_FOUND` | FK/referenced-колонка не существует в канонической таблице связи |
+| `RELATION_TYPE_MISMATCH` | базовые типы FK- и referenced-колонки не совпадают |
+| `RELATION_ALREADY_EXISTS` | addRelation: каноническое ребро уже объявлено (в любой нотации) |
+| `RELATION_NOT_FOUND` | dropRelation: связь по тройке (from, foreignKey, to) не объявлена |
+| `RELATION_REFERENCES_NOT_UNIQUE` | references не PK и не покрыта одноколоночным unique |
+| `RELATION_ON_UPDATE_ON_PK` | onUpdate объявлен на неизменяемом PK `id` |
+| `FOREIGN_KEY_SET_NULL_NOT_NULLABLE` | setNull на non-nullable FK-колонке (декларация или исполнение) |
+| `FK_BACKING_INDEX_MISSING` | restrict-проба без покрывающего backing-индекса — нужен `repair()` |
 | `INDEX_ALREADY_EXISTS` | addIndex: имя индекса уже занято |
 | `UNIQUE_CONSTRAINT_ALREADY_EXISTS` | addUniqueConstraint: имя ограничения уже занято |
 | `UNIQUE_CONSTRAINT_NOT_FOUND` | dropUniqueConstraint: названного ограничения нет |

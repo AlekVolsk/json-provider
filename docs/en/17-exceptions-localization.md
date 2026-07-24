@@ -77,6 +77,14 @@ The custom locale class can live in any namespace.
 | `INVALID_COLUMN_TYPE` | column type outside the closed set of 24 types |
 | `RELATION_ENTRY_INVALID` | broken relation entry in information_schema.json (keys/type) |
 | `RELATION_ACTION_INVALID` | onDelete/onUpdate outside noAction/cascade/setNull/restrict |
+| `RELATION_COLUMN_NOT_FOUND` | the FK/referenced column does not exist in the canonical relation table |
+| `RELATION_TYPE_MISMATCH` | the base types of the FK and referenced columns differ |
+| `RELATION_ALREADY_EXISTS` | addRelation: the canonical edge is already declared (in either notation) |
+| `RELATION_NOT_FOUND` | dropRelation: no relation by the (from, foreignKey, to) triple |
+| `RELATION_REFERENCES_NOT_UNIQUE` | references is neither the PK nor covered by a single-column unique |
+| `RELATION_ON_UPDATE_ON_PK` | onUpdate declared on the immutable PK `id` |
+| `FOREIGN_KEY_SET_NULL_NOT_NULLABLE` | setNull on a non-nullable FK column (declaration or execution) |
+| `FK_BACKING_INDEX_MISSING` | a restrict probe without a covering backing index — run `repair()` |
 | `INDEX_ALREADY_EXISTS` | addIndex: the index name is taken |
 | `UNIQUE_CONSTRAINT_ALREADY_EXISTS` | addUniqueConstraint: the constraint name is taken |
 | `UNIQUE_CONSTRAINT_NOT_FOUND` | dropUniqueConstraint: no constraint by that name |
