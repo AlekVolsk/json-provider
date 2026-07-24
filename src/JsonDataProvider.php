@@ -2249,6 +2249,15 @@ final class JsonDataProvider
      * a missing column stays missing (the ghost-row null semantics of
      * the filter layer).
      *
+     * The equal-count fast path skips the O(columns) intersect for the
+     * overwhelmingly common clean record: provider writes always store
+     * exactly the schema columns (normalizeRecord), so a ghost key only
+     * comes from a foreign edit, and adding one grows the count and takes
+     * the projecting branch. The single residual — a same-count key SWAP
+     * (a ghost replacing a schema column) — is a corruption the validator
+     * independently surfaces as record_key_order; trading it away avoids a
+     * 4-6x per-row cost on every read.
+     *
      * @param array<string,null|scalar> $record
      *
      * @return array<string,null|scalar>
@@ -2257,6 +2266,10 @@ final class JsonDataProvider
         TableSchema $tableSchema,
         array $record,
     ): array {
+        if (\count($record) === \count($tableSchema->columns)) {
+            return $record;
+        }
+
         return array_intersect_key($record, $tableSchema->columns);
     }
 
