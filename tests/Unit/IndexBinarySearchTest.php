@@ -116,6 +116,36 @@ final class IndexBinarySearchTest
     // -- helpers -----------------------------------------------------------
 
     /**
+     * The declared column type matching the homogeneous dataset — the
+     * schema boundary rejects unknown types, so the value column must be
+     * typed per dataset.
+     *
+     * @param array<int,null|scalar> $values
+     */
+    private static function columnTypeFor(array $values): string
+    {
+        foreach ($values as $value) {
+            if (\is_int($value)) {
+                return 'int';
+            }
+
+            if (\is_float($value)) {
+                return 'float';
+            }
+
+            if (\is_string($value)) {
+                return 'string';
+            }
+
+            if (\is_bool($value)) {
+                return 'bool';
+            }
+        }
+
+        return 'int';
+    }
+
+    /**
      * Builds an index over the values, then checks EQ/GT/GTE/LT/LTE with
      * every probe, BETWEEN with every probe pair, and IN with probe
      * subsets — each against the linear reference (the operator applied
@@ -136,7 +166,7 @@ final class IndexBinarySearchTest
         $tableSchema = TableSchema::create(
             name: 't',
             uniqueConstraints: [],
-            columns: ['id' => 'int', 'v' => 'variant'],
+            columns: ['id' => 'int', 'v' => self::columnTypeFor($values)],
             indexes: [$index],
         );
 

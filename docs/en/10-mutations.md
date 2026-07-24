@@ -47,6 +47,18 @@ Foreign-key actions (`cascade`, `setNull`, `restrict`) trigger automatically bas
 
 A limitation of the current cascade engine: with cyclic relations (A↔B) and self-referencing tables a cascading delete may fail to remove transitive descendants (only the direct target is removed). Do not rely on cascades over cyclic graphs — delete leaves-to-roots instead.
 
+## Truncate
+
+```php
+$db->truncate('audit_log');
+```
+
+SQL `TRUNCATE` semantics: every record is removed, indexes are rebuilt empty, and the auto-increment counter resets to 0 — the next insert gets `id = 1` (a delete-all, unlike truncate, keeps the counter). Foreign-key actions are **not** enforced (symmetric with `dropTable`): dangling child FK values remain — handle the children first if that matters. An unknown table → `TABLE_NOT_FOUND`.
+
+## Renames
+
+Renaming a column (`renameColumn`) and a table (`renameTable`) are DDL operations described in [Schema mutations](12-schema-mutations.md): both carry the data, indexes, relations and meta over to the new name and are crash-protected (for `renameTable` — by the `_pendingRename` marker that `repair()` reconciles).
+
 ## Affected rows
 
 ```php

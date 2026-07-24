@@ -22,10 +22,12 @@ enum IssueCategory: string
     case ORPHAN_DB_ENTRY = 'orphan_db_entry';
     case RECORD_KEY_ORDER = 'record_key_order';
     case RECORDS_NOT_SORTED_BY_PK = 'records_not_sorted_by_pk';
+    case PK_DUPLICATE = 'pk_duplicate';
     case META_ENTRY_MISSING = 'meta_entry_missing';
     case META_LINE_COUNT_DRIFT = 'meta_line_count_drift';
     case META_LAST_ID_DRIFT = 'meta_last_id_drift';
     case META_ORPHAN_ENTRY = 'meta_orphan_entry';
+    case RENAME_INCOMPLETE = 'rename_incomplete';
     case TABLE_OPTIMIZED = 'table_optimized';
     case REPAIR_FAILED = 'repair_failed';
 }

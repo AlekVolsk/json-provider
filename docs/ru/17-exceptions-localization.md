@@ -69,7 +69,19 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: пропущены колонки |
 | `MIGRATE_COLUMN_TYPE_CHANGE` | migrateColumns: у удерживаемой колонки меняется тип |
 | `MIGRATE_COLUMN_NO_DEFAULT` | migrateColumns: not-null-колонка без дефолта добавлена в непустую таблицу |
-| `MIGRATE_FIELD_UNKNOWN_COLUMN` | migrateColumns: ограничение/индекс ссылается на отсутствующую колонку |
+| `MIGRATE_FIELD_UNKNOWN_COLUMN` | ограничение/индекс ссылается на отсутствующую колонку (migrateColumns, addIndex, addUniqueConstraint) |
+| `INVALID_TABLE_NAME` | имя таблицы вне белого списка идентификаторов (или зарезервированное `_pendingRename`) |
+| `INVALID_COLUMN_NAME` | имя колонки вне белого списка идентификаторов |
+| `INVALID_INDEX_NAME` | имя индекса вне белого списка идентификаторов |
+| `RESERVED_INDEX_NAME` | имя индекса начинается с зарезервированного префикса `_fk_` |
+| `INVALID_COLUMN_TYPE` | тип колонки вне закрытого списка 24 типов |
+| `RELATION_ENTRY_INVALID` | битая запись relation в information_schema.json (ключи/тип) |
+| `RELATION_ACTION_INVALID` | onDelete/onUpdate вне noAction/cascade/setNull/restrict |
+| `INDEX_ALREADY_EXISTS` | addIndex: имя индекса уже занято |
+| `UNIQUE_CONSTRAINT_ALREADY_EXISTS` | addUniqueConstraint: имя ограничения уже занято |
+| `UNIQUE_CONSTRAINT_NOT_FOUND` | dropUniqueConstraint: названного ограничения нет |
+| `COLUMN_ALREADY_EXISTS` | renameColumn: целевое имя колонки занято |
+| `RENAME_INCOMPLETE` | запись/DDL в таблицу с живым маркером `_pendingRename` — сначала `repair()` |
 | `BACKUP_ARCHIVE_EXISTS` | целевой путь бэкапа занят |
 | `BACKUP_DESTINATION_INSIDE_DB` | целевой путь бэкапа внутри каталога БД |
 | `BACKUP_ARCHIVE_CORRUPT` | restore: архив отсутствует/нечитаем/неверный формат |

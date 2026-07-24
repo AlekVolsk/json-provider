@@ -16,6 +16,11 @@ use Testo\Test;
  * true, 1 and '1' are eight different values and all survive
  * isDistinct(); real duplicates collapse keeping the first occurrence;
  * composite distinct distinguishes per-combination.
+ *
+ * The schema boundary rejects unknown column types, so one column can hold
+ * mixed scalar types only through foreign tampering with the data file —
+ * the mixed-shape fixtures are written to the NDJSON file directly, and
+ * distinct must still keep them apart when reading that anomaly.
  */
 final class DistinctTypingTest
 {
@@ -39,8 +44,8 @@ final class DistinctTypingTest
             uniqueConstraints: [],
             columns: [
                 'id' => 'int',
-                'v'  => 'variant|null',
-                'w'  => 'variant|null',
+                'v'  => 'string|null',
+                'w'  => 'string|null',
             ],
             indexes: [],
         ));
@@ -57,9 +62,10 @@ final class DistinctTypingTest
     {
         $values = [null, '', false, 0, '0', true, 1, '1'];
 
-        foreach ($values as $v) {
-            $this->db->insert(self::TABLE, ['v' => $v, 'w' => null]);
-        }
+        $this->injectRows(array_map(
+            static fn (mixed $v): array => ['v' => $v, 'w' => null],
+            $values,
+        ));
 
         $rows = $this->db->table(self::TABLE)
             ->isDistinct('v')->selectAllByArray();
@@ -92,9 +98,10 @@ final class DistinctTypingTest
             [0, '0'],
         ];
 
-        foreach ($pairs as [$v, $w]) {
-            $this->db->insert(self::TABLE, ['v' => $v, 'w' => $w]);
-        }
+        $this->injectRows(array_map(
+            static fn (array $p): array => ['v' => $p[0], 'w' => $p[1]],
+            $pairs,
+        ));
 
         $rows = $this->db->table(self::TABLE)
             ->isDistinct('v', 'w')->selectAllByArray();
@@ -116,6 +123,33 @@ final class DistinctTypingTest
     }
 
     // -- helpers -----------------------------------------------------------
+
+    /**
+     * Writes rows straight into the table's NDJSON file (bypassing the
+     * typed write API) — the only way a column can end up holding mixed
+     * scalar types.
+     *
+     * @param array<int,array<string,null|scalar>> $rows
+     */
+    private function injectRows(array $rows): void
+    {
+        $lines = '';
+        $id = 0;
+
+        foreach ($rows as $row) {
+            $id++;
+            $lines .= json_encode(
+                ['id' => $id] + $row,
+                JSON_PRESERVE_ZERO_FRACTION,
+            ) . "\n";
+        }
+
+        file_put_contents(
+            $this->dbDir . '/' . self::TABLE . '/' . self::TABLE . '.ndjson',
+            $lines,
+        );
+        $this->db->invalidateCache(self::TABLE);
+    }
 
     private function removeDir(string $path): void
     {

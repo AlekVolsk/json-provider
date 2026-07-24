@@ -105,6 +105,33 @@ final class IntegrityValidator
         $issues = [];
         $tableSchema = $this->schema->getTable($tableName);
 
+        /*
+         * Reported per-table (in addition to the database-level check) so
+         * a single-table validate/repair sees that the "missing" or
+         * strange state of this table is really a half-finished
+         * renameTable and refuses to "heal" it destructively.
+         */
+        $pending = $this->meta->getPendingRename();
+
+        if (
+            $pending !== null
+            && ($pending['from'] === $tableName
+                || $pending['to'] === $tableName)
+        ) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::ERROR,
+                IssueCategory::RENAME_INCOMPLETE,
+                $tableName,
+                'renameTable "' . $pending['from'] . '" -> "'
+                    . $pending['to'] . '" did not complete; run the '
+                    . 'database-level repair() to reconcile it',
+                context: [
+                    'from' => $pending['from'],
+                    'to'   => $pending['to'],
+                ],
+            );
+        }
+
         if (!$this->ndjson->exists($tableName, $tableSchema->getFileName())) {
             $issues[] = new IntegrityIssue(
                 IssueSeverity::ERROR,
@@ -122,6 +149,10 @@ final class IntegrityValidator
         );
 
         foreach ($this->checkRecordKeyOrder($tableSchema, $records) as $i) {
+            $issues[] = $i;
+        }
+
+        foreach ($this->checkPrimaryKeys($tableSchema, $records) as $i) {
             $issues[] = $i;
         }
 
@@ -169,6 +200,54 @@ final class IntegrityValidator
             $wrongCount
                 . ' record(s) have key order or set differing from schema',
         )];
+    }
+
+    /**
+     * Every stored primary key must be unique. A duplicate cannot be
+     * auto-repaired — the engine has no way to tell which of the rows is
+     * the authoritative one — so the finding carries the id and the
+     * 0-based line numbers for a manual decision.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function checkPrimaryKeys(
+        TableSchema $tableSchema,
+        array $records,
+    ): array {
+        $linesById = [];
+
+        foreach ($records as $line => $record) {
+            $id = $record[PrimaryKey::FIELD] ?? null;
+
+            if (\is_int($id)) {
+                $linesById[$id][] = $line;
+            }
+        }
+
+        $issues = [];
+
+        foreach ($linesById as $id => $lines) {
+            if (\count($lines) < 2) {
+                continue;
+            }
+
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::ERROR,
+                IssueCategory::PK_DUPLICATE,
+                $tableSchema->name,
+                'primary key ' . $id . ' is stored in '
+                    . \count($lines) . ' records (lines '
+                    . implode(', ', $lines) . ')',
+                context: [
+                    'id'    => (string)$id,
+                    'lines' => implode(',', $lines),
+                ],
+            );
+        }
+
+        return $issues;
     }
 
     /**
@@ -479,6 +558,22 @@ final class IntegrityValidator
     private function collectDatabaseIssues(array $tables): array
     {
         $issues = [];
+        $pending = $this->meta->getPendingRename();
+
+        if ($pending !== null) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::ERROR,
+                IssueCategory::RENAME_INCOMPLETE,
+                $pending['from'],
+                'renameTable "' . $pending['from'] . '" -> "'
+                    . $pending['to'] . '" did not complete; repair '
+                    . 'reconciles it by the actual schema state',
+                context: [
+                    'from' => $pending['from'],
+                    'to'   => $pending['to'],
+                ],
+            );
+        }
 
         foreach ($this->meta->getTableNames() as $metaTable) {
             if (!isset($tables[$metaTable])) {

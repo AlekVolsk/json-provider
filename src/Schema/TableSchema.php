@@ -58,7 +58,14 @@ final class TableSchema
         public readonly string | null $tableComment = null,
         public readonly array $columnComment = [],
     ) {
+        IdentifierRules::assertTableName($name);
+
+        foreach (array_keys($columns) as $column) {
+            IdentifierRules::assertColumnName($column);
+        }
+
         self::validatePrimaryKey($name, $columns);
+        self::validateColumnTypes($name, $columns);
         self::validateIndexes($name, $indexes);
     }
 
@@ -279,6 +286,31 @@ final class TableSchema
                     . 'actual first column: "'
                     . $firstField . '"',
             );
+        }
+    }
+
+    /**
+     * Every declared column type must be one of the closed set in
+     * ColumnTypes (a base type, optionally with the "|null" suffix). The
+     * check runs at the schema boundary, so it covers the DDL API and
+     * loading information_schema.json alike: a typo like "integer" or
+     * "datetime|nullable" fails loudly instead of silently degrading the
+     * column to unvalidated passthrough.
+     *
+     * @param array<string,string> $columns
+     */
+    private static function validateColumnTypes(
+        string $tableName,
+        array $columns,
+    ): void {
+        foreach ($columns as $column => $type) {
+            if (!ColumnTypes::isValid($type)) {
+                throw StorageException::invalidColumnType(
+                    $tableName,
+                    $column,
+                    $type,
+                );
+            }
         }
     }
 

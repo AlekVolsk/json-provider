@@ -30,7 +30,9 @@ In the `Locale` comparison mode (see [Query builder](08-query-builder.md)) index
 
 ## Operators that can use an index
 
-Only conditions on the **first** field run through a composite index; a condition on a later field is not served by the index (post-filtering or a full scan yields the correct result). Columns of unknown (passthrough) types are index-served for `=`/`IN` only — their cross-type comparison order does not match the key order, so ranges and ordering over them run as full scans. A select without `orderBy` returns rows in file order whether or not an index was used.
+Only conditions on the **first** field run through a composite index; a condition on a later field is not served by the index (post-filtering or a full scan yields the correct result). A select without `orderBy` returns rows in file order whether or not an index was used.
+
+Indexes are added and dropped on a live table via `addIndex()`/`dropIndex()` — the file is built from current data before the schema is published; see [Schema mutations](12-schema-mutations.md). Names with the `_fk_` prefix are reserved for engine-managed FK backing indexes.
 
 ```text
 =   ✓  exact key

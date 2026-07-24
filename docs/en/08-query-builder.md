@@ -55,7 +55,7 @@ Condition values are validated before the query executes — types mirror the wr
 
 ## LIKE semantics
 
-LIKE is **bytewise and case-sensitive**. The only wildcard is an unescaped `%` (any byte run); `\%` is a literal percent, `\\` a literal backslash; `_` is **not** special (it matches a literal underscore). There is no case-insensitive variant (ILIKE) — case folding stays at the application level. For temporal columns the pattern matches against the stored UTC form. The pattern must be a string and the column string/temporal/passthrough.
+LIKE is **bytewise and case-sensitive**. The only wildcard is an unescaped `%` (any byte run); `\%` is a literal percent, `\\` a literal backslash; `_` is **not** special (it matches a literal underscore). There is no case-insensitive variant (ILIKE) — case folding stays at the application level. For temporal columns the pattern matches against the stored UTC form. The pattern must be a string and the column string/temporal.
 
 ## String comparison mode
 

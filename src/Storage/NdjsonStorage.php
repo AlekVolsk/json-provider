@@ -194,6 +194,98 @@ final class NdjsonStorage
     }
 
     /**
+     * Reads and decodes the last non-empty line of an NDJSON file in O(1)
+     * relative to the file size: seeks to the end and scans backward in
+     * fixed-size chunks until the newline preceding the last non-empty
+     * line (or the file start) is found. Returns null for an empty file
+     * or when the tail line does not decode into a usable record.
+     *
+     * @return null|array<string,null|scalar>
+     */
+    public function readLastLine(
+        string $tableName,
+        string $fileName,
+    ): array | null {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+
+        $handle = fopen($path, 'r');
+
+        if ($handle === false) {
+            throw StorageException::fileNotReadable($path);
+        }
+
+        try {
+            fseek($handle, 0, SEEK_END);
+            $pos = ftell($handle);
+
+            if ($pos === false || $pos === 0) {
+                return null;
+            }
+
+            $buffer = '';
+
+            while ($pos > 0) {
+                $readFrom = max(0, $pos - 8192);
+                $length = $pos - $readFrom;
+
+                if ($length < 1) {
+                    break;
+                }
+
+                fseek($handle, $readFrom);
+                $piece = fread($handle, $length);
+
+                if ($piece === false) {
+                    throw StorageException::fileNotReadable($path);
+                }
+
+                $buffer = $piece . $buffer;
+                $pos = $readFrom;
+
+                $trimmed = rtrim($buffer, "\n");
+
+                if ($trimmed === '') {
+                    continue;
+                }
+
+                if (strrpos($trimmed, "\n") !== false) {
+                    break;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        $trimmed = rtrim($buffer, "\n");
+
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $newline = strrpos($trimmed, "\n");
+        $line = $newline === false
+            ? $trimmed
+            : substr($trimmed, $newline + 1);
+
+        $item = json_decode($line, true);
+
+        if (!\is_array($item)) {
+            return null;
+        }
+
+        $row = [];
+
+        foreach ($item as $key => $val) {
+            if (\is_string($key) && (\is_scalar($val) || $val === null)) {
+                $row[$key] = $val;
+            }
+        }
+
+        return $row === [] ? null : $row;
+    }
+
+    /**
      * Encodes records into their on-disk NDJSON byte form (one JSON object
      * per line, each line \n-terminated). The whole set is encoded before
      * any disk I/O: an unencodable record aborts with INVALID_RECORD while
@@ -554,13 +646,9 @@ final class NdjsonStorage
      */
     public function tableDirExists(string $tableName): bool
     {
-        $cleanTable = basename($tableName);
+        self::assertSegment($tableName);
 
-        if ($tableName === '' || $cleanTable !== $tableName) {
-            throw StorageException::invalidFileName($tableName);
-        }
-
-        return is_dir($this->dbPath . '/' . $cleanTable);
+        return is_dir($this->dbPath . '/' . $tableName);
     }
 
     /**
@@ -572,13 +660,9 @@ final class NdjsonStorage
      */
     public function listFiles(string $tableName): array
     {
-        $cleanTable = basename($tableName);
+        self::assertSegment($tableName);
 
-        if ($tableName === '' || $cleanTable !== $tableName) {
-            throw StorageException::invalidFileName($tableName);
-        }
-
-        $dir = $this->dbPath . '/' . $cleanTable;
+        $dir = $this->dbPath . '/' . $tableName;
 
         if (!is_dir($dir)) {
             return [];
@@ -638,17 +722,80 @@ final class NdjsonStorage
     }
 
     /**
+     * Renames the table subdirectory dbPath/<from> to dbPath/<to> and
+     * fsyncs the database directory so the rename survives a crash.
+     * Idempotent for crash recovery: when the source is gone and the
+     * target exists, the rename already happened and the call is a no-op.
+     * A target that exists alongside the source is never overwritten.
+     */
+    public function renameTableDir(string $from, string $to): void
+    {
+        self::assertSegment($from);
+        self::assertSegment($to);
+
+        $src = $this->dbPath . '/' . $from;
+        $dst = $this->dbPath . '/' . $to;
+
+        if (!is_dir($src)) {
+            if (is_dir($dst)) {
+                return;
+            }
+
+            throw StorageException::fileNotReadable($src);
+        }
+
+        if (is_dir($dst)) {
+            throw StorageException::tableFileExists($dst);
+        }
+
+        if (!rename($src, $dst)) {
+            throw StorageException::fileNotWritable($dst);
+        }
+
+        self::fsyncDir($this->dbPath);
+    }
+
+    /**
+     * Renames a file inside the table subdirectory and fsyncs that
+     * subdirectory. Same idempotence contract as renameTableDir: source
+     * gone + target present is a completed rename, an existing target is
+     * never overwritten.
+     */
+    public function renameFile(
+        string $tableName,
+        string $fromFile,
+        string $toFile,
+    ): void {
+        $src = $this->resolvePath($tableName, $fromFile);
+        $dst = $this->resolvePath($tableName, $toFile);
+
+        if (!file_exists($src)) {
+            if (file_exists($dst)) {
+                return;
+            }
+
+            throw StorageException::fileNotReadable($src);
+        }
+
+        if (file_exists($dst)) {
+            throw StorageException::tableFileExists($dst);
+        }
+
+        if (!rename($src, $dst)) {
+            throw StorageException::fileNotWritable($dst);
+        }
+
+        self::fsyncDir($this->dbPath . '/' . $tableName);
+    }
+
+    /**
      * Removes the table subdirectory (must be empty). Idempotent.
      */
     public function deleteTableDir(string $tableName): void
     {
-        $cleanTable = basename($tableName);
+        self::assertSegment($tableName);
 
-        if ($tableName === '' || $cleanTable !== $tableName) {
-            throw StorageException::invalidFileName($tableName);
-        }
-
-        $dir = $this->dbPath . '/' . $cleanTable;
+        $dir = $this->dbPath . '/' . $tableName;
 
         if (!is_dir($dir)) {
             return;
@@ -660,23 +807,55 @@ final class NdjsonStorage
     }
 
     /**
+     * Best-effort directory fsync so a metadata operation (rename) is
+     * durable before the caller proceeds. On filesystems or PHP builds
+     * where a directory cannot be opened or synced the call degrades
+     * silently — the rename itself is still atomic, only its durability
+     * window widens.
+     */
+    private static function fsyncDir(string $dir): void
+    {
+        $handle = @fopen($dir, 'r');
+
+        if ($handle === false) {
+            return;
+        }
+
+        @fsync($handle);
+        fclose($handle);
+    }
+
+    /**
      * Resolves the absolute path: dbPath/<tableName>/<fileName>.
      * Path-traversal guard: neither segment may contain separators.
      */
     private function resolvePath(string $tableName, string $fileName): string
     {
-        $cleanTable = basename($tableName);
-        $cleanFile = basename($fileName);
+        self::assertSegment($tableName);
+        self::assertSegment($fileName);
 
-        if ($tableName === '' || $cleanTable !== $tableName) {
-            throw StorageException::invalidFileName($tableName);
+        return $this->dbPath . '/' . $tableName . '/' . $fileName;
+    }
+
+    /**
+     * Path-traversal guard for a single path segment: rejects the empty
+     * string, the dot directories and any name containing a slash or a
+     * backslash. basename() alone is not enough — basename('.') and
+     * basename('..') return their input unchanged, and on POSIX a
+     * backslash is a regular character, so "..\x5c.." would slip through
+     * a pure basename comparison.
+     */
+    private static function assertSegment(string $name): void
+    {
+        if (
+            $name === ''
+            || $name === '.'
+            || $name === '..'
+            || strpbrk($name, '/\\') !== false
+            || basename($name) !== $name
+        ) {
+            throw StorageException::invalidFileName($name);
         }
-
-        if ($fileName === '' || $cleanFile !== $fileName) {
-            throw StorageException::invalidFileName($fileName);
-        }
-
-        return $this->dbPath . '/' . $cleanTable . '/' . $cleanFile;
     }
 
     private function ensureDbDir(): void
@@ -692,7 +871,9 @@ final class NdjsonStorage
      */
     private function ensureTableDir(string $tableName): void
     {
-        $dir = $this->dbPath . '/' . basename($tableName);
+        self::assertSegment($tableName);
+
+        $dir = $this->dbPath . '/' . $tableName;
 
         if (is_dir($dir)) {
             return;

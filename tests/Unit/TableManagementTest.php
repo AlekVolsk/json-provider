@@ -395,30 +395,32 @@ final class TableManagementTest
     }
 
     #[Test]
-    public function migrateRejectsBadIndexField(): void
+    public function migrateRejectsDroppingIndexedColumn(): void
     {
         $db = $this->makeDb();
         $db->createTable(TableSchema::create(
-            name: 'u',
-            columns: ['id' => 'int', 'a' => 'string'],
+            name: 'p',
+            columns: ['id' => 'int', 'b' => 'int', 'c' => 'string'],
+            indexes: [new IndexSchema(
+                'idx_b',
+                [new IndexFieldSchema('b', SortDirectionEnum::ASC)],
+            )],
         ));
+        $db->table('p')->insertByArray(['b' => 1, 'c' => 'x']);
 
         $key = $this->catchKey(static fn () => $db->migrateColumns(
             TableSchema::create(
-                name: 'u',
-                columns: ['id' => 'int', 'a' => 'string'],
-                indexes: [new IndexSchema(
-                    'idx_ghost',
-                    [new IndexFieldSchema('ghost', SortDirectionEnum::ASC)],
-                )],
+                name: 'p',
+                columns: ['id' => 'int', 'c' => 'string'],
             ),
         ));
 
         Assert::same($key, 'MIGRATE_FIELD_UNKNOWN_COLUMN');
+        Assert::true(\in_array('b', $db->columnNames('p'), true));
     }
 
     #[Test]
-    public function migrateDeletesOrphanIndex(): void
+    public function migrateDropsColumnAfterDropIndex(): void
     {
         $db = $this->makeDb();
         $db->createTable(TableSchema::create(
@@ -432,7 +434,7 @@ final class TableManagementTest
         $db->table('p')->insertByArray(['b' => 1, 'c' => 'x']);
         Assert::true(file_exists($this->dbPath . '/p/idx_b.index.ndjson'));
 
-        // drop 'b' and its index together
+        $db->dropIndex('p', 'idx_b');
         $db->migrateColumns(TableSchema::create(
             name: 'p',
             columns: ['id' => 'int', 'c' => 'string'],
@@ -444,7 +446,7 @@ final class TableManagementTest
     }
 
     #[Test]
-    public function migrateCreatesNewIndex(): void
+    public function migrateIgnoresIndexesCarriedByDesiredSchema(): void
     {
         $db = $this->makeDb();
         $db->createTable(TableSchema::create(
@@ -461,6 +463,14 @@ final class TableManagementTest
                 'idx_a',
                 [new IndexFieldSchema('a', SortDirectionEnum::ASC)],
             )],
+        ));
+
+        Assert::false(file_exists($this->dbPath . '/q/idx_a.index.ndjson'));
+        Assert::same($db->columnNames('q'), ['id', 'a', 'w']);
+
+        $db->addIndex('q', new IndexSchema(
+            'idx_a',
+            [new IndexFieldSchema('a', SortDirectionEnum::ASC)],
         ));
 
         Assert::true(file_exists($this->dbPath . '/q/idx_a.index.ndjson'));

@@ -203,7 +203,7 @@ final class IndexFormatIntegrityTest
         $this->db->createTable(TableSchema::create(
             name: 'inf_t',
             uniqueConstraints: [],
-            columns: ['id' => 'int', 'x' => 'variant'],
+            columns: ['id' => 'int', 'x' => 'float'],
             indexes: [
                 new IndexSchema(
                     name: 'idx_x',
@@ -214,12 +214,16 @@ final class IndexFormatIntegrityTest
                 ),
             ],
         ));
-        $this->db->insert('inf_t', ['x' => 1]);
+        $this->db->insert('inf_t', ['x' => 1.0]);
 
         $path = $this->dbDir . '/inf_t/inf_t.ndjson';
         file_put_contents(
             $path,
-            str_replace('"x":1', '"x":1e999', (string)file_get_contents($path)),
+            str_replace(
+                '"x":1.0',
+                '"x":1e999',
+                (string)file_get_contents($path),
+            ),
         );
 
         $report = $this->db->validateTable('inf_t');

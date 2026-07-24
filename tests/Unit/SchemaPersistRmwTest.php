@@ -320,13 +320,29 @@ final class SchemaPersistRmwTest
     // -- audit regressions -------------------------------------------------
 
     #[Test]
-    public function numericTableNameSurvivesUnrelatedMutation(): void
+    public function numericLikeTableNameSurvivesUnrelatedMutation(): void
     {
-        // json_decode coerces "2024" object keys to int; the RMW round-trip
-        // must not drop such tables.
+        // json_decode coerces purely numeric object keys to int, which
+        // once made the RMW round-trip drop such tables. The hole is now
+        // closed at the schema boundary: a purely numeric name cannot
+        // exist at all, and a numeric-looking (but valid) name must
+        // survive the round-trip.
         $registry = new SchemaRegistry(new JsonStorage($this->dbDir));
+
+        try {
+            $registry->registerTable(TableSchema::create(
+                name: '2024',
+                uniqueConstraints: [],
+                columns: ['id' => 'int'],
+                indexes: [],
+            ));
+            Assert::fail('a purely numeric table name must be rejected');
+        } catch (StorageException $e) {
+            Assert::same($e->getErrorKey(), 'INVALID_TABLE_NAME');
+        }
+
         $registry->registerTable(TableSchema::create(
-            name: '2024',
+            name: '2024_log',
             uniqueConstraints: [],
             columns: ['id' => 'int'],
             indexes: [],
@@ -335,7 +351,7 @@ final class SchemaPersistRmwTest
         $this->db->setTableComment('main', 'unrelated change');
 
         $fresh = new SchemaRegistry(new JsonStorage($this->dbDir));
-        Assert::true($fresh->hasTable('2024'));
+        Assert::true($fresh->hasTable('2024_log'));
     }
 
     #[Test]

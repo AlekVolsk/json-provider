@@ -53,7 +53,7 @@ final class QueryValidationTest
                 'price'   => 'float',
                 'b'       => 'bool',
                 'flag'    => 'int|null',
-                'v'       => 'variant|null',
+                'v'       => 'string|null',
                 'created' => 'datetime',
             ],
             indexes: [
@@ -69,7 +69,7 @@ final class QueryValidationTest
 
         foreach (
             [
-                ['a', 1, 99.0, true, null, 1],
+                ['a', 1, 99.0, true, null, '1'],
                 ['b', 2, 100.5, false, 7, 'x'],
                 ['c', 3, 0.5, true, null, null],
             ] as [$name, $n, $price, $b, $flag, $v]
@@ -234,20 +234,6 @@ final class QueryValidationTest
             $this->db->table(self::TABLE)
                 ->where('created', '=', 'not-a-date')->selectAllByArray();
         });
-    }
-
-    #[Test]
-    public function passthroughScalarConditionPasses(): void
-    {
-        $rows = $this->db->table(self::TABLE)
-            ->where('v', '=', 'x')->selectAllByArray();
-
-        Assert::count($rows, 1);
-
-        $rows = $this->db->table(self::TABLE)
-            ->where('v', '=', 1)->selectAllByArray();
-
-        Assert::count($rows, 1);
     }
 
     #[Test]

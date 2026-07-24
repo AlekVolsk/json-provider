@@ -52,4 +52,46 @@ final class ColumnTypes
     public const string YEAR_NULLABLE = 'year|null';
     public const string MONTH_NULLABLE = 'month|null';
     public const string DAY_NULLABLE = 'day|null';
+
+    /**
+     * The closed set of valid column type strings: 12 base types plus their
+     * 12 "|null" variants. TableSchema validates every declared column
+     * against this list.
+     *
+     * @return list<string>
+     */
+    public static function all(): array
+    {
+        return [
+            self::STRING,
+            self::INT,
+            self::FLOAT,
+            self::BOOL,
+            self::DATE,
+            self::TIME,
+            self::TIMEZ,
+            self::DATETIME,
+            self::DATETIMEZ,
+            self::YEAR,
+            self::MONTH,
+            self::DAY,
+            self::STRING_NULLABLE,
+            self::INT_NULLABLE,
+            self::FLOAT_NULLABLE,
+            self::BOOL_NULLABLE,
+            self::DATE_NULLABLE,
+            self::TIME_NULLABLE,
+            self::TIMEZ_NULLABLE,
+            self::DATETIME_NULLABLE,
+            self::DATETIMEZ_NULLABLE,
+            self::YEAR_NULLABLE,
+            self::MONTH_NULLABLE,
+            self::DAY_NULLABLE,
+        ];
+    }
+
+    public static function isValid(string $type): bool
+    {
+        return \in_array($type, self::all(), true);
+    }
 }

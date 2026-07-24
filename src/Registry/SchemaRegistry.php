@@ -314,35 +314,75 @@ final class SchemaRegistry
     }
 
     /**
+     * Strict parse of the 'tables' section. Every structural deviation —
+     * a missing or non-array 'tables' key, a non-object table definition,
+     * a non-string column type — raises INVALID_SCHEMA with the exact
+     * address of the problem instead of silently dropping the entry: a
+     * silently skipped table would read as "table does not exist" and
+     * could cascade into data loss. An empty 'tables' collection stays
+     * valid. Name and type validity are enforced by the TableSchema
+     * constructor.
+     *
      * @param array<mixed> $data
      *
      * @return array<string,TableSchema>
      */
     private function parseTables(array $data): array
     {
-        $tables = [];
-
-        if (!isset($data['tables']) || !\is_array($data['tables'])) {
-            return $tables;
+        if (!\array_key_exists('tables', $data)) {
+            throw StorageException::invalidSchema(
+                "the 'tables' key is missing",
+            );
         }
 
-        foreach ($data['tables'] as $name => $def) {
-            if (!\is_array($def)) {
-                continue;
-            }
+        if (!\is_array($data['tables'])) {
+            throw StorageException::invalidSchema(
+                "the 'tables' key is not a collection",
+            );
+        }
 
+        $tables = [];
+
+        foreach ($data['tables'] as $name => $def) {
             $name = (string)$name;
 
-            $columns = isset($def['columns'])
-                && \is_array($def['columns']) ? $def['columns'] : [];
+            if (!\is_array($def)) {
+                throw StorageException::invalidSchema(
+                    'table "' . $name . '": definition is not an object',
+                );
+            }
+
+            $columns = $def['columns'] ?? [];
+
+            if (!\is_array($columns)) {
+                throw StorageException::invalidSchema(
+                    'table "' . $name . '": "columns" is not an object',
+                );
+            }
 
             /** @var array<string,string> $typedColumns */
             $typedColumns = [];
 
             foreach ($columns as $colName => $colType) {
-                if (\is_string($colName) && \is_string($colType)) {
-                    $typedColumns[$colName] = $colType;
+                /*
+                 * A purely numeric column key decodes as int and would
+                 * crash identifier validation with a TypeError further
+                 * down; reject it here at the json boundary.
+                 */
+                if (\is_int($colName)) {
+                    throw StorageException::invalidColumnName(
+                        (string)$colName,
+                    );
                 }
+
+                if (!\is_string($colType)) {
+                    throw StorageException::invalidSchema(
+                        'table "' . $name . '", column "' . $colName
+                            . '": type is not a string',
+                    );
+                }
+
+                $typedColumns[$colName] = $colType;
             }
 
             $rawTableComment = $def['tableComment'] ?? null;
@@ -352,10 +392,11 @@ final class SchemaRegistry
             $tables[$name] = new TableSchema(
                 name: $name,
                 uniqueConstraints: $this->parseUniqueConstraints(
+                    $name,
                     $def['unique'] ?? [],
                 ),
                 columns: $typedColumns,
-                indexes: $this->parseIndexes($def['indexes'] ?? []),
+                indexes: $this->parseIndexes($name, $def['indexes'] ?? []),
                 tableComment: $tableComment,
                 columnComment: $this->parseColumnComment(
                     $def['columnComment'] ?? [],
@@ -368,31 +409,62 @@ final class SchemaRegistry
     }
 
     /**
+     * Strict parse of a table's 'unique' section: a broken name or fields
+     * list raises INVALID_SCHEMA instead of silently dropping the
+     * constraint — a dropped constraint would stop being enforced on the
+     * next insert without anyone noticing.
+     *
      * @return array<int,UniqueConstraint>
      */
-    private function parseUniqueConstraints(mixed $raw): array
+    private function parseUniqueConstraints(string $table, mixed $raw): array
     {
         if (!\is_array($raw)) {
-            return [];
+            throw StorageException::invalidSchema(
+                'table "' . $table . '": "unique" is not a list',
+            );
         }
 
         $constraints = [];
 
         foreach ($raw as $def) {
             if (!\is_array($def)) {
-                continue;
+                throw StorageException::invalidSchema(
+                    'table "' . $table
+                        . '": a unique constraint entry is not an object',
+                );
             }
 
-            $constraintName = isset($def['name'])
-                && \is_string($def['name']) ? $def['name'] : '';
-            $fields = isset($def['fields'])
-                && \is_array($def['fields']) ? $def['fields'] : [];
+            $constraintName = $def['name'] ?? null;
 
-            /** @var array<int,string> $typedFields */
-            $typedFields = array_values(array_filter($fields, 'is_string'));
+            if (!\is_string($constraintName) || $constraintName === '') {
+                throw StorageException::invalidSchema(
+                    'table "' . $table . '": a unique constraint has a '
+                        . 'missing or non-string name',
+                );
+            }
 
-            if ($constraintName === '' || $typedFields === []) {
-                continue;
+            $fields = $def['fields'] ?? null;
+
+            if (!\is_array($fields) || $fields === []) {
+                throw StorageException::invalidSchema(
+                    'table "' . $table . '", unique constraint "'
+                        . $constraintName
+                        . '": "fields" is missing, empty or not a list',
+                );
+            }
+
+            $typedFields = [];
+
+            foreach ($fields as $field) {
+                if (!\is_string($field)) {
+                    throw StorageException::invalidSchema(
+                        'table "' . $table . '", unique constraint "'
+                            . $constraintName
+                            . '": a field entry is not a string',
+                    );
+                }
+
+                $typedFields[] = $field;
             }
 
             $constraints[] = new UniqueConstraint(
@@ -436,56 +508,92 @@ final class SchemaRegistry
     }
 
     /**
+     * Strict parse of a table's 'indexes' section: a broken entry raises
+     * INVALID_SCHEMA instead of silently dropping the index — a dropped
+     * index entry would orphan its file and silently change query plans.
+     * A missing direction defaults to 'asc'; a present one must be a valid
+     * lowercase SortDirectionEnum value.
+     *
      * @return array<int,IndexSchema>
      */
-    private function parseIndexes(mixed $raw): array
+    private function parseIndexes(string $table, mixed $raw): array
     {
         if (!\is_array($raw)) {
-            return [];
+            throw StorageException::invalidSchema(
+                'table "' . $table . '": "indexes" is not a list',
+            );
         }
 
         $indexes = [];
 
         foreach ($raw as $def) {
             if (!\is_array($def)) {
-                continue;
+                throw StorageException::invalidSchema(
+                    'table "' . $table
+                        . '": an index entry is not an object',
+                );
             }
 
-            $indexName = isset($def['name'])
-                && \is_string($def['name']) ? $def['name'] : '';
+            $indexName = $def['name'] ?? null;
 
-            if ($indexName === '') {
-                continue;
+            if (!\is_string($indexName) || $indexName === '') {
+                throw StorageException::invalidSchema(
+                    'table "' . $table
+                        . '": an index has a missing or non-string name',
+                );
+            }
+
+            $rawFields = $def['fields'] ?? null;
+
+            if (!\is_array($rawFields) || $rawFields === []) {
+                throw StorageException::invalidSchema(
+                    'table "' . $table . '", index "' . $indexName
+                        . '": "fields" is missing, empty or not a list',
+                );
             }
 
             $fields = [];
-            $rawFields = $def['fields'] ?? [];
 
-            foreach (\is_array($rawFields) ? $rawFields : [] as $fieldDef) {
+            foreach ($rawFields as $fieldDef) {
                 if (!\is_array($fieldDef)) {
-                    continue;
+                    throw StorageException::invalidSchema(
+                        'table "' . $table . '", index "' . $indexName
+                            . '": a field entry is not an object',
+                    );
                 }
 
-                $fieldName = isset($fieldDef['field'])
-                    && \is_string($fieldDef['field'])
-                    ? $fieldDef['field']
-                    : '';
-                $rawDir = isset($fieldDef['direction'])
-                    && \is_string($fieldDef['direction'])
-                    ? $fieldDef['direction']
-                    : 'asc';
-                $direction = SortDirectionEnum::tryFrom($rawDir)
-                    ?? SortDirectionEnum::ASC;
+                $fieldName = $fieldDef['field'] ?? null;
 
-                if ($fieldName === '') {
-                    continue;
+                if (!\is_string($fieldName) || $fieldName === '') {
+                    throw StorageException::invalidSchema(
+                        'table "' . $table . '", index "' . $indexName
+                            . '": a field entry has a missing or '
+                            . 'non-string "field"',
+                    );
+                }
+
+                $direction = SortDirectionEnum::ASC;
+
+                if (\array_key_exists('direction', $fieldDef)) {
+                    $rawDir = $fieldDef['direction'];
+                    $parsedDir = \is_string($rawDir)
+                        ? SortDirectionEnum::tryFrom($rawDir)
+                        : null;
+
+                    if ($parsedDir === null) {
+                        throw StorageException::invalidSchema(
+                            'table "' . $table . '", index "' . $indexName
+                                . '", field "' . $fieldName
+                                . '": invalid direction '
+                                . var_export($rawDir, true)
+                                . ' (expected "asc" or "desc")',
+                        );
+                    }
+
+                    $direction = $parsedDir;
                 }
 
                 $fields[] = new IndexFieldSchema($fieldName, $direction);
-            }
-
-            if ($fields === []) {
-                continue;
             }
 
             $isPrimary = isset($def['isPrimary']) && $def['isPrimary'] === true;
@@ -497,6 +605,24 @@ final class SchemaRegistry
     }
 
     /**
+     * Strict parse of the 'relations' section. A silently skipped entry
+     * would turn an enforced FK into nothing (no cascade, no restrict), so
+     * every structural deviation is loud:
+     *
+     *  - an entry that is not an object, or one whose from / foreignKey /
+     *    to / references keys are missing or non-string (catches typos
+     *    like 'form') — RELATION_ENTRY_INVALID listing expected vs actual
+     *    keys;
+     *  - an unknown 'type' — RELATION_ENTRY_INVALID listing the allowed
+     *    values;
+     *  - a present onDelete/onUpdate that is not a valid
+     *    ForeignKeyActionEnum value ('CASCADE', 'set_null') —
+     *    RELATION_ACTION_INVALID; an absent key stays the legal NO_ACTION
+     *    default.
+     *
+     * Semantic validation (tables/columns exist, types match) is not done
+     * here — that belongs to the relation API and the FK engine.
+     *
      * @param array<mixed> $data
      *
      * @return array<int,RelationSchema>
@@ -505,38 +631,48 @@ final class SchemaRegistry
     {
         $relations = [];
 
-        if (!isset($data['relations']) || !\is_array($data['relations'])) {
+        if (!\array_key_exists('relations', $data)) {
             return $relations;
         }
 
-        foreach ($data['relations'] as $def) {
-            if (!\is_array($def)) {
-                continue;
-            }
-
-            $rawType = $def['type'] ?? '';
-            $type = RelationTypeEnum::tryFrom(
-                \is_scalar($rawType) ? (string)$rawType : '',
+        if (!\is_array($data['relations'])) {
+            throw StorageException::invalidSchema(
+                "the 'relations' key is not a list",
             );
+        }
 
-            if (
-                $type === null
-                || !isset(
-                    $def['from'],
-                    $def['foreignKey'],
-                    $def['to'],
-                    $def['references']
-                )
-                || !\is_string($def['from'])
-                || !\is_string($def['foreignKey'])
-                || !\is_string($def['to'])
-                || !\is_string($def['references'])
-            ) {
-                continue;
+        foreach ($data['relations'] as $position => $def) {
+            if (!\is_array($def)) {
+                throw StorageException::relationEntryInvalid(
+                    'entry #' . $position . ' is not an object; expected '
+                        . 'keys: from, foreignKey, to, references, type',
+                );
             }
 
-            $rawOnDelete = $def['onDelete'] ?? '';
-            $rawOnUpdate = $def['onUpdate'] ?? '';
+            foreach (['from', 'foreignKey', 'to', 'references'] as $key) {
+                if (!isset($def[$key]) || !\is_string($def[$key])) {
+                    throw StorageException::relationEntryInvalid(
+                        'entry #' . $position . ': key "' . $key
+                            . '" is missing or not a string; expected '
+                            . 'keys: from, foreignKey, to, references, '
+                            . 'type; actual keys: '
+                            . implode(', ', array_keys($def)),
+                    );
+                }
+            }
+
+            $rawType = $def['type'] ?? null;
+            $type = \is_string($rawType)
+                ? RelationTypeEnum::tryFrom($rawType)
+                : null;
+
+            if ($type === null) {
+                throw StorageException::relationEntryInvalid(
+                    'entry #' . $position . ': unknown type '
+                        . var_export($rawType, true)
+                        . '; allowed types: belongsTo, hasMany, hasOne',
+                );
+            }
 
             $relations[] = new RelationSchema(
                 fromTable: $def['from'],
@@ -544,18 +680,43 @@ final class SchemaRegistry
                 toTable: $def['to'],
                 references: $def['references'],
                 type: $type,
-                onDelete: ForeignKeyActionEnum::tryFrom(
-                    \is_scalar($rawOnDelete) ? (string)$rawOnDelete : '',
-                )
-                    ?? ForeignKeyActionEnum::NO_ACTION,
-                onUpdate: ForeignKeyActionEnum::tryFrom(
-                    \is_scalar($rawOnUpdate) ? (string)$rawOnUpdate : '',
-                )
-                    ?? ForeignKeyActionEnum::NO_ACTION,
+                onDelete: $this->parseRelationAction($def, 'onDelete'),
+                onUpdate: $this->parseRelationAction($def, 'onUpdate'),
             );
         }
 
         return $relations;
+    }
+
+    /**
+     * An absent action key is the legal NO_ACTION default; a present one
+     * must parse exactly (case-sensitive camelCase per the enum values) —
+     * 'CASCADE' or 'set_null' silently becoming NO_ACTION would disable an
+     * FK the author believed was enforced.
+     *
+     * @param array<mixed> $def
+     */
+    private function parseRelationAction(
+        array $def,
+        string $key,
+    ): ForeignKeyActionEnum {
+        if (!\array_key_exists($key, $def)) {
+            return ForeignKeyActionEnum::NO_ACTION;
+        }
+
+        $raw = $def[$key];
+        $action = \is_string($raw)
+            ? ForeignKeyActionEnum::tryFrom($raw)
+            : null;
+
+        if ($action === null) {
+            throw StorageException::relationActionInvalid(
+                $key,
+                \is_scalar($raw) ? (string)$raw : \gettype($raw),
+            );
+        }
+
+        return $action;
     }
 
     /**

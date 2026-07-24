@@ -551,17 +551,19 @@ final class StorageAtomicityTest
     #[Test]
     public function updateWithUnencodableValueLeavesTableFullyIntact(): void
     {
-        // Declared float columns reject INF up front (NON_FINITE_FLOAT),
-        // but a passthrough (unknown-type) column carries any scalar past
-        // the validator; the buffered encode in the rewrite path must then
-        // refuse the whole operation: the data file stays byte-identical,
-        // meta stays correct, every row survives.
+        // The write API rejects INF up front (NON_FINITE_FLOAT) and the
+        // schema boundary rejects unknown column types, so an unencodable
+        // stored value can only come from foreign tampering with the data
+        // file: JSON "1e999" decodes to float INF, which json_encode then
+        // refuses. The buffered encode in the rewrite path must refuse the
+        // whole operation: the data file stays byte-identical, meta stays
+        // as committed, every row survives.
         $dbDir = self::TMP_DIR . '/probe-' . uniqid();
         $db = \AV\JsonProvider\JsonDataProvider::createDatabase($dbDir);
         $db->createTable(\AV\JsonProvider\Schema\TableSchema::create(
             name: 'goods',
             uniqueConstraints: [],
-            columns: ['id' => 'int', 'price' => 'variant'],
+            columns: ['id' => 'int', 'price' => 'float'],
             indexes: [],
         ));
         $db->insert('goods', ['price' => 1.5]);
@@ -569,32 +571,47 @@ final class StorageAtomicityTest
 
         $dataPath = $dbDir . '/goods/goods.ndjson';
         $metaPath = $dbDir . '/meta.json';
-        $dataBefore = file_get_contents($dataPath);
+
+        $tampered = str_replace(
+            '"price":1.5',
+            '"price":1e999',
+            (string)file_get_contents($dataPath),
+        );
+        file_put_contents($dataPath, $tampered);
         $metaBefore = file_get_contents($metaPath);
 
         $caught = null;
 
         try {
             $db->table('goods')
-                ->where('id', '=', 1)
-                ->updateByArray(['price' => INF]);
+                ->where('id', '=', 2)
+                ->updateByArray(['price' => 9.9]);
         } catch (StorageException $e) {
             $caught = $e;
         }
 
         Assert::notNull($caught);
         Assert::same($caught->getErrorKey(), 'INVALID_RECORD');
-        Assert::same(file_get_contents($dataPath), $dataBefore);
+        Assert::same(file_get_contents($dataPath), $tampered);
         Assert::same(file_get_contents($metaPath), $metaBefore);
 
         $rows = $db->table('goods')->selectAllByArray();
         Assert::count($rows, 2);
-        Assert::same($rows[0]['price'], 1.5);
+        Assert::true(is_infinite((float)$rows[0]['price']));
         Assert::same($rows[1]['price'], 2.5);
 
-        // The table remains fully writable after the refused update.
-        $id = $db->insert('goods', ['price' => 3.5]);
-        Assert::same($id, 3);
+        // Inserts refuse just as loudly: the byteSize gate is red after
+        // the tampering, and canonical self-healing cannot re-encode INF.
+        $caughtInsert = null;
+
+        try {
+            $db->insert('goods', ['price' => 3.5]);
+        } catch (StorageException $e) {
+            $caughtInsert = $e;
+        }
+
+        Assert::notNull($caughtInsert);
+        Assert::same($caughtInsert->getErrorKey(), 'INVALID_RECORD');
     }
 
     // -- helpers -----------------------------------------------------------

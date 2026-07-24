@@ -344,17 +344,24 @@ final class JsonStorage
 
     /**
      * Resolves the absolute path: dbPath/<fileName>.
-     * Path-traversal guard: the name must not contain separators.
+     * Path-traversal guard: the name must not be a dot directory and must
+     * not contain separators — basename('.') and basename('..') return
+     * their input unchanged, and on POSIX a backslash is a regular
+     * character, so a pure basename comparison is not enough.
      */
     private function resolvePath(string $fileName): string
     {
-        $clean = basename($fileName);
-
-        if ($fileName === '' || $clean !== $fileName) {
+        if (
+            $fileName === ''
+            || $fileName === '.'
+            || $fileName === '..'
+            || strpbrk($fileName, '/\\') !== false
+            || basename($fileName) !== $fileName
+        ) {
             throw StorageException::invalidFileName($fileName);
         }
 
-        return $this->dbPath . '/' . $clean;
+        return $this->dbPath . '/' . $fileName;
     }
 
     private function ensureDbDir(): void

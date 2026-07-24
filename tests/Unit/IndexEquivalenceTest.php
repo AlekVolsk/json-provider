@@ -344,68 +344,6 @@ final class IndexEquivalenceTest
     }
 
     #[Test]
-    public function passthroughColumnRangesMatchFullScan(): void
-    {
-        $columns = ['id' => 'int', 'v' => 'variant'];
-
-        $this->db->createTable(TableSchema::create(
-            name: 'vart',
-            uniqueConstraints: [],
-            columns: $columns,
-            indexes: [
-                new IndexSchema(
-                    name: 'idx_v',
-                    fields: [new IndexFieldSchema(
-                        'v',
-                        SortDirectionEnum::ASC,
-                    )],
-                ),
-            ],
-        ));
-        $this->db->createTable(TableSchema::create(
-            name: 'varttwin',
-            uniqueConstraints: [],
-            columns: $columns,
-            indexes: [],
-        ));
-
-        foreach ([7, true, '5', 0.5] as $v) {
-            $this->db->insert('vart', ['v' => $v]);
-            $this->db->insert('varttwin', ['v' => $v]);
-        }
-
-        $cases = [
-            ['>', '5'],
-            ['>', 0],
-            ['<=', true],
-            ['BETWEEN', [0, 10]],
-            ['=', 7],
-            ['IN', [true, '5']],
-        ];
-
-        foreach ($cases as [$op, $value]) {
-            $viaIndex = array_column(
-                $this->db->table('vart')
-                    ->where('v', $op, $value)->selectAllByArray(),
-                'id',
-            );
-            $viaTwin = array_column(
-                $this->db->table('varttwin')
-                    ->where('v', $op, $value)->selectAllByArray(),
-                'id',
-            );
-            sort($viaIndex);
-            sort($viaTwin);
-
-            Assert::same(
-                $viaIndex,
-                $viaTwin,
-                "v {$op} " . var_export($value, true),
-            );
-        }
-    }
-
-    #[Test]
     public function unorderedIndexedSelectReturnsFileOrder(): void
     {
         $viaIndex = array_column(

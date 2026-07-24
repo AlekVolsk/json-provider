@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Services\Integrity;
 
+use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Schema\ColumnDefaults;
 use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
@@ -86,8 +88,32 @@ final class IntegrityRepairer
     public function repairDatabase(): IntegrityReport
     {
         $start = microtime(true);
+        $issues = [];
+
+        /*
+         * The pending-rename reconciliation runs BEFORE validation:
+         * per-issue repair would otherwise see the half-renamed table as
+         * TABLE_FILE_MISSING and provision fresh empty files under the
+         * new name, blocking the roll-forward of the real data.
+         */
+        try {
+            $renameIssue = $this->reconcilePendingRename();
+
+            if ($renameIssue !== null) {
+                $issues[] = $renameIssue;
+            }
+        } catch (\Throwable $e) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverity::ERROR,
+                IssueCategory::RENAME_INCOMPLETE,
+                null,
+                'pending rename reconciliation failed',
+                repairError: $e->getMessage(),
+            );
+        }
+
         $report = $this->validator->validateDatabase();
-        $issues = $this->repairIssues($report->issues);
+        $issues = array_merge($issues, $this->repairIssues($report->issues));
 
         $tables = $this->schema->getTables();
 
@@ -198,6 +224,13 @@ final class IntegrityRepairer
                     ->repairOrphanDbEntry($issue),
                 IssueCategory::TABLE_FILE_MISSING => $this
                     ->repairTableFileMissing($issue),
+                IssueCategory::PK_DUPLICATE => $issue->withRepairError(
+                    'duplicate primary keys require manual resolution',
+                ),
+                IssueCategory::RENAME_INCOMPLETE => $issue->withRepairError(
+                    'a pending rename spans two tables and the meta file; '
+                        . 'run the database-level repair() to reconcile it',
+                ),
                 default => $issue,
             };
         } catch (\Throwable $e) {
@@ -268,6 +301,14 @@ final class IntegrityRepairer
         }
     }
 
+    /**
+     * Deletes an orphan file from the table subdirectory. Only files that
+     * look like index files ("<name>.index.ndjson") or hold no bytes are
+     * removed: a non-empty file with any other name may be stranded DATA
+     * (e.g. the old data file of a crashed renameTable) — repair fixes
+     * structures, never destroys data, so it is left for a manual (or
+     * reconcile) decision.
+     */
     private function repairOrphanIndexFile(
         IntegrityIssue $issue,
     ): IntegrityIssue {
@@ -276,6 +317,17 @@ final class IntegrityRepairer
 
         if ($fileName === null) {
             return $issue->withRepairError('issue context has no "file" key');
+        }
+
+        if (
+            !str_ends_with($fileName, '.index.ndjson')
+            && $this->ndjson->exists($tableName, $fileName)
+            && $this->ndjson->fileSizeBytes($tableName, $fileName) > 0
+        ) {
+            return $issue->withRepairError(
+                'non-empty orphan file is not an index file and may hold '
+                    . 'data; requires manual removal',
+            );
         }
 
         $this->ndjson->deleteFile($tableName, $fileName);
@@ -371,7 +423,36 @@ final class IntegrityRepairer
         $tableName = (string)$issue->tableName;
         $tableSchema = $this->schema->getTable($tableName);
 
-        $this->ndjson->createFileFresh($tableName, $tableSchema->getFileName());
+        /*
+         * A pending rename involving this table means the "missing" data
+         * file is really the stranded old-name file of a crashed
+         * renameTable: provisioning an empty file here would block the
+         * roll-forward. The reconcile pass owns that state.
+         */
+        $pending = $this->meta->getPendingRename();
+
+        if (
+            $pending !== null
+            && ($pending['from'] === $tableName
+                || $pending['to'] === $tableName)
+        ) {
+            return $issue->withRepairError(
+                'a pending rename involves this table; run the '
+                    . 'database-level repair() to reconcile it first',
+            );
+        }
+
+        /*
+         * Re-verify before the destructive step: the file may have been
+         * provisioned by an earlier repair action in this same run, and
+         * createFileFresh would EMPTY an existing file.
+         */
+        if (!$this->ndjson->exists($tableName, $tableSchema->getFileName())) {
+            $this->ndjson->createFileFresh(
+                $tableName,
+                $tableSchema->getFileName(),
+            );
+        }
 
         foreach ($tableSchema->indexes as $index) {
             if (!$this->ndjson->exists($tableName, $index->getFileName())) {
@@ -382,11 +463,70 @@ final class IntegrityRepairer
             }
         }
 
+        $tail = $this->ndjson->repairTail(
+            $tableName,
+            $tableSchema->getFileName(),
+        );
+        $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
+
         if (!$this->meta->hasEntry($tableName)) {
             $this->meta->initTable($tableName);
-        } else {
-            $this->meta->commitRewrite($tableName, 0, 0);
+            $this->meta->setLastInsertedId($tableName, $this->maxId($records));
         }
+
+        $this->meta->commitRewrite(
+            $tableName,
+            \count($records),
+            $tail['size'],
+        );
+
+        return $issue->withRepaired();
+    }
+
+    /**
+     * Reconciles a leftover renameTable marker deterministically by the
+     * ACTUAL schema state (the marker is only the trigger for the
+     * re-check). Schema already holds the new name — the meta entry and
+     * the filesystem are rolled forward under it (directory rename, then
+     * data file rename inside, both idempotent); schema still holds the
+     * old name — the rename never committed, the filesystem was never
+     * touched and only the marker is dropped. Returns null when no marker
+     * is present.
+     */
+    private function reconcilePendingRename(): IntegrityIssue | null
+    {
+        $pending = $this->meta->getPendingRename();
+
+        if ($pending === null) {
+            return null;
+        }
+
+        $from = $pending['from'];
+        $to = $pending['to'];
+
+        $issue = new IntegrityIssue(
+            IssueSeverity::ERROR,
+            IssueCategory::RENAME_INCOMPLETE,
+            $from,
+            'renameTable "' . $from . '" -> "' . $to
+                . '" did not complete; reconciled by the actual '
+                . 'schema state',
+            context: ['from' => $from, 'to' => $to],
+        );
+
+        $tables = $this->schema->getTables();
+
+        if (isset($tables[$to])) {
+            $this->ndjson->renameTableDir($from, $to);
+            $this->ndjson->renameFile(
+                $to,
+                $from . '.ndjson',
+                $to . '.ndjson',
+            );
+            $this->meta->moveEntry($from, $to);
+        }
+
+        $this->meta->clearPendingRename();
 
         return $issue->withRepaired();
     }
@@ -456,6 +596,17 @@ final class IntegrityRepairer
     }
 
     /**
+     * Normalizes a stored record to the schema column set and order. A key
+     * PRESENT in the record keeps its value verbatim (including a present
+     * null); a key ABSENT from the record is back-filled with the column
+     * type's default via ColumnDefaults::forType — the same value
+     * migrateColumns would have written — so repairing a crashed migration
+     * converges to the migration's target state instead of planting null
+     * into a not-null column. A missing not-null column WITHOUT a safe
+     * default (temporal, year/month/day) cannot be invented: the throw
+     * surfaces as a repairError on the enclosing repair action instead of
+     * "healing" the record into a state typed reads reject.
+     *
      * @param array<string,null|scalar> $record
      *
      * @return array<string,null|scalar>
@@ -466,8 +617,23 @@ final class IntegrityRepairer
     ): array {
         $normalized = [];
 
-        foreach (array_keys($tableSchema->columns) as $column) {
-            $normalized[$column] = $record[$column] ?? null;
+        foreach ($tableSchema->columns as $column => $type) {
+            if (\array_key_exists($column, $record)) {
+                $normalized[$column] = $record[$column];
+
+                continue;
+            }
+
+            if (!ColumnDefaults::hasSafeDefault($type)) {
+                throw StorageException::invalidRecord(
+                    $tableSchema->name,
+                    'column "' . $column . '" of type ' . $type
+                        . ' is missing and has no safe default; '
+                        . 'resolve manually',
+                );
+            }
+
+            $normalized[$column] = ColumnDefaults::forType($type);
         }
 
         return $normalized;

@@ -19,3 +19,9 @@ PrimaryKey::TYPE;   // 'int'
 Violations of this contract — when reading a tampered schema, when constructing `new TableSchema(...)` directly, or when registering a malformed schema — raise `StorageException` with the `PK_CONTRACT_VIOLATED` key.
 
 The factory `TableSchema::create(...)` papers over user-side mistakes: prepends a missing `id`, moves a misplaced `id`, prepends a missing PK index. It does not paper over a wrong **type** for `id` — that is a semantic error and always throws.
+
+## Counter rollback protection
+
+Inserts allocate monotonically growing ids, so the data file is ordered by id. Before allocating, `insert` runs an O(1) check comparing the id of the last stored line against the meta counter: a counter that fell behind (a restored `meta.json`, a hand edit) would mint a duplicate PK on the next insert. In that case the watermark is first re-derived from the data (`max(id)`) under the same EX lock, and only then is the id allocated.
+
+An already-stored duplicate PK is a `pk_duplicate` validator finding (error, with the id and line numbers in the context). `repair()` does **not** fix it automatically: the engine cannot know which of the rows is authoritative — the resolution is manual.

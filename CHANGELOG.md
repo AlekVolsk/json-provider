@@ -6,6 +6,79 @@ API changes an integrator must know when updating.
 
 ## Unreleased
 
+### DDL, schema and identifiers
+
+- Table, column and index names are validated against a whitelist
+  (`[A-Za-z0-9_][A-Za-z0-9_-]{0,63}`, no dots or path separators):
+  `INVALID_TABLE_NAME` / `INVALID_COLUMN_NAME` / `INVALID_INDEX_NAME`.
+  The check guards the schema boundary, so a database whose
+  information_schema.json holds names outside the whitelist will not load
+  — rename the directory, the `<name>.ndjson` file and the schema/meta
+  keys before upgrading. The `_fk_` index-name prefix and the
+  `_pendingRename` table name are reserved. `dropTable` with an invalid
+  name now throws (previously a silent no-op); the storage layers carry
+  an explicit anti-traversal guard (`.`/`..` previously slipped through
+  a pure basename comparison).
+- Column types are a closed set: 12 base types plus their `|null`
+  variants (`ColumnTypes::all()`). Anything else — `'integer'`,
+  `'datetime|nullable'`, a hand-edited typo, a passthrough type like
+  `'variant'` — is rejected with `INVALID_COLUMN_TYPE` on DDL and on
+  schema load alike. Databases relying on unknown ("passthrough") column
+  types must migrate them to declared types before upgrading.
+- information_schema.json is parsed strictly: a broken relation entry
+  (missing/non-string keys, unknown type) raises
+  `RELATION_ENTRY_INVALID`; a present onDelete/onUpdate outside
+  noAction/cascade/setNull/restrict raises `RELATION_ACTION_INVALID`
+  (previously `'CASCADE'` silently became noAction and the FK was
+  disabled); broken index/unique/table entries raise `INVALID_SCHEMA`
+  with the exact address instead of being silently skipped.
+- `migrateColumns` is now about columns ONLY: indexes, unique
+  constraints and comments carried by the target schema are ignored and
+  the table keeps its own. Index/constraint structure changes go through
+  the new `addIndex()` / `dropIndex()` / `addUniqueConstraint()` /
+  `dropUniqueConstraint()` API (`addUniqueConstraint` pre-checks stored
+  data and rejects duplicates with nothing written). Dropping a column
+  still referenced by an index or constraint now requires dropping that
+  structure first.
+- `migrateColumns`/`reorderColumns`/`renameColumn` encode-probe the full
+  record set before touching the schema or any file, so an unencodable
+  stored value aborts with the disk untouched; repair converges a crash
+  window between schema and data to the migration target (added not-null
+  columns back-filled with type defaults, not null).
+- New `truncate()` (SQL semantics: data gone, indexes rebuilt empty,
+  auto-increment reset to 0), `renameColumn()` (schema, data, indexes,
+  constraints, comments, relation sides and the DTO binding all follow;
+  the crash window heals to the new schema with defaults — back up
+  first) and `renameTable()` (schema key, relations, meta entry and the
+  physical directory/file move; crash-protected by a `_pendingRename`
+  marker in meta.json that `repair()` reconciles deterministically by
+  the actual schema state).
+- Insert guards the id sequence: if the meta counter fell behind the
+  data (restored meta.json), the watermark is re-derived from the data
+  before allocation instead of minting a duplicate id. Stored duplicate
+  PKs are reported by `validate()` as `pk_duplicate` (error) and are
+  deliberately not auto-repaired.
+- Reading a data file whose first record carries an invalid column key
+  now fails loudly (`INVALID_COLUMN_NAME`) — a cheap tripwire against
+  foreign tampering.
+- The renameTable crash window is fenced end to end: while a
+  `_pendingRename` marker is alive, writes into an affected table and a
+  further `renameTable` raise `RENAME_INCOMPLETE`, and the single-table
+  `repairTable()` refuses to touch it (only the database-level
+  `repair()` reconciles — it also runs the reconciliation before
+  per-issue repair). The orphan-file repair no longer deletes non-empty
+  files that are not index files, so stranded data of a crashed rename
+  can never be destroyed by repair.
+- Purely numeric identifiers ('0', '42') are rejected — PHP casts such
+  array keys to int and the engine would crash with a TypeError instead
+  of a provider exception.
+- Repair refuses to invent values it cannot know: a stored record
+  missing a not-null temporal column is reported as a repair failure
+  instead of being back-filled with null; `truncate` self-heals a
+  missing meta entry before emptying the table.
+- `FOREIGN_KEY_RESTRICT` gained localized messages (previously the
+  message degraded to the bare key).
+
 ### Index format v2
 
 - Index keys use a new prefix-free typed encoding: numbers of equal value
@@ -48,7 +121,7 @@ API changes an integrator must know when updating.
   null.
 - LIKE gains escaping: `\%` matches a literal percent, `\\` a literal
   backslash; `_` stays literal. Patterns must be strings and the column
-  string/temporal/passthrough.
+  string/temporal.
 - `orderBy` directions are case-insensitive but strict
   (`INVALID_SORT_DIRECTION` instead of silently sorting ascending);
   negative `limit`/`offset` raise `INVALID_LIMIT`/`INVALID_OFFSET`.

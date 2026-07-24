@@ -33,7 +33,9 @@ final class IndexSchema
         public readonly string $name,
         public readonly array $fields,
         public readonly bool $isPrimary = false,
-    ) {}
+    ) {
+        IdentifierRules::assertIndexName($name);
+    }
 
     /**
      * Builds the PK index descriptor.

@@ -51,13 +51,6 @@ final class UniqueConstraintTest
         ));
 
         $this->db->createTable(TableSchema::create(
-            name: 'u_variant',
-            uniqueConstraints: [new UniqueConstraint('uq_v', ['v'])],
-            columns: ['id' => 'int', 'v' => 'variant'],
-            indexes: [],
-        ));
-
-        $this->db->createTable(TableSchema::create(
             name: 'u_pair',
             uniqueConstraints: [new UniqueConstraint('uq_ab', ['a', 'b'])],
             columns: [
@@ -128,41 +121,48 @@ final class UniqueConstraintTest
     }
 
     // -- type-strict keys ---------------------------------------------------
+    //
+    // The schema boundary rejects unknown column types, so one column can
+    // hold mixed scalar types only through foreign tampering with the data
+    // file. The key codec stays type-strict regardless of how the values
+    // got there: keyOf-level units pin the four-way distinction, and the
+    // tampering test pins the disk roundtrip.
 
     #[Test]
-    public function fourScalarTypesCoexist(): void
+    public function fourScalarTypesProduceFourDistinctKeys(): void
     {
-        $this->db->insert('u_variant', ['v' => 1]);
-        $this->db->insert('u_variant', ['v' => 1.0]);
-        $this->db->insert('u_variant', ['v' => '1']);
-        $this->db->insert('u_variant', ['v' => true]);
+        $constraint = new UniqueConstraint('uq_v', ['v']);
 
-        Assert::same($this->db->table('u_variant')->count(), 4);
+        $keys = [
+            $constraint->keyOf(['v' => 1]),
+            $constraint->keyOf(['v' => 1.0]),
+            $constraint->keyOf(['v' => '1']),
+            $constraint->keyOf(['v' => true]),
+        ];
+
+        Assert::count(array_unique($keys), 4);
+        Assert::same(
+            $constraint->keyOf(['v' => 1]),
+            $constraint->keyOf(['v' => 1]),
+        );
     }
 
     #[Test]
-    public function duplicateIntAmongMixedTypesViolates(): void
+    public function tamperedCrossTypeRowDoesNotConflictWithString(): void
     {
-        $this->db->insert('u_variant', ['v' => 1]);
-        $this->db->insert('u_variant', ['v' => '1']);
+        $this->db->insert('u_code', ['code' => 'x']);
 
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('[v]');
+        file_put_contents(
+            $this->dbDir . '/u_code/u_code.ndjson',
+            '{"id":90,"code":1}' . "\n",
+            FILE_APPEND,
+        );
+        $this->db->invalidateCache('u_code');
 
-        $this->db->insert('u_variant', ['v' => 1]);
-    }
+        $id = $this->db->insert('u_code', ['code' => '1']);
 
-    #[Test]
-    public function typeStrictKeysSurviveDiskRoundtrip(): void
-    {
-        $this->db->insert('u_variant', ['v' => 1]);
-        $this->db->insert('u_variant', ['v' => 1.0]);
-        $this->db->invalidateCache('u_variant');
-
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('[v]');
-
-        $this->db->insert('u_variant', ['v' => 1.0]);
+        Assert::int($id)->greaterThan(0);
+        Assert::same($this->db->table('u_code')->count(), 3);
     }
 
     // -- float column: storage format merges the int/float boundary ---------

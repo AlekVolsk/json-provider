@@ -69,7 +69,19 @@ The custom locale class can live in any namespace.
 | `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: some columns omitted |
 | `MIGRATE_COLUMN_TYPE_CHANGE` | migrateColumns: a retained column changes type |
 | `MIGRATE_COLUMN_NO_DEFAULT` | migrateColumns: not-null column with no default added to a non-empty table |
-| `MIGRATE_FIELD_UNKNOWN_COLUMN` | migrateColumns: a constraint/index references a missing column |
+| `MIGRATE_FIELD_UNKNOWN_COLUMN` | a constraint/index references a missing column (migrateColumns, addIndex, addUniqueConstraint) |
+| `INVALID_TABLE_NAME` | table name outside the identifier whitelist (or the reserved `_pendingRename`) |
+| `INVALID_COLUMN_NAME` | column name outside the identifier whitelist |
+| `INVALID_INDEX_NAME` | index name outside the identifier whitelist |
+| `RESERVED_INDEX_NAME` | index name starts with the reserved `_fk_` prefix |
+| `INVALID_COLUMN_TYPE` | column type outside the closed set of 24 types |
+| `RELATION_ENTRY_INVALID` | broken relation entry in information_schema.json (keys/type) |
+| `RELATION_ACTION_INVALID` | onDelete/onUpdate outside noAction/cascade/setNull/restrict |
+| `INDEX_ALREADY_EXISTS` | addIndex: the index name is taken |
+| `UNIQUE_CONSTRAINT_ALREADY_EXISTS` | addUniqueConstraint: the constraint name is taken |
+| `UNIQUE_CONSTRAINT_NOT_FOUND` | dropUniqueConstraint: no constraint by that name |
+| `COLUMN_ALREADY_EXISTS` | renameColumn: the target column name is taken |
+| `RENAME_INCOMPLETE` | a write/DDL into a table with a live `_pendingRename` marker — run `repair()` first |
 | `BACKUP_ARCHIVE_EXISTS` | backup destination already occupied |
 | `BACKUP_DESTINATION_INSIDE_DB` | backup target lies inside the DB directory |
 | `BACKUP_ARCHIVE_CORRUPT` | restore: archive missing/unreadable/wrong format |

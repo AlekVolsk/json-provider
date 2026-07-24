@@ -26,6 +26,39 @@ enum LangEnEnum: string implements LocaleInterface
     case DATABASE_ALREADY_EXISTS = 'Database already exists at path: %s';
     case INVALID_FILE_NAME = 'Invalid file name: %s';
     case INVALID_INDEX_FILE_NAME = 'Invalid index file name: %s';
+    case INVALID_TABLE_NAME = 'Invalid table name "%s": must start with a '
+        . 'letter, digit or underscore and contain only letters, digits, '
+        . 'underscores or hyphens (max 64 characters, no dots or path '
+        . 'separators)';
+    case INVALID_COLUMN_NAME = 'Invalid column name "%s": must start with a '
+        . 'letter, digit or underscore and contain only letters, digits, '
+        . 'underscores or hyphens (max 64 characters, no dots or path '
+        . 'separators)';
+    case INVALID_INDEX_NAME = 'Invalid index name "%s": must start with a '
+        . 'letter, digit or underscore and contain only letters, digits, '
+        . 'underscores or hyphens (max 64 characters, no dots or path '
+        . 'separators)';
+    case RESERVED_INDEX_NAME = 'Index name "%s" is reserved: the "_fk_" '
+        . 'prefix is set aside for engine-managed FK backing indexes';
+    case INVALID_COLUMN_TYPE = 'Table "%s", column "%s": unknown column type '
+        . '"%s"; allowed types are string, int, float, bool, date, time, '
+        . 'timez, datetime, datetimez, year, month, day, each optionally '
+        . 'with the "|null" suffix';
+    case RELATION_ENTRY_INVALID = 'Invalid relation entry in '
+        . 'information_schema.json: %s';
+    case RELATION_ACTION_INVALID = 'Invalid relation %s action "%s": allowed '
+        . 'values are noAction, cascade, setNull, restrict';
+    case INDEX_ALREADY_EXISTS = 'Table "%s" already has an index named "%s"';
+    case UNIQUE_CONSTRAINT_ALREADY_EXISTS = 'Table "%s" already has a unique '
+        . 'constraint named "%s"';
+    case UNIQUE_CONSTRAINT_NOT_FOUND = 'Table "%s" has no unique constraint '
+        . 'named "%s"';
+    case COLUMN_ALREADY_EXISTS = 'Table "%s" already has a column named "%s"';
+    case FOREIGN_KEY_RESTRICT = 'Operation blocked by RESTRICT: table "%s" '
+        . 'has rows whose "%s" references the affected rows of table "%s"';
+    case RENAME_INCOMPLETE = 'A previous renameTable "%s" -> "%s" did not '
+        . 'complete; run repair() on the database before touching the '
+        . 'affected tables';
     case UNIQUE_VIOLATION = 'Unique constraint violation in table "%s" '
         . 'on fields [%s]: %s';
     case INVALID_RECORD = 'Invalid record in table "%s": %s';

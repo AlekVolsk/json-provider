@@ -43,6 +43,13 @@ use AV\JsonProvider\Storage\JsonStorageTxHandle;
  */
 final class MetaRegistry
 {
+    /**
+     * Reserved meta.json key holding the renameTable crash-recovery
+     * marker ({from, to}); never a table entry. IdentifierRules rejects
+     * it as a table name, and getTableNames filters it out.
+     */
+    public const string PENDING_RENAME_KEY = '_pendingRename';
+
     private const string META_FILE = 'meta.json';
 
     public function __construct(
@@ -224,7 +231,9 @@ final class MetaRegistry
     }
 
     /**
-     * Returns the list of all table names that have a meta entry.
+     * Returns the list of all table names that have a meta entry. The
+     * reserved _pendingRename marker key is not a table and is filtered
+     * out.
      *
      * @return array<int,string>
      */
@@ -233,7 +242,116 @@ final class MetaRegistry
         /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
         $data = $this->storage->read(self::META_FILE);
 
-        return array_keys($data);
+        return array_values(array_filter(
+            array_keys($data),
+            static fn (string $name): bool => $name
+                !== self::PENDING_RENAME_KEY,
+        ));
+    }
+
+    /**
+     * Writes the renameTable crash-recovery marker. Written FIRST in the
+     * rename sequence, so any later crash leaves a trigger for repair to
+     * re-verify the schema/meta/filesystem agreement.
+     */
+    public function setPendingRename(string $from, string $to): void
+    {
+        $this->storage->transaction(
+            self::META_FILE,
+            static function (
+                array $data,
+                JsonStorageTxHandle $h,
+            ) use (
+                $from,
+                $to
+            ): void {
+                $data[self::PENDING_RENAME_KEY] = [
+                    'from' => $from,
+                    'to'   => $to,
+                ];
+                $h->save($data);
+            },
+        );
+    }
+
+    /**
+     * Returns the pending rename marker, or null when absent or malformed
+     * (a malformed marker reads as absent — reconciliation is driven by
+     * the actual schema state, the marker is only the trigger).
+     *
+     * @return null|array{from: string, to: string}
+     */
+    public function getPendingRename(): array | null
+    {
+        $data = $this->storage->read(self::META_FILE);
+        $raw = $data[self::PENDING_RENAME_KEY] ?? null;
+
+        if (
+            !\is_array($raw)
+            || !isset($raw['from'], $raw['to'])
+            || !\is_string($raw['from'])
+            || !\is_string($raw['to'])
+        ) {
+            return null;
+        }
+
+        return ['from' => $raw['from'], 'to' => $raw['to']];
+    }
+
+    /**
+     * Removes the pending rename marker. Idempotent.
+     */
+    public function clearPendingRename(): void
+    {
+        $this->storage->transaction(
+            self::META_FILE,
+            static function (array $data, JsonStorageTxHandle $h): void {
+                if (!\array_key_exists(self::PENDING_RENAME_KEY, $data)) {
+                    return;
+                }
+
+                unset($data[self::PENDING_RENAME_KEY]);
+                $h->save($data);
+            },
+        );
+    }
+
+    /**
+     * Moves a table's meta entry to a new name, preserving
+     * lastInsertedId/lineCount/byteSize/indexFormat. Idempotent for the
+     * rename crash-recovery: when the target entry already exists, the
+     * source (if any) is discarded; when neither exists, it is a no-op —
+     * the missing entry surfaces through the regular meta checks.
+     */
+    public function moveEntry(string $from, string $to): void
+    {
+        $this->storage->transaction(
+            self::META_FILE,
+            static function (
+                array $data,
+                JsonStorageTxHandle $h,
+            ) use (
+                $from,
+                $to
+            ): void {
+                if (isset($data[$to])) {
+                    if (isset($data[$from])) {
+                        unset($data[$from]);
+                        $h->save($data);
+                    }
+
+                    return;
+                }
+
+                if (!isset($data[$from])) {
+                    return;
+                }
+
+                $data[$to] = $data[$from];
+                unset($data[$from]);
+                $h->save($data);
+            },
+        );
     }
 
     /**

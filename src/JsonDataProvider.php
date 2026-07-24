@@ -21,7 +21,9 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Query\ValueComparator;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Schema\ColumnDefaults;
 use AV\JsonProvider\Schema\ColumnTypes;
+use AV\JsonProvider\Schema\IdentifierRules;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\RelationSchema;
@@ -265,6 +267,8 @@ final class JsonDataProvider
      */
     public function dropTable(string $tableName): void
     {
+        IdentifierRules::assertTableName($tableName);
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -281,6 +285,115 @@ final class JsonDataProvider
                 $this->dtoRegistry->unregister($tableName);
                 $this->invalidateCache($tableName);
                 $this->locks->deleteTableLock($tableName);
+            },
+        );
+    }
+
+    /**
+     * Renames a table: the schema key, every relation referencing the
+     * table, its meta entry (counters preserved) and the physical
+     * directory + data file all move to the new name. Index files keep
+     * their names (they are named after the index, not the table). Runs
+     * under the database EX lock plus table EX locks on BOTH names.
+     *
+     * Guards: $from must exist (TABLE_NOT_FOUND); $to must be a valid
+     * identifier (INVALID_TABLE_NAME) and free in the schema, in meta and
+     * on disk (TABLE_ALREADY_EXISTS).
+     *
+     * Crash model: a _pendingRename marker is written to meta.json FIRST,
+     * then the schema (with relations) commits atomically, then meta and
+     * the filesystem follow, and the marker is cleared last. repair()
+     * reconciles a leftover marker deterministically BY THE SCHEMA STATE:
+     * schema already holds $to — roll the meta/filesystem forward under
+     * $to; schema still holds $from — nothing was renamed, drop the
+     * marker.
+     */
+    public function renameTable(string $from, string $to): void
+    {
+        IdentifierRules::assertTableName($from);
+        IdentifierRules::assertTableName($to);
+
+        $this->locks->withLocks(
+            [$from => 'ex', $to => 'ex'],
+            'ex',
+            function () use ($from, $to): void {
+                $this->schema->reload();
+
+                $pending = $this->meta->getPendingRename();
+
+                if ($pending !== null) {
+                    throw StorageException::renameIncomplete(
+                        $pending['from'],
+                        $pending['to'],
+                    );
+                }
+
+                if (!$this->schema->hasTable($from)) {
+                    throw StorageException::tableNotFound($from);
+                }
+
+                if (
+                    $this->schema->hasTable($to)
+                    || $this->meta->hasEntry($to)
+                    || $this->ndjson->tableDirExists($to)
+                ) {
+                    throw StorageException::tableAlreadyExists($to);
+                }
+
+                $tableSchema = $this->schema->getTable($from);
+
+                $this->meta->setPendingRename($from, $to);
+
+                $this->schema->mutate(
+                    static function (
+                        array $tables,
+                        array $relations,
+                    ) use (
+                        $from,
+                        $to
+                    ): array {
+                        $current = $tables[$from]
+                            ?? throw StorageException::tableNotFound($from);
+
+                        unset($tables[$from]);
+                        $tables[$to] = new TableSchema(
+                            name: $to,
+                            uniqueConstraints: $current->uniqueConstraints,
+                            columns: $current->columns,
+                            indexes: $current->indexes,
+                            tableComment: $current->tableComment,
+                            columnComment: $current->columnComment,
+                        );
+
+                        $updated = [];
+
+                        foreach ($relations as $relation) {
+                            $updated[] = self::renameTableInRelation(
+                                $relation,
+                                $from,
+                                $to,
+                            );
+                        }
+
+                        return [$tables, $updated];
+                    },
+                );
+
+                $this->meta->moveEntry($from, $to);
+
+                $this->ndjson->renameTableDir($from, $to);
+                $this->ndjson->renameFile(
+                    $to,
+                    $tableSchema->getFileName(),
+                    $to . '.ndjson',
+                );
+
+                $this->meta->clearPendingRename();
+
+                $this->dtoRegistry->unregister($from);
+                $this->invalidateCache($from);
+                $this->invalidateCache($to);
+                $this->locks->deleteTableLock($from);
             },
         );
     }
@@ -322,21 +435,28 @@ final class JsonDataProvider
      *  - drops columns present in the table but not in $desired — their values
      *    are removed from every row;
      *  - fixes column order to match $desired.
-     * The indexes and unique constraints carried by $desired become the table's
-     * new definitions: index files are created for indexes new to the table and
-     * removed for those no longer present, then every index is rebuilt.
-     * Rewrites the data file and updates meta. Returns the added/dropped column
-     * names; a no-op (empty lists) when columns and order already match — in
-     * that case indexes/constraints/comments are left untouched.
+     * The method is about columns ONLY: the table's indexes, unique
+     * constraints and comments stay exactly as they are — index and
+     * constraint structure changes go through addIndex/dropIndex/
+     * addUniqueConstraint/dropUniqueConstraint. Returns the added/dropped
+     * column names; a no-op (empty lists) when columns and order already
+     * match.
      *
      * Guards (all throw StorageException, nothing is written):
      *  - the table does not exist;
      *  - a retained column changes type — this method never re-encodes data, so
      *    a type change must be migrated separately;
-     *  - a unique constraint or index in $desired references a column absent
-     *    from $desired->columns;
+     *  - an existing unique constraint or index references a column absent
+     *    from $desired->columns — drop it first;
      *  - a non-nullable column with no zero-value default (temporal, year,
      *    month, day) is added to a non-empty table — declare it nullable.
+     *
+     * The full migrated record set is encode-probed BEFORE the schema or
+     * any file is touched, so an unencodable stored value (foreign bytes in
+     * the data file) aborts with the disk untouched. The schema is then
+     * published before the data rewrite: a crash in between is healed by
+     * repair toward the target state (added columns back-filled with their
+     * type defaults).
      *
      * @return array{added: list<string>, dropped: list<string>}
      */
@@ -350,7 +470,20 @@ final class JsonDataProvider
                 $current = $this->schema->getTable($desired->name);
 
                 $this->assertNoColumnTypeChange($current, $desired);
-                $this->assertSchemaFieldsDeclared($desired);
+
+                $target = new TableSchema(
+                    name: $current->name,
+                    uniqueConstraints: $current->uniqueConstraints,
+                    columns: $desired->columns,
+                    indexes: $current->indexes,
+                    tableComment: $current->tableComment,
+                    columnComment: array_intersect_key(
+                        $current->columnComment,
+                        $desired->columns,
+                    ),
+                );
+
+                $this->assertSchemaFieldsDeclared($target);
 
                 $currentColumns = array_keys($current->columns);
                 $desiredColumns = array_keys($desired->columns);
@@ -367,10 +500,10 @@ final class JsonDataProvider
                 );
 
                 $this->ensureTableConsistent($current);
-                $records = $this->readAllForWrite($desired->name);
+                $records = $this->readAllForWrite($target->name);
 
                 if ($records !== []) {
-                    $this->assertAddedColumnsHaveDefault($desired, $added);
+                    $this->assertAddedColumnsHaveDefault($target, $added);
                 }
 
                 $migrated = [];
@@ -378,19 +511,20 @@ final class JsonDataProvider
                 foreach ($records as $record) {
                     $row = [];
 
-                    foreach ($desired->columns as $column => $type) {
+                    foreach ($target->columns as $column => $type) {
                         $row[$column] = \array_key_exists($column, $record)
                             ? $record[$column]
-                            : self::defaultForType($type);
+                            : ColumnDefaults::forType($type);
                     }
 
                     $migrated[] = $row;
                 }
 
-                $this->createMissingIndexFiles($desired);
-                $this->schema->replaceTable($desired);
-                $this->writeAll($desired->name, $desired, $migrated);
-                $this->deleteOrphanIndexFiles($current, $desired);
+                $this->ndjson->encodeRecords($target->name, $migrated);
+
+                $this->createMissingIndexFiles($target);
+                $this->schema->replaceTable($target);
+                $this->writeAll($target->name, $target, $migrated);
 
                 return ['added' => $added, 'dropped' => $dropped];
             },
@@ -418,6 +552,17 @@ final class JsonDataProvider
     /**
      * Inserts a new record; id is assigned automatically (max + 1, minimum 1).
      * Returns the assigned id.
+     *
+     * Invariant: appends allocate monotonically growing ids, so the data
+     * file is ordered by id. Before allocating, an O(1) guard compares the
+     * id of the last stored line against the meta counter: a counter that
+     * fell behind (meta.json restored from a backup, hand-edited) would
+     * mint a duplicate primary key, so the watermark is first re-derived
+     * from the data under the same EX lock. The guard leans on the
+     * ordered-by-id invariant: a foreign edit that BOTH shuffles the file
+     * (max id mid-file) AND rolls the counter back can slip past it — the
+     * resulting duplicate is caught after the fact by the pk_duplicate
+     * validator finding.
      *
      * @param array<string,null|scalar> $record
      */
@@ -457,6 +602,28 @@ final class JsonDataProvider
                         $tableSchema->name,
                         json_last_error_msg(),
                     );
+                }
+
+                $last = $this->ndjson->readLastLine(
+                    $tableSchema->name,
+                    $tableSchema->getFileName(),
+                );
+
+                if ($last !== null) {
+                    $lastInserted = $this->meta
+                        ->getLastInsertedId($tableName);
+
+                    if ((int)($last['id'] ?? 0) >= $lastInserted + 1) {
+                        $this->meta->setLastInsertedId(
+                            $tableName,
+                            max(
+                                self::maxStoredId(
+                                    $this->readAllForWrite($tableName),
+                                ),
+                                $lastInserted,
+                            ),
+                        );
+                    }
                 }
 
                 $id = $this->meta->allocateId($tableName);
@@ -673,8 +840,169 @@ final class JsonDataProvider
                 $this->ensureTableConsistent($tableSchema);
                 $records = $this->readAllForWrite($tableName);
 
+                $this->ndjson->encodeRecords($tableName, array_map(
+                    fn (array $r): array => $this->normalizeRecord(
+                        $newSchema,
+                        $r,
+                    ),
+                    $records,
+                ));
+
                 $this->schema->replaceTable($newSchema);
                 $this->writeAll($tableName, $newSchema, $records);
+            },
+        );
+    }
+
+    /**
+     * Removes every record of the table and resets its auto-increment
+     * counter to 0 (SQL TRUNCATE semantics — the next insert gets id 1;
+     * a delete-all keeps the counter). The data file is atomically
+     * replaced with an empty one, every index is rebuilt empty, meta
+     * committed and the cache invalidated. Runs under the database +
+     * table EX locks.
+     *
+     * Foreign keys are NOT enforced (symmetric with dropTable): child FK
+     * values referencing the truncated rows are left dangling — truncate
+     * or migrate the children first if that matters.
+     */
+    public function truncate(string $tableName): void
+    {
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                $this->ensureTableConsistent($tableSchema);
+                $this->writeAll($tableName, $tableSchema, []);
+                $this->meta->setLastInsertedId($tableName, 0);
+                $this->invalidateCache($tableName);
+            },
+        );
+    }
+
+    /**
+     * Renames a column: the schema (column key at the same position and
+     * type, indexes, unique constraints, comments), every relation
+     * referencing the column, and the stored data are all updated. Runs
+     * under the database + table EX locks.
+     *
+     * Guards (nothing is written on failure): the column must exist
+     * (COLUMN_NOT_FOUND), the primary key cannot be renamed
+     * (PK_CONTRACT_VIOLATED), the new name must be a valid free identifier
+     * (INVALID_COLUMN_NAME / COLUMN_ALREADY_EXISTS). The renamed record
+     * set is encode-probed before any mutation.
+     *
+     * Crash model matches migrateColumns (schema first, data second) with
+     * one caveat: repair converges to the NEW schema by back-filling the
+     * renamed column with its type default rather than carrying the old
+     * values over — take a backup before renaming if the data matters.
+     *
+     * A bound DTO map is recompiled against the new schema; if the DTO no
+     * longer matches (its property still maps to the old name), the
+     * binding is dropped so object reads fail loudly with
+     * DTO_NOT_REGISTERED instead of hydrating garbage.
+     *
+     * Changing a column's TYPE is not supported by any mutation API — see
+     * MIGRATE_COLUMN_TYPE_CHANGE: add a new nullable column, migrate the
+     * values, drop the old column, then renameColumn.
+     */
+    public function renameColumn(
+        string $tableName,
+        string $from,
+        string $to,
+    ): void {
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $from, $to): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                if (!isset($tableSchema->columns[$from])) {
+                    throw StorageException::columnNotFound($tableName, $from);
+                }
+
+                if ($from === PrimaryKey::FIELD) {
+                    throw StorageException::pkContractViolated(
+                        $tableName,
+                        'the primary key column cannot be renamed',
+                    );
+                }
+
+                IdentifierRules::assertColumnName($to);
+
+                if (isset($tableSchema->columns[$to])) {
+                    throw StorageException::columnAlreadyExists(
+                        $tableName,
+                        $to,
+                    );
+                }
+
+                $newSchema = self::renameColumnInSchema(
+                    $tableSchema,
+                    $from,
+                    $to,
+                );
+
+                $this->ensureTableConsistent($tableSchema);
+                $records = $this->readAllForWrite($tableName);
+
+                $renamed = [];
+
+                foreach ($records as $record) {
+                    $row = [];
+
+                    foreach ($record as $key => $value) {
+                        $row[$key === $from ? $to : $key] = $value;
+                    }
+
+                    $renamed[] = $row;
+                }
+
+                $this->ndjson->encodeRecords($tableName, array_map(
+                    fn (array $r): array => $this->normalizeRecord(
+                        $newSchema,
+                        $r,
+                    ),
+                    $renamed,
+                ));
+
+                $this->schema->mutate(
+                    static function (
+                        array $tables,
+                        array $relations,
+                    ) use (
+                        $tableName,
+                        $from,
+                        $to,
+                        $newSchema,
+                    ): array {
+                        if (!isset($tables[$tableName])) {
+                            throw StorageException::tableNotFound($tableName);
+                        }
+
+                        $tables[$tableName] = $newSchema;
+
+                        $updated = [];
+
+                        foreach ($relations as $relation) {
+                            $updated[] = self::renameColumnInRelation(
+                                $relation,
+                                $tableName,
+                                $from,
+                                $to,
+                            );
+                        }
+
+                        return [$tables, $updated];
+                    },
+                );
+
+                $this->writeAll($tableName, $newSchema, $renamed);
+                $this->recompileDto($tableName, $newSchema);
             },
         );
     }
@@ -883,6 +1211,298 @@ final class JsonDataProvider
             'sh',
             function () use ($tableName): void {
                 $this->rebuildAllStamped($this->schema->getTable($tableName));
+            },
+        );
+    }
+
+    /**
+     * Adds a secondary index to an existing table and builds its file from
+     * current data, all under the database + table EX locks.
+     *
+     * Guards (nothing is written on failure): the table must exist, the
+     * index name must be valid and free (INDEX_ALREADY_EXISTS), the PK
+     * index cannot be added or replaced (PK_CONTRACT_VIOLATED), and every
+     * indexed field must be a declared column
+     * (MIGRATE_FIELD_UNKNOWN_COLUMN).
+     *
+     * Order: the file is provisioned and built first, the schema published
+     * last — a crash in between leaves an undeclared file that validate()
+     * reports as orphan and repair() removes. On a legacy-format table
+     * every existing index is rebuilt with the current encoder and the
+     * format stamped, so the table never mixes key formats.
+     */
+    public function addIndex(string $tableName, IndexSchema $index): void
+    {
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $index): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                if (
+                    $index->isPrimary
+                    || $index->name === IndexSchema::PK_NAME
+                ) {
+                    throw StorageException::pkContractViolated(
+                        $tableName,
+                        'the PK index cannot be added or replaced '
+                            . 'via addIndex',
+                    );
+                }
+
+                foreach ($tableSchema->indexes as $existing) {
+                    if ($existing->name === $index->name) {
+                        throw StorageException::indexAlreadyExists(
+                            $tableName,
+                            $index->name,
+                        );
+                    }
+                }
+
+                foreach ($index->fields as $field) {
+                    if (!isset($tableSchema->columns[$field->field])) {
+                        throw StorageException::migrateFieldUnknownColumn(
+                            $tableName,
+                            'index "' . $index->name . '"',
+                            $field->field,
+                        );
+                    }
+                }
+
+                $this->ensureTableConsistent($tableSchema);
+                $records = $this->readAllForWrite($tableName);
+
+                $this->ndjson->createFileFresh(
+                    $tableName,
+                    $index->getFileName(),
+                );
+
+                if ($this->meta->getIndexFormat($tableName) < 2) {
+                    $this->indexManager->rebuild($tableSchema, $records);
+                }
+
+                $this->indexManager->rebuildOne($tableName, $index, $records);
+
+                if ($this->meta->getIndexFormat($tableName) < 2) {
+                    $this->meta->stampIndexFormat($tableName, 2);
+                }
+
+                $this->schema->updateTable(
+                    $tableName,
+                    static fn (TableSchema $t): TableSchema => new TableSchema(
+                        name: $t->name,
+                        uniqueConstraints: $t->uniqueConstraints,
+                        columns: $t->columns,
+                        indexes: array_merge($t->indexes, [$index]),
+                        tableComment: $t->tableComment,
+                        columnComment: $t->columnComment,
+                    ),
+                );
+            },
+        );
+    }
+
+    /**
+     * Drops a secondary index: removes it from the schema, then deletes
+     * its file, under the database + table EX locks. The PK index cannot
+     * be dropped (PK_CONTRACT_VIOLATED); an unknown name raises
+     * INDEX_NOT_FOUND. Schema first, file second: a crash in between
+     * leaves an orphan file that validate() reports and repair() removes.
+     */
+    public function dropIndex(string $tableName, string $indexName): void
+    {
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $indexName): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                if ($indexName === IndexSchema::PK_NAME) {
+                    throw StorageException::pkContractViolated(
+                        $tableName,
+                        'the PK index cannot be dropped',
+                    );
+                }
+
+                $found = null;
+
+                foreach ($tableSchema->indexes as $existing) {
+                    if ($existing->name === $indexName) {
+                        $found = $existing;
+
+                        break;
+                    }
+                }
+
+                if ($found === null) {
+                    throw StorageException::indexNotFound(
+                        $tableName,
+                        $indexName,
+                    );
+                }
+
+                if ($found->isPrimary) {
+                    throw StorageException::pkContractViolated(
+                        $tableName,
+                        'the PK index cannot be dropped',
+                    );
+                }
+
+                $this->schema->updateTable(
+                    $tableName,
+                    static fn (TableSchema $t): TableSchema => new TableSchema(
+                        name: $t->name,
+                        uniqueConstraints: $t->uniqueConstraints,
+                        columns: $t->columns,
+                        indexes: array_values(array_filter(
+                            $t->indexes,
+                            static fn (IndexSchema $i): bool => $i
+                                ->name !== $indexName,
+                        )),
+                        tableComment: $t->tableComment,
+                        columnComment: $t->columnComment,
+                    ),
+                );
+
+                $this->ndjson->deleteFile($tableName, $found->getFileName());
+            },
+        );
+    }
+
+    /**
+     * Adds a unique constraint to an existing table under the database +
+     * table EX locks. Existing data is pre-checked (type-strict keys, SQL
+     * NULL semantics — records with a null key never conflict): a stored
+     * duplicate raises UNIQUE_VIOLATION with nothing written. A taken name
+     * raises UNIQUE_CONSTRAINT_ALREADY_EXISTS, an unknown field
+     * MIGRATE_FIELD_UNKNOWN_COLUMN. Schema-only mutation — constraints
+     * have no files.
+     */
+    public function addUniqueConstraint(
+        string $tableName,
+        UniqueConstraint $constraint,
+    ): void {
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $constraint): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                foreach ($tableSchema->uniqueConstraints as $existing) {
+                    if ($existing->name === $constraint->name) {
+                        throw StorageException::uniqueConstraintAlreadyExists(
+                            $tableName,
+                            $constraint->name,
+                        );
+                    }
+                }
+
+                foreach ($constraint->fields as $field) {
+                    if (!isset($tableSchema->columns[$field])) {
+                        throw StorageException::migrateFieldUnknownColumn(
+                            $tableName,
+                            'unique constraint "' . $constraint->name . '"',
+                            $field,
+                        );
+                    }
+                }
+
+                $seen = [];
+
+                foreach ($this->readAllForWrite($tableName) as $record) {
+                    $key = $constraint->keyOf($record);
+
+                    if ($key === null) {
+                        continue;
+                    }
+
+                    if (isset($seen[$key])) {
+                        $fieldValues = array_map(
+                            static fn (string $f): string => (string)(
+                                $record[$f] ?? ''
+                            ),
+                            $constraint->fields,
+                        );
+
+                        throw StorageException::uniqueViolation(
+                            $tableName,
+                            implode(', ', $constraint->fields),
+                            implode(', ', $fieldValues),
+                        );
+                    }
+
+                    $seen[$key] = true;
+                }
+
+                $this->schema->updateTable(
+                    $tableName,
+                    static fn (TableSchema $t): TableSchema => new TableSchema(
+                        name: $t->name,
+                        uniqueConstraints: array_merge(
+                            $t->uniqueConstraints,
+                            [$constraint],
+                        ),
+                        columns: $t->columns,
+                        indexes: $t->indexes,
+                        tableComment: $t->tableComment,
+                        columnComment: $t->columnComment,
+                    ),
+                );
+            },
+        );
+    }
+
+    /**
+     * Drops a unique constraint by name under the database + table EX
+     * locks. An unknown name raises UNIQUE_CONSTRAINT_NOT_FOUND.
+     * Schema-only mutation.
+     */
+    public function dropUniqueConstraint(
+        string $tableName,
+        string $name,
+    ): void {
+        $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $name): void {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                $found = false;
+
+                foreach ($tableSchema->uniqueConstraints as $existing) {
+                    if ($existing->name === $name) {
+                        $found = true;
+
+                        break;
+                    }
+                }
+
+                if (!$found) {
+                    throw StorageException::uniqueConstraintNotFound(
+                        $tableName,
+                        $name,
+                    );
+                }
+
+                $this->schema->updateTable(
+                    $tableName,
+                    static fn (TableSchema $t): TableSchema => new TableSchema(
+                        name: $t->name,
+                        uniqueConstraints: array_values(array_filter(
+                            $t->uniqueConstraints,
+                            static fn (UniqueConstraint $c): bool => $c
+                                ->name !== $name,
+                        )),
+                        columns: $t->columns,
+                        indexes: $t->indexes,
+                        tableComment: $t->tableComment,
+                        columnComment: $t->columnComment,
+                    ),
+                );
             },
         );
     }
@@ -1239,6 +1859,33 @@ final class JsonDataProvider
     }
 
     /**
+     * Rewrites a relation after a table rename: both sides are checked —
+     * a relation may reference the renamed table as its from- and
+     * to-table at once (self-reference).
+     */
+    private static function renameTableInRelation(
+        RelationSchema $relation,
+        string $from,
+        string $to,
+    ): RelationSchema {
+        if ($relation->fromTable !== $from && $relation->toTable !== $from) {
+            return $relation;
+        }
+
+        return new RelationSchema(
+            fromTable: $relation->fromTable === $from
+                ? $to
+                : $relation->fromTable,
+            foreignKey: $relation->foreignKey,
+            toTable: $relation->toTable === $from ? $to : $relation->toTable,
+            references: $relation->references,
+            type: $relation->type,
+            onDelete: $relation->onDelete,
+            onUpdate: $relation->onUpdate,
+        );
+    }
+
+    /**
      * Delete body over ALREADY-ENCODED conditions. The public delete()
      * validates and encodes user input first; FK cascades call this
      * directly — their conditions are built from STORED values (already
@@ -1315,49 +1962,140 @@ final class JsonDataProvider
     }
 
     /**
-     * Default value for a freshly added column, by its declared type. Nullable
-     * types default to null; the four base scalar types to their zero value.
-     * Types with no meaningful zero (temporal, year/month/day) are rejected
-     * upstream by assertAddedColumnsHaveDefault before this is reached on a
-     * non-empty table, so the null fallback here is never persisted as a
-     * not-null value.
+     * Builds the table descriptor with one column renamed: the column key
+     * keeps its position and type; indexes, unique constraints and the
+     * column comment map follow the rename.
      */
-    private static function defaultForType(
-        string $type
-    ): bool | float | int | string | null {
-        if (str_ends_with($type, '|null')) {
-            return null;
+    private static function renameColumnInSchema(
+        TableSchema $tableSchema,
+        string $from,
+        string $to,
+    ): TableSchema {
+        $columns = [];
+
+        foreach ($tableSchema->columns as $column => $type) {
+            $columns[$column === $from ? $to : $column] = $type;
         }
 
-        return match ($type) {
-            ColumnTypes::STRING => '',
-            ColumnTypes::INT    => 0,
-            ColumnTypes::FLOAT  => 0.0,
-            ColumnTypes::BOOL   => false,
-            default             => null,
-        };
+        $constraints = [];
+
+        foreach ($tableSchema->uniqueConstraints as $constraint) {
+            $constraints[] = new UniqueConstraint(
+                $constraint->name,
+                array_map(
+                    static fn (string $f): string => $f === $from ? $to : $f,
+                    $constraint->fields,
+                ),
+            );
+        }
+
+        $indexes = [];
+
+        foreach ($tableSchema->indexes as $index) {
+            $fields = [];
+
+            foreach ($index->fields as $field) {
+                $fields[] = new Schema\IndexFieldSchema(
+                    $field->field === $from ? $to : $field->field,
+                    $field->direction,
+                );
+            }
+
+            $indexes[] = new IndexSchema(
+                $index->name,
+                $fields,
+                $index->isPrimary,
+            );
+        }
+
+        $comments = [];
+
+        foreach ($tableSchema->columnComment as $column => $text) {
+            $comments[$column === $from ? $to : $column] = $text;
+        }
+
+        return new TableSchema(
+            name: $tableSchema->name,
+            uniqueConstraints: $constraints,
+            columns: $columns,
+            indexes: $indexes,
+            tableComment: $tableSchema->tableComment,
+            columnComment: $comments,
+        );
     }
 
     /**
-     * Whether a freshly added not-null column of this type has a usable
-     * zero-value default. Only the four base scalar types (and any nullable
-     * type, which defaults to null) qualify; temporal and year/month/day types
-     * have no sensible zero and must be declared nullable when added to a
-     * non-empty table.
+     * Rewrites a relation after a column rename: the FK column is matched
+     * on the relation's CHILD side and the referenced column on its PARENT
+     * side (canonical resolution — for belongsTo the declaring table is
+     * the child, for hasMany/hasOne the target table is). A relation not
+     * touching the renamed column is returned as-is; a self-referencing
+     * relation may have both sides renamed at once.
      */
-    private static function hasSafeDefault(string $type): bool
-    {
-        if (str_ends_with($type, '|null')) {
-            return true;
+    private static function renameColumnInRelation(
+        RelationSchema $relation,
+        string $tableName,
+        string $from,
+        string $to,
+    ): RelationSchema {
+        $foreignKey = $relation->foreignKey;
+        $references = $relation->references;
+
+        if (
+            $relation->childTable() === $tableName
+            && $relation->childColumn() === $from
+        ) {
+            $foreignKey = $to;
         }
 
-        return match ($type) {
-            ColumnTypes::STRING,
-            ColumnTypes::INT,
-            ColumnTypes::FLOAT,
-            ColumnTypes::BOOL => true,
-            default           => false,
-        };
+        if (
+            $relation->parentTable() === $tableName
+            && $relation->parentColumn() === $from
+        ) {
+            $references = $to;
+        }
+
+        if (
+            $foreignKey === $relation->foreignKey
+            && $references === $relation->references
+        ) {
+            return $relation;
+        }
+
+        return new RelationSchema(
+            fromTable: $relation->fromTable,
+            foreignKey: $foreignKey,
+            toTable: $relation->toTable,
+            references: $references,
+            type: $relation->type,
+            onDelete: $relation->onDelete,
+            onUpdate: $relation->onUpdate,
+        );
+    }
+
+    /**
+     * Recompiles the DTO map bound to the table against a changed schema.
+     * A DTO that no longer matches (e.g. its property still maps to a
+     * renamed column) is unbound instead: object reads then fail loudly
+     * with DTO_NOT_REGISTERED rather than hydrating garbage.
+     */
+    private function recompileDto(
+        string $tableName,
+        TableSchema $tableSchema,
+    ): void {
+        $map = $this->dtoRegistry->forTable($tableName);
+
+        if ($map === null) {
+            return;
+        }
+
+        try {
+            $this->dtoRegistry->register(
+                DtoMap::compile($map->class, $tableSchema),
+            );
+        } catch (StorageException) {
+            $this->dtoRegistry->unregister($tableName);
+        }
     }
 
     /**
@@ -1430,7 +2168,7 @@ final class JsonDataProvider
         foreach ($added as $column) {
             $type = $desired->columns[$column];
 
-            if (!self::hasSafeDefault($type)) {
+            if (!ColumnDefaults::hasSafeDefault($type)) {
                 throw StorageException::migrateColumnNoDefault(
                     $desired->name,
                     $column,
@@ -1458,31 +2196,6 @@ final class JsonDataProvider
     }
 
     /**
-     * Removes index files whose index is present in the current schema but no
-     * longer in $desired (e.g. the index's column was dropped), so no orphan
-     * index file is left behind in the table directory.
-     */
-    private function deleteOrphanIndexFiles(
-        TableSchema $current,
-        TableSchema $desired,
-    ): void {
-        $keep = [];
-
-        foreach ($desired->indexes as $index) {
-            $keep[$index->name] = true;
-        }
-
-        foreach ($current->indexes as $index) {
-            if (!isset($keep[$index->name])) {
-                $this->ndjson->deleteFile(
-                    $desired->name,
-                    $index->getFileName(),
-                );
-            }
-        }
-    }
-
-    /**
      * Reads all records straight from disk, bypassing the cache entirely —
      * the only legal base for a rewrite or a constraint check inside a
      * write critical section. The caller must hold the appropriate table
@@ -1495,11 +2208,35 @@ final class JsonDataProvider
     private function readAllForWrite(string $tableName): array
     {
         $tableSchema = $this->schema->getTable($tableName);
-
-        return $this->values->widenFloats(
-            $tableSchema,
-            $this->ndjson->read($tableName, $tableSchema->getFileName()),
+        $records = $this->ndjson->read(
+            $tableName,
+            $tableSchema->getFileName(),
         );
+        $this->assertStoredColumnNames($records);
+
+        return $this->values->widenFloats($tableSchema, $records);
+    }
+
+    /**
+     * Cheap corruption tripwire on data load: the keys of the first stored
+     * record must be valid column identifiers. Every record the provider
+     * ever writes is normalized against the schema (whose column names are
+     * validated), so an invalid key can only come from foreign tampering
+     * with the data file.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    private function assertStoredColumnNames(array $records): void
+    {
+        $first = $records[0] ?? null;
+
+        if ($first === null) {
+            return;
+        }
+
+        foreach (array_keys($first) as $column) {
+            IdentifierRules::assertColumnName($column);
+        }
     }
 
     /**
@@ -1625,10 +2362,9 @@ final class JsonDataProvider
         }
 
         $tableSchema = $this->schema->getTable($tableName);
-        $records = $this->values->widenFloats(
-            $tableSchema,
-            $this->ndjson->read($tableName, $tableSchema->getFileName()),
-        );
+        $raw = $this->ndjson->read($tableName, $tableSchema->getFileName());
+        $this->assertStoredColumnNames($raw);
+        $records = $this->values->widenFloats($tableSchema, $raw);
         $this->cache->set($cacheKey, $records);
 
         return $records;
@@ -1690,6 +2426,27 @@ final class JsonDataProvider
                 $tableSchema->getFileName(),
             )
         ) {
+            /*
+             * A data file missing while a pending-rename marker involves
+             * this table is the renameTable crash window: the real data
+             * still lives under the OLD file name. Provisioning a fresh
+             * empty file here would block the repair roll-forward and
+             * turn the stranded file into an "orphan" — refuse loudly
+             * instead and let repair() reconcile first.
+             */
+            $pending = $this->meta->getPendingRename();
+
+            if (
+                $pending !== null
+                && ($pending['from'] === $tableSchema->name
+                    || $pending['to'] === $tableSchema->name)
+            ) {
+                throw StorageException::renameIncomplete(
+                    $pending['from'],
+                    $pending['to'],
+                );
+            }
+
             $this->ndjson->createFileFresh(
                 $tableSchema->name,
                 $tableSchema->getFileName(),
@@ -1734,15 +2491,7 @@ final class JsonDataProvider
         $records = $this->readAllForWrite($tableSchema->name);
 
         if ($metaInitialized) {
-            $maxId = 0;
-
-            foreach ($records as $record) {
-                $id = $record[PrimaryKey::FIELD] ?? null;
-
-                if (\is_int($id) && $id > $maxId) {
-                    $maxId = $id;
-                }
-            }
+            $maxId = self::maxStoredId($records);
 
             if ($maxId > 0) {
                 $this->meta->setLastInsertedId($tableSchema->name, $maxId);
@@ -1750,6 +2499,28 @@ final class JsonDataProvider
         }
 
         $this->writeAll($tableSchema->name, $tableSchema, $records);
+    }
+
+    /**
+     * The largest stored primary key across the records (0 when none) —
+     * the id watermark restored into meta when the counter is missing or
+     * fell behind the data.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    private static function maxStoredId(array $records): int
+    {
+        $max = 0;
+
+        foreach ($records as $record) {
+            $id = $record[PrimaryKey::FIELD] ?? null;
+
+            if (\is_int($id) && $id > $max) {
+                $max = $id;
+            }
+        }
+
+        return $max;
     }
 
     /**
@@ -2382,10 +3153,12 @@ final class JsonDataProvider
     /**
      * A column whose engine value order provably matches the v2 key
      * order: the known scalar types and the temporal types (stored as
-     * canonical strings whose strcmp order is chronological). Unknown
-     * (passthrough) types can hold mixed scalars whose comparator order
-     * differs from the key tag order — ranges and ordering over them
-     * never trust an index.
+     * canonical strings whose strcmp order is chronological). The
+     * unknown-type (passthrough) branch is defense in depth only — the
+     * schema boundary rejects unknown column types, so it is unreachable
+     * through any supported path — but stays: mixed scalars have a
+     * comparator order that differs from the key tag order, and ranges
+     * or ordering over them must never trust an index.
      */
     private function rangeIndexableColumn(
         TableSchema $tableSchema,

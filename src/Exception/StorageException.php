@@ -72,6 +72,79 @@ class StorageException extends JsonProviderException
         return new self('INVALID_FILE_NAME', $fileName);
     }
 
+    public static function invalidTableName(string $name): self
+    {
+        return new self('INVALID_TABLE_NAME', $name);
+    }
+
+    public static function invalidColumnName(string $name): self
+    {
+        return new self('INVALID_COLUMN_NAME', $name);
+    }
+
+    public static function invalidIndexName(string $name): self
+    {
+        return new self('INVALID_INDEX_NAME', $name);
+    }
+
+    public static function reservedIndexName(string $name): self
+    {
+        return new self('RESERVED_INDEX_NAME', $name);
+    }
+
+    public static function invalidColumnType(
+        string $table,
+        string $column,
+        string $type,
+    ): self {
+        return new self('INVALID_COLUMN_TYPE', $table, $column, $type);
+    }
+
+    public static function relationEntryInvalid(string $reason): self
+    {
+        return new self('RELATION_ENTRY_INVALID', $reason);
+    }
+
+    public static function relationActionInvalid(
+        string $field,
+        string $value,
+    ): self {
+        return new self('RELATION_ACTION_INVALID', $field, $value);
+    }
+
+    public static function indexAlreadyExists(
+        string $table,
+        string $indexName,
+    ): self {
+        return new self('INDEX_ALREADY_EXISTS', $table, $indexName);
+    }
+
+    public static function uniqueConstraintAlreadyExists(
+        string $table,
+        string $name,
+    ): self {
+        return new self('UNIQUE_CONSTRAINT_ALREADY_EXISTS', $table, $name);
+    }
+
+    public static function uniqueConstraintNotFound(
+        string $table,
+        string $name,
+    ): self {
+        return new self('UNIQUE_CONSTRAINT_NOT_FOUND', $table, $name);
+    }
+
+    public static function columnAlreadyExists(
+        string $table,
+        string $column,
+    ): self {
+        return new self('COLUMN_ALREADY_EXISTS', $table, $column);
+    }
+
+    public static function renameIncomplete(string $from, string $to): self
+    {
+        return new self('RENAME_INCOMPLETE', $from, $to);
+    }
+
     public static function invalidIndexFileName(string $fileName): self
     {
         return new self('INVALID_INDEX_FILE_NAME', $fileName);

@@ -41,9 +41,17 @@ $db->createTable(TableSchema::create(
 - `TableSchema::create(...)` — **factory with normalization**. Adds the PK column and PK index for you, accepts "human" descriptions. This is what application code normally uses.
 - `new TableSchema(...)` — **strict constructor**. Validates the contract but does not normalize. Used by the provider when reading existing schema files; you only need this in tests where you want to verify validation behaviour.
 
+## Table, column and index names
+
+A name is a whitelisted identifier: it starts with a letter, digit or underscore, continues with letters, digits, underscores or hyphens, is at most 64 characters long, and contains no dots or path separators. The rules live in `Schema\IdentifierRules` and are enforced at the schema boundary (the `TableSchema`/`IndexSchema` constructors), so they cover both the DDL API and loading `information_schema.json`. A violation raises `INVALID_TABLE_NAME` / `INVALID_COLUMN_NAME` / `INVALID_INDEX_NAME`.
+
+Reserved: the `_fk_` prefix for index names (engine-managed FK backing indexes) → `RESERVED_INDEX_NAME`; the table name `_pendingRename` (the `renameTable` crash-marker key in `meta.json`) → `INVALID_TABLE_NAME`.
+
+By construction a valid name can never escape the database directory when used as a path segment; the storage layers additionally carry an explicit anti-traversal guard (`.`, `..`, slashes). `dropTable` with an invalid name now throws (previously a no-op).
+
 ## Allowed column types
 
-A column type is a string value in the `columns` map. Each base type has a `|null` variant (which additionally permits `null`):
+A column type is a string value in the `columns` map. The list is **closed**: 12 base types and their `|null` variants — exactly the 24 strings enumerated by `ColumnTypes::all()`. Any other string (`'integer'`, `'datetime|nullable'`, a typo in a hand-edited schema file) is rejected by the `TableSchema` constructor with `INVALID_COLUMN_TYPE` — in the DDL API and on schema load alike. Each base type has a `|null` variant (which additionally permits `null`):
 
 - **Primitives** — `string`, `int`, `float`, `bool`.
 - **Temporal** — `date`, `time`, `timez`, `datetime`, `datetimez`. Values that carry a moment (everything except a bare `date`) are stored in UTC and presented in the current PHP timezone; see [Temporal types and timezones](#temporal-types-and-timezones).
@@ -99,7 +107,7 @@ Types are enforced on every write (`insert`, `update`, and `where` values), not 
 - `null` is accepted only on a `<type>|null` column;
 - on `insert`, a missing non-nullable column is an error (a missing nullable column becomes `null`); `update` is a patch — it validates only the keys it is given and leaves the rest untouched;
 - keys not present in the schema are dropped;
-- unknown/custom type strings are passed through unchecked (backward compatibility).
+- unknown/custom type strings cannot exist: the schema boundary rejects them (`INVALID_COLUMN_TYPE`), so every column is always validated against one of the 24 known types.
 
 Violations raise `StorageException` with a specific key — `TYPE_MISMATCH`, `NULL_NOT_ALLOWED`, `REQUIRED_COLUMN_MISSING`, `NON_FINITE_FLOAT`, `INVALID_UTF8`, `INVALID_TEMPORAL_VALUE`, `ZERO_DATE`, `NUMERIC_PART_OUT_OF_RANGE` — see [Exceptions & localization](17-exceptions-localization.md).
 
@@ -113,9 +121,9 @@ Condition values are checked by the same contract as writes — the first violat
 | `>` `>=` `<` `<=` | non-`null` scalar of the column's exact type |
 | `BETWEEN` | array of exactly two non-`null` scalars following the range rule; otherwise `CONDITION_MALFORMED` |
 | `IN` | array whose elements follow the `=` rule; an empty array is valid and matches nothing; a non-array → `CONDITION_MALFORMED` |
-| `LIKE` | a string pattern; string/temporal/passthrough columns only |
+| `LIKE` | a string pattern; string/temporal columns only |
 
-The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `CONDITION_TYPE_MISMATCH`. `NAN`/`INF` against a `float` column → `NON_FINITE_FLOAT` (the same guard as on write). Temporal conditions accept only system-format strings and are encoded to the stored UTC form. Unknown (passthrough) column types skip the value check, but the structural `BETWEEN`/`IN` rules still apply. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QUERY_UNKNOWN_COLUMN`.
+The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `CONDITION_TYPE_MISMATCH`. `NAN`/`INF` against a `float` column → `NON_FINITE_FLOAT` (the same guard as on write). Temporal conditions accept only system-format strings and are encoded to the stored UTC form. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QUERY_UNKNOWN_COLUMN`.
 
 ## Float format on disk
 
@@ -206,6 +214,16 @@ $db->table('events')
 ```
 
 `type` is one of `belongsTo`, `hasMany`, `hasOne`. `onDelete` and `onUpdate` support `noAction`, `cascade`, `setNull`, `restrict`. The provider enforces the action when records are deleted or the referenced field is updated.
+
+### Strict schema loading
+
+`information_schema.json` is parsed strictly: a structurally broken entry is not silently skipped — it fails the load with the exact address of the problem. A silently dropped relation would mean a cascade or restrict the author believed was enforced simply stopped executing.
+
+- a relation entry that is not an object, or lacks string `from`/`foreignKey`/`to`/`references` keys (catches typos like `form`), or has an unknown `type` → `RELATION_ENTRY_INVALID`;
+- a **present** `onDelete`/`onUpdate` outside `noAction`/`cascade`/`setNull`/`restrict` (e.g. `CASCADE` or `set_null`) → `RELATION_ACTION_INVALID`; an absent key is the legal `noAction` default;
+- a broken index entry (missing name, empty `fields`, a direction outside case-sensitive `asc`/`desc`), unique constraint (missing name or fields) or table definition (non-object definition, non-string column type, missing `tables` key) → `INVALID_SCHEMA` with details; an empty `tables` collection stays valid.
+
+Relation semantics (table/column existence, type compatibility) are not validated on load — that belongs to the relation API and the FK engine at execution time.
 
 ## Comments — table and column descriptions
 
