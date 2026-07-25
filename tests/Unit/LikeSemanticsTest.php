@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -20,7 +21,6 @@ use Testo\Test;
  */
 final class LikeSemanticsTest
 {
-    private const string DB_PATH = '/tmp/jp-like-tests';
     private const string TABLE = 'texts';
 
     private string $dbDir;
@@ -30,9 +30,9 @@ final class LikeSemanticsTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -59,7 +59,7 @@ final class LikeSemanticsTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -179,8 +179,6 @@ final class LikeSemanticsTest
         Assert::same($rows[0]['t'], '100% off');
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function removeDir(string $path): void
     {
         if (!is_dir($path)) {
@@ -206,5 +204,10 @@ final class LikeSemanticsTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-like-tests');
     }
 }

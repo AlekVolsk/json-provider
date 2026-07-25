@@ -225,7 +225,7 @@ final class IndexTest
     public function indexFileExistsAfterSeed(): void
     {
         Fixture::db();
-        $dir = Fixture::DB_PATH;
+        $dir = Fixture::dbPath();
 
         Assert::true(is_file($dir . '/products/idx_category.index.ndjson'));
         Assert::true(is_file($dir . '/products/idx_price_desc.index.ndjson'));
@@ -237,7 +237,7 @@ final class IndexTest
     {
         Fixture::db();
 
-        $path = Fixture::DB_PATH . '/products/idx_category.index.ndjson';
+        $path = Fixture::dbPath() . '/products/idx_category.index.ndjson';
         $lines = array_filter(
             explode("\n", (string)file_get_contents($path)),
             static fn (string $l): bool => trim($l) !== '',
@@ -259,7 +259,7 @@ final class IndexTest
             )],
         );
 
-        $indexManager = new IndexManager(new NdjsonStorage(Fixture::DB_PATH));
+        $indexManager = new IndexManager(new NdjsonStorage(Fixture::dbPath()));
         $entries = $indexManager->readIndex('products', $indexSchema);
 
         $keys = array_column($entries, 'key');
@@ -282,7 +282,7 @@ final class IndexTest
             )],
         );
 
-        $manager = new IndexManager(new NdjsonStorage(Fixture::DB_PATH));
+        $manager = new IndexManager(new NdjsonStorage(Fixture::dbPath()));
         $entries = $manager->readIndex('products', $indexSchema);
 
         Assert::count($entries, 100);
@@ -309,7 +309,7 @@ final class IndexTest
             )],
         );
 
-        $manager = new IndexManager(new NdjsonStorage(Fixture::DB_PATH));
+        $manager = new IndexManager(new NdjsonStorage(Fixture::dbPath()));
 
         $condition = new FilterCondition(
             'category_id',

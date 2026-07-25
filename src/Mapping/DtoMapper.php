@@ -54,7 +54,7 @@ final class DtoMapper
      */
     public function extract(DtoMap $map, object $dto): array
     {
-        $values = get_object_vars($dto);
+        $values = ($map->reader)($dto);
         $row = [];
 
         foreach ($map->fields as $field) {

@@ -57,9 +57,6 @@ final class InMemoryCacheTest
 
         Assert::notNull($cache->get('k'));
 
-        // exp = time()+1 with second granularity: waiting past two full
-        // seconds guarantees exp < time() whatever sub-second phase the
-        // set happened in.
         usleep(2_100_000);
 
         Assert::same($cache->get('k'), null, 'the entry expired by ttl');

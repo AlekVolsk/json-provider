@@ -183,6 +183,110 @@ final class LoadBenchDto
     }
 
     #[Bench(
+        callables: ['array' => [self::class, 'rangeBetweenArray']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function rangeBetweenDto(): int
+    {
+        return \count(iterator_to_array(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('val', 'BETWEEN', [100, 200])
+                ->selectAll(),
+        ));
+    }
+
+    public static function rangeBetweenArray(): int
+    {
+        return \count(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('val', 'BETWEEN', [100, 200])
+                ->selectAllByArray(),
+        );
+    }
+
+    #[Bench(
+        callables: ['array' => [self::class, 'inListArray']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function inListDto(): int
+    {
+        return \count(iterator_to_array(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('val', 'IN', [1, 50, 100, 500, 999])
+                ->selectAll(),
+        ));
+    }
+
+    public static function inListArray(): int
+    {
+        return \count(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('val', 'IN', [1, 50, 100, 500, 999])
+                ->selectAllByArray(),
+        );
+    }
+
+    #[Bench(
+        callables: ['array' => [self::class, 'likeArray']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function likeDto(): int
+    {
+        return \count(iterator_to_array(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('name', 'LIKE', 'row1%')
+                ->selectAll(),
+        ));
+    }
+
+    public static function likeArray(): int
+    {
+        return \count(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('name', 'LIKE', 'row1%')
+                ->selectAllByArray(),
+        );
+    }
+
+    #[Bench(
+        callables: ['array' => [self::class, 'distinctArray']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function distinctDto(): int
+    {
+        return \count(iterator_to_array(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->isDistinct('val')
+                ->selectAll(),
+        ));
+    }
+
+    public static function distinctArray(): int
+    {
+        return \count(
+            self::db()
+                ->table(LoadFixture::tableName(0))
+                ->isDistinct('val')
+                ->selectAllByArray(),
+        );
+    }
+
+    #[Bench(
         callables: ['reference' => [self::class, 'reference']],
         warmup: 0,
         calls: 1,

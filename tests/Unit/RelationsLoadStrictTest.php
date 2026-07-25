@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -21,8 +22,6 @@ use Testo\Test;
  */
 final class RelationsLoadStrictTest
 {
-    private const string DB_PATH = '/tmp/jp-relstrict-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -30,9 +29,9 @@ final class RelationsLoadStrictTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -48,7 +47,7 @@ final class RelationsLoadStrictTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -195,7 +194,7 @@ final class RelationsLoadStrictTest
     #[Test]
     public function emptyTablesCollectionIsValid(): void
     {
-        $emptyDir = self::DB_PATH . '/' . uniqid('empty', true);
+        $emptyDir = self::dbPathRoot() . '/' . uniqid('empty', true);
         $empty = JsonDataProvider::createDatabase($emptyDir);
 
         Assert::same($empty->tableNames(), []);
@@ -222,8 +221,6 @@ final class RelationsLoadStrictTest
         Assert::same($this->db->getTableComment('users'), 'people');
         Assert::same($this->db->tableNames(), ['users', 'orders']);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     /**
      * @param array<int,array<string,mixed>> $relations
@@ -292,5 +289,10 @@ final class RelationsLoadStrictTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-relstrict-tests');
     }
 }

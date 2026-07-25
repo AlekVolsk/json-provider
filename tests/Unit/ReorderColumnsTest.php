@@ -137,7 +137,7 @@ final class ReorderColumnsTest
      */
     private function readSchemaColumns(string $tableName): array
     {
-        $storage = new JsonStorage(Fixture::DB_PATH);
+        $storage = new JsonStorage(Fixture::dbPath());
         $schema = $storage->read('information_schema.json');
 
         /** @var array<string,array{columns:array<string,string>}> $tables */
@@ -155,7 +155,7 @@ final class ReorderColumnsTest
         string $tableName,
         callable $predicate,
     ): array | null {
-        $dir = Fixture::DB_PATH . '/' . $tableName;
+        $dir = Fixture::dbPath() . '/' . $tableName;
         $path = $dir . '/' . $tableName . '.ndjson';
         $contents = file_get_contents($path);
 

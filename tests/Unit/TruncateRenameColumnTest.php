@@ -12,6 +12,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Tests\Support\Dto\RenameItemDto;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -25,8 +26,6 @@ use Testo\Test;
  */
 final class TruncateRenameColumnTest
 {
-    private const string DB_PATH = '/tmp/jp-truncrename-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -34,9 +33,9 @@ final class TruncateRenameColumnTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -65,10 +64,8 @@ final class TruncateRenameColumnTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- truncate ------------------------------------------------------------
 
     #[Test]
     public function truncateEmptiesDataResetsCounterRebuildsIndexes(): void
@@ -131,8 +128,6 @@ final class TruncateRenameColumnTest
         }
     }
 
-    // -- renameColumn ------------------------------------------------------
-
     #[Test]
     public function renameCarriesDataSchemaStructuresAndComments(): void
     {
@@ -165,7 +160,6 @@ final class TruncateRenameColumnTest
         \assert(\is_array($unique));
         Assert::same($unique['fields'], ['amount']);
 
-        // The renamed unique constraint still enforces.
         try {
             $this->db->insert(
                 'rn_items',
@@ -176,7 +170,6 @@ final class TruncateRenameColumnTest
             Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
         }
 
-        // The renamed index still serves ordered selects.
         $ordered = $this->db->table('rn_items')
             ->orderBy('amount', 'asc')->selectAllByArray();
         Assert::same(array_column($ordered, 'amount'), [1, 2, 3]);
@@ -198,13 +191,11 @@ final class TruncateRenameColumnTest
             'onDelete'   => 'cascade',
         ]);
 
-        // Parent side: rn_items.qty is the referenced column.
         $this->db->renameColumn('rn_items', 'qty', 'amount');
         $relation = $this->schemaRelations()[0];
         Assert::same($relation['references'], 'amount');
         Assert::same($relation['foreignKey'], 'item_qty');
 
-        // Child side: rn_orders.item_qty is the FK column.
         $this->db->renameColumn('rn_orders', 'item_qty', 'item_amount');
         $relation = $this->schemaRelations()[0];
         Assert::same($relation['foreignKey'], 'item_amount');
@@ -216,16 +207,12 @@ final class TruncateRenameColumnTest
     {
         $this->db->registerDto(RenameItemDto::class);
 
-        // Renaming a column the DTO does not reference keeps hydration
-        // working.
         $this->db->renameColumn('rn_items', 'qty', 'amount');
 
         $dto = $this->db->table('rn_items')->where('id', '=', 1)->selectOne();
         \assert($dto instanceof RenameItemDto);
         Assert::same($dto->title, 'a');
 
-        // Renaming a referenced column drops the stale binding: object
-        // reads fail loudly instead of hydrating garbage.
         $this->db->renameColumn('rn_items', 'title', 'caption');
 
         try {
@@ -272,8 +259,6 @@ final class TruncateRenameColumnTest
             ['id', 'title', 'qty'],
         );
     }
-
-    // -- helpers -----------------------------------------------------------
 
     /**
      * @return array<mixed>
@@ -370,5 +355,10 @@ final class TruncateRenameColumnTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-truncrename-tests');
     }
 }

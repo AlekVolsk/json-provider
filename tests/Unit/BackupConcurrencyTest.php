@@ -9,6 +9,7 @@ use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -27,8 +28,6 @@ use Testo\Test;
  */
 final class BackupConcurrencyTest
 {
-    private const string DB_PATH = '/tmp/jp-backup-conc-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -36,9 +35,9 @@ final class BackupConcurrencyTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -66,7 +65,7 @@ final class BackupConcurrencyTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -102,7 +101,7 @@ final class BackupConcurrencyTest
 
         for ($i = 0; $i < 4; $i++) {
             $archives[] = $this->db->backup(
-                self::DB_PATH . '/gen-' . $i . '.tar.gz',
+                self::dbPathRoot() . '/gen-' . $i . '.tar.gz',
             );
             usleep(20_000);
         }
@@ -140,7 +139,7 @@ final class BackupConcurrencyTest
             $this->db->insert('prnts', ['name' => 'seed' . $i]);
         }
 
-        $archive = $this->db->backup(self::DB_PATH . '/serialize.tar.gz');
+        $archive = $this->db->backup(self::dbPathRoot() . '/serialize.tar.gz');
 
         $writerCode = <<<'PHP'
             require $argv[1] . '/vendor/autoload.php';
@@ -288,5 +287,10 @@ final class BackupConcurrencyTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-backup-conc-tests');
     }
 }

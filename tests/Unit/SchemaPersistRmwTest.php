@@ -9,6 +9,7 @@ use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -22,8 +23,6 @@ use Testo\Test;
  */
 final class SchemaPersistRmwTest
 {
-    private const string DB_PATH = '/tmp/jp-schema-rmw-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -31,9 +30,9 @@ final class SchemaPersistRmwTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -47,16 +46,12 @@ final class SchemaPersistRmwTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- stale memory must not clobber foreign changes ---------------------
 
     #[Test]
     public function externalEditSurvivesSetTableComment(): void
     {
-        // Load the schema into memory, then edit the file externally: add a
-        // column to another (externally created) table and a relation.
         Assert::true($this->db->hasTable('main'));
 
         $raw = file_get_contents($this->schemaPath());
@@ -85,8 +80,6 @@ final class SchemaPersistRmwTest
             json_encode($data, JSON_PRETTY_PRINT),
         );
 
-        // A schema mutation from the (memory-stale) provider must merge with
-        // the fresh file, not overwrite it.
         $this->db->setTableComment('main', 'commented');
 
         $registry = new SchemaRegistry(new JsonStorage($this->dbDir));
@@ -105,8 +98,6 @@ final class SchemaPersistRmwTest
         $registryA = new SchemaRegistry(new JsonStorage($this->dbDir));
         $registryB = new SchemaRegistry(new JsonStorage($this->dbDir));
 
-        // Warm both caches first, so each holds a copy without the other's
-        // future table.
         Assert::true($registryA->hasTable('main'));
         Assert::true($registryB->hasTable('main'));
 
@@ -212,15 +203,12 @@ final class SchemaPersistRmwTest
         Assert::true($fresh->hasTable('from_parent'));
     }
 
-    // -- stat-driven cache revalidation ------------------------------------
-
     #[Test]
     public function readPathsPickUpExternalChangesWithoutReload(): void
     {
         $registry = new SchemaRegistry(new JsonStorage($this->dbDir));
         Assert::false($registry->hasTable('appeared'));
 
-        // Another registry (fresh handle set, same path) adds a table.
         $other = new SchemaRegistry(new JsonStorage($this->dbDir));
         $other->registerTable(TableSchema::create(
             name: 'appeared',
@@ -229,11 +217,8 @@ final class SchemaPersistRmwTest
             indexes: [],
         ));
 
-        // No reload() — the stat check must invalidate the cached copy.
         Assert::true($registry->hasTable('appeared'));
     }
-
-    // -- updateTable -------------------------------------------------------
 
     #[Test]
     public function updateTableTransformsAndReturnsPersistedSchema(): void
@@ -317,16 +302,9 @@ final class SchemaPersistRmwTest
         Assert::same(file_get_contents($this->schemaPath()), $before);
     }
 
-    // -- audit regressions -------------------------------------------------
-
     #[Test]
     public function numericLikeTableNameSurvivesUnrelatedMutation(): void
     {
-        // json_decode coerces purely numeric object keys to int, which
-        // once made the RMW round-trip drop such tables. The hole is now
-        // closed at the schema boundary: a purely numeric name cannot
-        // exist at all, and a numeric-looking (but valid) name must
-        // survive the round-trip.
         $registry = new SchemaRegistry(new JsonStorage($this->dbDir));
 
         try {
@@ -357,8 +335,6 @@ final class SchemaPersistRmwTest
     #[Test]
     public function sameSecondSameSizeChangeIsVisibleToReader(): void
     {
-        // Two same-length writes within one mtime second share (mtime,size);
-        // the inode from the atomic rename must still invalidate the cache.
         $reader = new SchemaRegistry(new JsonStorage($this->dbDir));
         $writer = new SchemaRegistry(new JsonStorage($this->dbDir));
 
@@ -425,8 +401,6 @@ final class SchemaPersistRmwTest
         Assert::same($caught->getErrorKey(), 'TABLE_NOT_FOUND');
     }
 
-    // -- unregisterTable ---------------------------------------------------
-
     #[Test]
     public function unregisterTableIsIdempotentAndSkipsWrite(): void
     {
@@ -438,7 +412,6 @@ final class SchemaPersistRmwTest
         $statBefore = stat($this->schemaPath());
         \assert($statBefore !== false);
 
-        // Second removal is a no-op: nothing rewritten.
         $registry->unregisterTable('main');
         clearstatcache();
         $statAfter = stat($this->schemaPath());
@@ -448,8 +421,6 @@ final class SchemaPersistRmwTest
         Assert::same($statAfter['size'], $statBefore['size']);
         Assert::same($statAfter['ino'], $statBefore['ino']);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function schemaPath(): string
     {
@@ -481,5 +452,10 @@ final class SchemaPersistRmwTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-schema-rmw-tests');
     }
 }

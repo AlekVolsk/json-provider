@@ -16,6 +16,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Services\Integrity\IssueSeverity;
 use AV\JsonProvider\Tests\Support\SpyLogger;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -31,8 +32,6 @@ use Testo\Test;
  */
 final class SeverityScaleTest
 {
-    private const string DB_PATH = '/tmp/jp-severity-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -42,9 +41,9 @@ final class SeverityScaleTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->logger = new SpyLogger();
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
@@ -78,7 +77,7 @@ final class SeverityScaleTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -251,7 +250,7 @@ final class SeverityScaleTest
     public function validationWithoutLoggerStaysSilentAndWorks(): void
     {
         $bare = JsonDataProvider::createDatabase(
-            self::DB_PATH . '/' . uniqid('bare', true),
+            self::dbPathRoot() . '/' . uniqid('bare', true),
         );
         $bare->createTable(TableSchema::create(
             name: 'items',
@@ -374,5 +373,10 @@ final class SeverityScaleTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-severity-tests');
     }
 }

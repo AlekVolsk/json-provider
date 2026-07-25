@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -24,8 +25,6 @@ use Testo\Test;
  */
 final class RenameTableTest
 {
-    private const string DB_PATH = '/tmp/jp-renametable-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -33,9 +32,9 @@ final class RenameTableTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -67,7 +66,7 @@ final class RenameTableTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -139,7 +138,6 @@ final class RenameTableTest
     {
         $this->setMarker('src', 'dst');
 
-        // Reported twice: once database-level, once per affected table.
         $report = $this->db->validate();
         Assert::count(
             $report->issuesByCategory(IssueCategory::RENAME_INCOMPLETE),
@@ -213,7 +211,6 @@ final class RenameTableTest
             Assert::same($e->getErrorKey(), 'RENAME_INCOMPLETE');
         }
 
-        // The stranded data file is untouched and the window is intact.
         Assert::true(file_exists($this->dbDir . '/src/src.ndjson'));
         Assert::false(is_dir($this->dbDir . '/dst'));
 
@@ -251,7 +248,6 @@ final class RenameTableTest
             $dataBefore,
         );
 
-        // The database-level repair still rolls the rename forward.
         $this->db->repair();
         Assert::count($this->db->table('dst')->selectAllByArray(), 3);
         Assert::false(isset($this->meta()['_pendingRename']));
@@ -270,7 +266,6 @@ final class RenameTableTest
             Assert::same($e->getErrorKey(), 'RENAME_INCOMPLETE');
         }
 
-        // The original marker is not overwritten.
         $meta = $this->meta();
         \assert(\is_array($meta['_pendingRename']));
         Assert::same($meta['_pendingRename']['from'], 'src');
@@ -294,8 +289,6 @@ final class RenameTableTest
         $this->db->repair();
         Assert::true($this->db->hasTable('src'));
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function setMarker(string $from, string $to): void
     {
@@ -435,5 +428,10 @@ final class RenameTableTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-renametable-tests');
     }
 }

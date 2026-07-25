@@ -10,6 +10,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -25,8 +26,6 @@ use Testo\Test;
  */
 final class IdentifierRulesTest
 {
-    private const string DB_PATH = '/tmp/jp-idrules-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -34,16 +33,16 @@ final class IdentifierRulesTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -147,9 +146,6 @@ final class IdentifierRulesTest
     #[Test]
     public function purelyNumericNamesRejected(): void
     {
-        // PHP casts purely numeric array keys to int, so such a name
-        // would surface as an int wherever the engine iterates a keyed
-        // map and crash with a TypeError instead of a provider exception.
         try {
             $this->db->createTable(TableSchema::create(
                 name: '7',
@@ -266,14 +262,14 @@ final class IdentifierRulesTest
             columns: ['id' => 'int'],
         ));
 
-        $otherDir = self::DB_PATH . '/' . uniqid('other', true);
+        $otherDir = self::dbPathRoot() . '/' . uniqid('other', true);
         $other = JsonDataProvider::createDatabase($otherDir);
         $other->createTable(TableSchema::create(
             name: 'foreign_table',
             columns: ['id' => 'int'],
         ));
 
-        $archive = self::DB_PATH . '/foreign-' . uniqid() . '.tar.gz';
+        $archive = self::dbPathRoot() . '/foreign-' . uniqid() . '.tar.gz';
         $other->backup($archive);
 
         try {
@@ -283,8 +279,6 @@ final class IdentifierRulesTest
             Assert::same($e->getErrorKey(), 'BACKUP_SCHEMA_MISMATCH');
         }
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function removeDir(string $path): void
     {
@@ -311,5 +305,10 @@ final class IdentifierRulesTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-idrules-tests');
     }
 }

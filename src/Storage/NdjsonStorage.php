@@ -391,11 +391,7 @@ final class NdjsonStorage
     ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
-
-        \assert(
-            $this->locks === null || $this->locks->isHeld($tableName, 'ex'),
-            'NdjsonStorage::write requires the table EX lock',
-        );
+        $this->requireTableExLock($tableName, 'write');
 
         $bytes = $this->encodeRecords($tableName, $records);
 
@@ -420,11 +416,7 @@ final class NdjsonStorage
     ): PreparedRewrite {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
-
-        \assert(
-            $this->locks === null || $this->locks->isHeld($tableName, 'ex'),
-            'NdjsonStorage::prepareRewrite requires the table EX lock',
-        );
+        $this->requireTableExLock($tableName, 'prepareRewrite');
 
         $bytes = $this->encodeRecords($tableName, $records);
 
@@ -767,11 +759,7 @@ final class NdjsonStorage
     ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
-
-        \assert(
-            $this->locks === null || $this->locks->isHeld($tableName, 'ex'),
-            'NdjsonStorage::writeRaw requires the table EX lock',
-        );
+        $this->requireTableExLock($tableName, 'writeRaw');
 
         return AtomicFileWriter::write($path, $contents);
     }
@@ -1023,6 +1011,25 @@ final class NdjsonStorage
     {
         if (!file_exists($path)) {
             throw StorageException::fileNotReadable($path);
+        }
+    }
+
+    /**
+     * Enforces the writer contract: a full rewrite must run under the table
+     * EX lock. A standalone storage built without a lock manager (test
+     * helpers, one-off scripts) is exempt. A violation is a programming bug
+     * in a caller, so it fails loudly here rather than corrupting concurrent
+     * readers under a missing lock.
+     */
+    private function requireTableExLock(
+        string $tableName,
+        string $operation,
+    ): void {
+        if ($this->locks !== null && !$this->locks->isHeld($tableName, 'ex')) {
+            throw StorageException::writeLockRequired(
+                'NdjsonStorage::' . $operation,
+                $tableName,
+            );
         }
     }
 }

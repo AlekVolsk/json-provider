@@ -15,9 +15,11 @@ use AV\JsonProvider\Schema\ColumnTypes;
  * any DateTimeImmutable/timezone processing.
  *
  * Storage vs presentation:
- *  - Date is a bare calendar date with no instant: stored verbatim, never
- *    timezone-shifted (shifting it is not round-trip stable).
- *  - Time/TimeZ/DateTime/DateTimeZ carry a moment: stored in UTC, presented in
+ *  - Date, Time and TimeZ are wall-clock values with no absolute instant:
+ *    stored verbatim, never timezone-shifted (a bare date or a bare
+ *    wall-clock time shifted through UTC is not round-trip stable — it would
+ *    drift under DST or return a different day/hour on the first read).
+ *  - DateTime/DateTimeZ carry an absolute moment: stored in UTC, presented in
  *    the current PHP timezone.
  *
  * The `*z` kinds keep millisecond precision (format token `v`); the plain kinds
@@ -68,12 +70,15 @@ enum TemporalKind: string
     }
 
     /**
-     * Whether the value denotes a moment and is therefore converted between the
-     * local timezone and UTC. A bare Date is stored verbatim (false).
+     * Whether the value denotes an absolute moment and is therefore converted
+     * between the local timezone and UTC on the way to and from storage. Only
+     * DateTime/DateTimeZ do; Date, Time and TimeZ are stored verbatim
+     * (wall-clock), because shifting a bare date or a bare time through UTC is
+     * not round-trip stable.
      */
     public function shiftsTimezone(): bool
     {
-        return $this !== self::Date;
+        return $this === self::DateTime || $this === self::DateTimeZ;
     }
 
     /**

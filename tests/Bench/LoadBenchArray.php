@@ -151,6 +151,161 @@ final class LoadBenchArray
     }
 
     #[Bench(
+        callables: ['fullScan' => [self::class, 'rangeBetweenFullScan']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function rangeBetweenIndexed(): int
+    {
+        return \count(
+            LoadFixture::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('val', 'BETWEEN', [100, 200])
+                ->selectAllByArray(),
+        );
+    }
+
+    public static function rangeBetweenFullScan(): int
+    {
+        $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
+
+        return \count(array_filter(
+            $rows,
+            static fn (array $r): bool => \is_int($r['val'])
+                && $r['val'] >= 100 && $r['val'] <= 200,
+        ));
+    }
+
+    #[Bench(
+        callables: ['fullScan' => [self::class, 'inListFullScan']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function inListIndexed(): int
+    {
+        return \count(
+            LoadFixture::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('val', 'IN', [1, 50, 100, 500, 999])
+                ->selectAllByArray(),
+        );
+    }
+
+    public static function inListFullScan(): int
+    {
+        $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
+        $wanted = [1, 50, 100, 500, 999];
+
+        return \count(array_filter(
+            $rows,
+            static fn (array $r): bool => \in_array($r['val'], $wanted, true),
+        ));
+    }
+
+    #[Bench(
+        callables: ['naive' => [self::class, 'likeNaive']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function likeScan(): int
+    {
+        return \count(
+            LoadFixture::db()
+                ->table(LoadFixture::tableName(0))
+                ->where('name', 'LIKE', 'row1%')
+                ->selectAllByArray(),
+        );
+    }
+
+    public static function likeNaive(): int
+    {
+        $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
+
+        return \count(array_filter(
+            $rows,
+            static fn (array $r): bool => \is_string($r['name'])
+                && str_starts_with($r['name'], 'row1'),
+        ));
+    }
+
+    #[Bench(
+        callables: ['naive' => [self::class, 'distinctNaive']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function distinctValues(): int
+    {
+        return \count(
+            LoadFixture::db()
+                ->table(LoadFixture::tableName(0))
+                ->isDistinct('val')
+                ->selectAllByArray(),
+        );
+    }
+
+    public static function distinctNaive(): int
+    {
+        $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
+        $seen = [];
+
+        foreach ($rows as $r) {
+            $seen[(string)$r['val']] = true;
+        }
+
+        return \count($seen);
+    }
+
+    #[Bench(
+        callables: ['naive' => [self::class, 'countWhereNaive']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function countWhere(): int
+    {
+        return LoadFixture::db()
+            ->table(LoadFixture::tableName(0))
+            ->where('val', '<', 500)
+            ->count();
+    }
+
+    public static function countWhereNaive(): int
+    {
+        $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
+
+        return \count(array_filter(
+            $rows,
+            static fn (array $r): bool => \is_int($r['val']) && $r['val'] < 500,
+        ));
+    }
+
+    #[Bench(
+        callables: ['naive' => [self::class, 'projectColumnNaive']],
+        calls: 3,
+        iterations: 12,
+    )]
+    #[ExpectNoAssertions]
+    public static function projectColumn(): int
+    {
+        return \count(
+            LoadFixture::db()
+                ->table(LoadFixture::tableName(0))
+                ->selectColumn('val'),
+        );
+    }
+
+    public static function projectColumnNaive(): int
+    {
+        $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
+
+        return \count(array_column($rows, 'val'));
+    }
+
+    #[Bench(
         callables: ['naive' => [self::class, 'crossTableCountNaive']],
         warmup: 0,
         calls: 1,

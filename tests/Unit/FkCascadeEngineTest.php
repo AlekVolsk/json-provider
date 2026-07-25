@@ -12,6 +12,7 @@ use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -27,8 +28,6 @@ use Testo\Test;
  */
 final class FkCascadeEngineTest
 {
-    private const string DB_PATH = '/tmp/jp-fkengine-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -38,10 +37,10 @@ final class FkCascadeEngineTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
         $this->tzBackup = date_default_timezone_get();
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
     }
 
@@ -49,7 +48,7 @@ final class FkCascadeEngineTest
     public function tearDown(): void
     {
         date_default_timezone_set($this->tzBackup);
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -163,8 +162,6 @@ final class FkCascadeEngineTest
         $before = file_get_contents($this->dbDir . '/goods/goods.ndjson');
 
         try {
-            // Both rows match; patching both to code='x' collides on the
-            // composite unique key within the SAME batch.
             $this->db->update('goods', [], ['code' => 'x']);
             Assert::fail('two targets collapse into one unique key');
         } catch (StorageException $e) {
@@ -289,8 +286,6 @@ final class FkCascadeEngineTest
             [$cFree],
         );
 
-        // Validate every touched table: meta counters, indexes and data
-        // must be committed consistently by the two-phase apply.
         $report = $this->db->validate();
         Assert::count($report->issuesBySeverity(
             \AV\JsonProvider\Services\Integrity\IssueSeverity::ERROR,
@@ -344,9 +339,6 @@ final class FkCascadeEngineTest
             name: 'tasks',
             columns: ['id' => 'int', 'userId' => 'int'],
         ));
-        // Declared via direct schema injection: addRelation would refuse
-        // SET NULL on the non-nullable column, but legacy databases can
-        // carry such an edge.
         $this->injectRelation(
             from: 'tasks',
             foreignKey: 'userId',
@@ -429,7 +421,6 @@ final class FkCascadeEngineTest
         );
 
         try {
-            // Cascading v1 -> v2 would give two (v2, s) items.
             $this->db->update(
                 'vendors',
                 [new \AV\JsonProvider\Query\FilterCondition(
@@ -502,10 +493,6 @@ final class FkCascadeEngineTest
     #[Test]
     public function setNullPropagationTriggersRestrictOfGrandchildren(): void
     {
-        // a <- b.aRef (onDelete=setNull); d.x -> b.aRef (onUpdate=restrict):
-        // nulling b.aRef is a value change the restrict grandchild edge
-        // must see — otherwise the declared restrict is silently bypassed
-        // and d.x dangles.
         $this->db->createTable(TableSchema::create(
             name: 'a',
             columns: ['id' => 'int'],
@@ -688,8 +675,6 @@ final class FkCascadeEngineTest
             'price'      => 10000.5,
         ]);
 
-        // Same byte length keeps the byteSize gate green; json_decode
-        // turns 1.0e999 into INF, which cannot be re-encoded.
         $itemsPath = $this->dbDir . '/items/items.ndjson';
         $tampered = str_replace(
             '"price":10000.5',
@@ -729,8 +714,6 @@ final class FkCascadeEngineTest
             'no table of the write set may be committed when one fails',
         );
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function setUpParentWithTwoChildren(): void
     {
@@ -839,5 +822,10 @@ final class FkCascadeEngineTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-fkengine-tests');
     }
 }

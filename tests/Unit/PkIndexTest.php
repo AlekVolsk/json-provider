@@ -28,9 +28,11 @@ final class PkIndexTest
     {
         Fixture::boot();
 
-        Assert::true(is_file(Fixture::DB_PATH . '/categories/pk.index.ndjson'));
-        Assert::true(is_file(Fixture::DB_PATH . '/products/pk.index.ndjson'));
-        Assert::true(is_file(Fixture::DB_PATH . '/tags/pk.index.ndjson'));
+        Assert::true(
+            is_file(Fixture::dbPath() . '/categories/pk.index.ndjson'),
+        );
+        Assert::true(is_file(Fixture::dbPath() . '/products/pk.index.ndjson'));
+        Assert::true(is_file(Fixture::dbPath() . '/tags/pk.index.ndjson'));
     }
 
     #[Test]
@@ -38,7 +40,7 @@ final class PkIndexTest
     {
         Fixture::boot();
 
-        $storage = new JsonStorage(Fixture::DB_PATH);
+        $storage = new JsonStorage(Fixture::dbPath());
         $schema = $storage->read('information_schema.json');
 
         /**
@@ -121,7 +123,7 @@ final class PkIndexTest
      */
     private function readPkIndex(string $tableName): array
     {
-        $manager = new IndexManager(new NdjsonStorage(Fixture::DB_PATH));
+        $manager = new IndexManager(new NdjsonStorage(Fixture::dbPath()));
         $pk = IndexSchema::primaryFor();
 
         return $manager->readIndex($tableName, $pk);

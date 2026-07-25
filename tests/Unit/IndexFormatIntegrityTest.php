@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -29,7 +30,6 @@ use Testo\Test;
  */
 final class IndexFormatIntegrityTest
 {
-    private const string DB_PATH = '/tmp/jp-ixintegrity-tests';
     private const string TABLE = 'items';
 
     private string $dbDir;
@@ -39,9 +39,9 @@ final class IndexFormatIntegrityTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -67,7 +67,7 @@ final class IndexFormatIntegrityTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -236,7 +236,7 @@ final class IndexFormatIntegrityTest
     #[Test]
     public function restoreStampsIndexFormat(): void
     {
-        $archive = self::DB_PATH . '/backup-' . uniqid() . '.tar.gz';
+        $archive = self::dbPathRoot() . '/backup-' . uniqid() . '.tar.gz';
         $this->db->backup($archive);
 
         $this->dropIndexFormatMarker();
@@ -250,8 +250,6 @@ final class IndexFormatIntegrityTest
             2,
         );
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function indexPath(string $indexName): string
     {
@@ -306,5 +304,10 @@ final class IndexFormatIntegrityTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-ixintegrity-tests');
     }
 }

@@ -13,6 +13,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Tests\Support\CacheKeys;
 use AV\JsonProvider\Tests\Support\Dto\FloatPriceDto;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -33,7 +34,6 @@ use Testo\Test;
  */
 final class FloatRoundtripTest
 {
-    private const string DB_PATH = '/tmp/jp-float-tests';
     private const string TABLE = 'floats';
 
     private string $dbDir;
@@ -45,9 +45,9 @@ final class FloatRoundtripTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->cache = new InMemoryCache();
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
@@ -77,10 +77,8 @@ final class FloatRoundtripTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- write side: zero fraction reaches the disk ------------------------
 
     #[Test]
     public function insertAppendKeepsZeroFractionOnDisk(): void
@@ -104,7 +102,7 @@ final class FloatRoundtripTest
     #[Test]
     public function ndjsonAppendWritesZeroFraction(): void
     {
-        $dir = self::DB_PATH . '/' . uniqid('raw', true);
+        $dir = self::dbPathRoot() . '/' . uniqid('raw', true);
         mkdir($dir . '/t', 0755, true);
         touch($dir . '/t/t.ndjson');
         $storage = new NdjsonStorage($dir);
@@ -133,8 +131,6 @@ final class FloatRoundtripTest
         Assert::same((string)$row['price'], '-0');
     }
 
-    // -- read side: fresh floats survive the roundtrip ---------------------
-
     #[Test]
     public function equalsFloatConditionFindsFreshRow(): void
     {
@@ -159,8 +155,6 @@ final class FloatRoundtripTest
 
         Assert::count($rows, 1);
     }
-
-    // -- read side: legacy int rows are widened everywhere -----------------
 
     #[Test]
     public function legacyIntRowSurfacesAsFloatOnFullScan(): void
@@ -285,8 +279,6 @@ final class FloatRoundtripTest
         Assert::string($this->rawDataFile())->contains('"price":99.0');
     }
 
-    // -- cache symmetry ----------------------------------------------------
-
     #[Test]
     public function cacheFillOnReadStoresWidenedFloats(): void
     {
@@ -329,8 +321,6 @@ final class FloatRoundtripTest
         Assert::same($cached[0]['price'], 99.0);
     }
 
-    // -- DTO path compatibility (dv-float-roundtrip-dep) -------------------
-
     #[Test]
     public function dtoAndArraySelectAgreeOnFloatType(): void
     {
@@ -360,8 +350,6 @@ final class FloatRoundtripTest
         Assert::true($dto instanceof FloatPriceDto);
         Assert::same($dto->price, 5.0);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     /**
      * Plants a single legacy-format row whose float column holds a bare
@@ -456,5 +444,10 @@ final class FloatRoundtripTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-float-tests');
     }
 }

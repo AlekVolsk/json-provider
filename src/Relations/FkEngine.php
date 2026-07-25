@@ -413,8 +413,6 @@ final class FkEngine
         }
     }
 
-    // -- plan phase internals ----------------------------------------------
-
     /**
      * @param array<int,array<string,null|scalar>> $rootRecords
      */

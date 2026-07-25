@@ -482,7 +482,9 @@ final class SchemaRegistry
             },
         );
 
-        \assert($updated instanceof TableSchema);
+        if (!$updated instanceof TableSchema) {
+            throw StorageException::schemaTransformNoResult($name);
+        }
 
         return $updated;
     }

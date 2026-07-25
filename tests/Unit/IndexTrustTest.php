@@ -12,6 +12,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -33,7 +34,6 @@ use Testo\Test;
  */
 final class IndexTrustTest
 {
-    private const string DB_PATH = '/tmp/jp-ixtrust-tests';
     private const string TABLE = 'items';
 
     private string $dbDir;
@@ -43,9 +43,9 @@ final class IndexTrustTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -81,10 +81,8 @@ final class IndexTrustTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- structural corruption of a trusted index is loud ------------------
 
     #[Test]
     public function emptiedIndexFileThrowsIndexUnreliable(): void
@@ -151,8 +149,6 @@ final class IndexTrustTest
         }
     }
 
-    // -- mistrust degrades silently ----------------------------------------
-
     #[Test]
     public function byteSizeDesyncDegradesToFullScanSilently(): void
     {
@@ -217,8 +213,6 @@ final class IndexTrustTest
         }
     }
 
-    // -- lazy v1 -> v2 upgrade ---------------------------------------------
-
     #[Test]
     public function legacyFormatDegradesToFullScanAndInsertHeals(): void
     {
@@ -271,8 +265,6 @@ final class IndexTrustTest
         );
     }
 
-    // -- eqExists probe primitive ------------------------------------------
-
     #[Test]
     public function eqExistsSeesCommittedEntries(): void
     {
@@ -295,8 +287,6 @@ final class IndexTrustTest
         Assert::notNull($fresh);
         Assert::true($manager->eqExists($index, $fresh, 99));
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function indexPath(string $indexName): string
     {
@@ -351,5 +341,10 @@ final class IndexTrustTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-ixtrust-tests');
     }
 }

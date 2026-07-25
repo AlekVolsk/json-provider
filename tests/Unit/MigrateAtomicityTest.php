@@ -9,6 +9,7 @@ use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -24,7 +25,6 @@ use Testo\Test;
  */
 final class MigrateAtomicityTest
 {
-    private const string DB_PATH = '/tmp/jp-migrate-tests';
     private const string TABLE = 'goods';
 
     private string $dbDir;
@@ -34,9 +34,9 @@ final class MigrateAtomicityTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
             new InMemoryCache(),
@@ -51,7 +51,7 @@ final class MigrateAtomicityTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -60,8 +60,6 @@ final class MigrateAtomicityTest
         $this->db->insert(self::TABLE, ['price' => 10000.5]);
         $this->db->insert(self::TABLE, ['price' => 2.5]);
 
-        // Same byte length keeps the byteSize gate green, so the failure
-        // comes from the migrate encode probe, not from self-healing.
         $dataPath = $this->dataPath();
         $tampered = str_replace(
             '"price":10000.5',
@@ -111,8 +109,6 @@ final class MigrateAtomicityTest
         $this->db->insert(self::TABLE, ['price' => 1.5]);
         $this->db->insert(self::TABLE, ['price' => 2.5]);
 
-        // Emulate the crash window: the schema already declares the added
-        // not-null int column, the data rewrite never happened.
         $path = $this->dbDir . '/information_schema.json';
         $data = json_decode((string)file_get_contents($path), true);
         \assert(\is_array($data) && \is_array($data['tables']));
@@ -149,9 +145,6 @@ final class MigrateAtomicityTest
             ['at' => '2026-01-01 10:00:00'],
         );
 
-        // A ghost row missing the not-null datetime column: repair has no
-        // safe default to back-fill, so it must refuse instead of
-        // planting null and breaking every typed read.
         $path = $this->dbDir . '/events/events.ndjson';
         file_put_contents($path, '{"id":2}' . "\n", FILE_APPEND);
         $this->db->invalidateCache('events');
@@ -198,8 +191,6 @@ final class MigrateAtomicityTest
         Assert::same($rows[1]['note'], '');
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function dataPath(): string
     {
         return $this->dbDir . '/' . self::TABLE . '/' . self::TABLE
@@ -231,5 +222,10 @@ final class MigrateAtomicityTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-migrate-tests');
     }
 }

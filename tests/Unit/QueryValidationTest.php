@@ -11,6 +11,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -28,7 +29,6 @@ use Testo\Test;
  */
 final class QueryValidationTest
 {
-    private const string DB_PATH = '/tmp/jp-queryval-tests';
     private const string TABLE = 'goods';
 
     private string $dbDir;
@@ -38,9 +38,9 @@ final class QueryValidationTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -89,10 +89,8 @@ final class QueryValidationTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- condition typing (q-where-typing) ---------------------------------
 
     #[Test]
     public function numericStringOnIntColumnRejected(): void
@@ -279,8 +277,6 @@ final class QueryValidationTest
         );
     }
 
-    // -- BETWEEN / IN structure (q-between-in-arity) -----------------------
-
     #[Test]
     public function malformedBetweenRejected(): void
     {
@@ -345,8 +341,6 @@ final class QueryValidationTest
             !FilterOperatorEnum::BETWEEN->matches(5, [1]),
         );
     }
-
-    // -- unknown columns (q-unknown-column) --------------------------------
 
     #[Test]
     public function unknownColumnInWhereRejectedOnEveryVerb(): void
@@ -425,8 +419,6 @@ final class QueryValidationTest
         Assert::true(\in_array(77, $ids, true));
     }
 
-    // -- pagination validation (q-pagination-validation) -------------------
-
     #[Test]
     public function negativeLimitAndOffsetRejectedInBuilder(): void
     {
@@ -461,8 +453,6 @@ final class QueryValidationTest
             3,
         );
     }
-
-    // -- orderBy direction (q-orderby-direction) ---------------------------
 
     #[Test]
     public function orderByDirectionIsCaseInsensitive(): void
@@ -513,8 +503,6 @@ final class QueryValidationTest
             );
         }
     }
-
-    // -- audit regressions -------------------------------------------------
 
     #[Test]
     public function unknownOrderByColumnRejectedOnCountAndExists(): void
@@ -571,8 +559,6 @@ final class QueryValidationTest
         });
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function expectKey(string $errorKey, callable $fn): void
     {
         try {
@@ -614,5 +600,10 @@ final class QueryValidationTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-queryval-tests');
     }
 }

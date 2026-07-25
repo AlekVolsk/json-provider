@@ -9,6 +9,7 @@ use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\CacheKeys;
 use AV\JsonProvider\Tests\Support\RecordingCache;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -22,8 +23,6 @@ use Testo\Test;
  */
 final class ConcurrencyRmwTest
 {
-    private const string DB_PATH = '/tmp/jp-rmw-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -33,9 +32,9 @@ final class ConcurrencyRmwTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->recordingCache = new RecordingCache(new InMemoryCache());
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
@@ -57,15 +56,12 @@ final class ConcurrencyRmwTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- cache must never be the base of a rewrite -------------------------
 
     #[Test]
     public function updateDoesNotReadFromCache(): void
     {
-        // Warm the cache, then update: the write path must not consult it.
         $this->db->table('items')->selectAllByArray();
         $this->recordingCache->getCalls = 0;
 
@@ -90,11 +86,6 @@ final class ConcurrencyRmwTest
     #[Test]
     public function updateOnPoisonedCacheKeepsForeignRow(): void
     {
-        // The regression: a stale cache used as the rewrite base silently
-        // erased rows inserted by other processes. Poison the cache with a
-        // subset, insert a row externally (a real provider in a child
-        // process), then update an unrelated row — the foreign row must
-        // survive on disk.
         $this->db->table('items')->selectAllByArray();
 
         $this->recordingCache->set(
@@ -154,14 +145,9 @@ final class ConcurrencyRmwTest
         Assert::same($this->recordingCache->getCalls, 0);
     }
 
-    // -- cross-process writer serialization --------------------------------
-
     #[Test]
     public function concurrentInsertsAndUpdatesLoseNothing(): void
     {
-        // Child inserts N rows while the parent runs an update loop over
-        // the same table. Every insert must survive: the update's rewrite
-        // is based on the disk state under the table EX lock.
         $inserts = 25;
 
         $code = <<<'PHP'
@@ -199,8 +185,6 @@ final class ConcurrencyRmwTest
             Assert::contains($names, 'child' . $i);
         }
 
-        // The in-process cache legitimately lags behind foreign writers;
-        // after an explicit invalidation the count must match the disk.
         $this->db->invalidateCache('items');
         Assert::same($this->db->table('items')->count(), 3 + $inserts);
     }
@@ -208,8 +192,6 @@ final class ConcurrencyRmwTest
     #[Test]
     public function createTableAndInsertsSerializeWithoutDeadlock(): void
     {
-        // db EX (createTable) vs db SH (insert into another table) must
-        // interleave without deadlock or timeout.
         $code = <<<'PHP'
             require $argv[1];
             $db = \AV\JsonProvider\JsonDataProvider::getInstance($argv[2]);
@@ -248,15 +230,9 @@ final class ConcurrencyRmwTest
         }
     }
 
-    // -- stale in-memory schema vs foreign DDL -----------------------------
-
     #[Test]
     public function insertAfterForeignMigrateUsesFreshSchema(): void
     {
-        // The provider warmed its in-memory schema; a foreign process then
-        // migrated the table (added a column). The insert must run against
-        // the fresh schema — a stale one would emit a row without the new
-        // column and leave the new index permanently behind.
         Assert::same(
             $this->db->columnNames('items'),
             ['id', 'name', 'qty'],
@@ -336,7 +312,6 @@ final class ConcurrencyRmwTest
         $stdout = $this->drainAndClose($child);
         Assert::string($stdout)->contains('done');
 
-        // A stale-schema rewrite would strip 'flag' from every row here.
         $this->db->table('items')
             ->where('name', '=', 'b')
             ->updateByArray(['qty' => 99]);
@@ -366,7 +341,6 @@ final class ConcurrencyRmwTest
         $this->db->insert('indexed', ['grp' => 'a']);
         $this->db->insert('indexed', ['grp' => 'b']);
 
-        // Warm the in-memory schema with the index present.
         Assert::count(
             $this->db->table('indexed')
                 ->where('grp', '=', 'a')
@@ -394,10 +368,6 @@ final class ConcurrencyRmwTest
         $stdout = $this->drainAndClose($child);
         Assert::string($stdout)->contains('done');
 
-        // The stale in-memory schema still resolves idx_grp; under the SH
-        // lock the index is re-resolved against the fresh schema and the
-        // read degrades to a full scan instead of failing on the missing
-        // index file.
         $rows = $this->db->table('indexed')
             ->where('grp', '=', 'a')
             ->orderBy('grp', 'asc')
@@ -406,8 +376,6 @@ final class ConcurrencyRmwTest
         Assert::count($rows, 1);
         Assert::same($rows[0]['grp'], 'a');
     }
-
-    // -- helpers -----------------------------------------------------------
 
     /**
      * Inserts through a real provider in a child process (its own meta and
@@ -522,5 +490,10 @@ final class ConcurrencyRmwTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-rmw-tests');
     }
 }

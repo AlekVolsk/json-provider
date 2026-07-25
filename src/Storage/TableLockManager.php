@@ -439,10 +439,10 @@ final class TableLockManager
         }
 
         if ($dbAcquired) {
-            \assert(
-                $this->dbDepth === 1,
-                'database lock depth out of sync at frame release',
-            );
+            if ($this->dbDepth !== 1) {
+                throw StorageException::lockDepthDesync();
+            }
+
             $this->dbMode = null;
             $this->dbDepth = 0;
             $this->release(self::DB_LOCK_FILE);

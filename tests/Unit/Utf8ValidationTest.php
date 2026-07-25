@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -22,7 +23,6 @@ use Testo\Test;
  */
 final class Utf8ValidationTest
 {
-    private const string DB_PATH = '/tmp/jp-utf8-tests';
     private const string TABLE = 'texts';
 
     private string $dbDir;
@@ -32,9 +32,9 @@ final class Utf8ValidationTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -52,10 +52,8 @@ final class Utf8ValidationTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- rejection ---------------------------------------------------------
 
     #[Test]
     public function insertBrokenUtf8Rejected(): void
@@ -137,8 +135,6 @@ final class Utf8ValidationTest
         Assert::same($after, $before);
     }
 
-    // -- valid strings pass ------------------------------------------------
-
     #[Test]
     public function wellFormedUtf8Passes(): void
     {
@@ -174,8 +170,6 @@ final class Utf8ValidationTest
         Assert::null($row['opt']);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function dataPath(): string
     {
         return $this->dbDir . '/' . self::TABLE . '/' . self::TABLE
@@ -207,5 +201,10 @@ final class Utf8ValidationTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-utf8-tests');
     }
 }

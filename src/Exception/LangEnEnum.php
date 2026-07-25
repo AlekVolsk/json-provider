@@ -18,6 +18,12 @@ enum LangEnEnum: string implements LocaleInterface
     case LOCK_ORDER_VIOLATION = 'Lock ordering violated: %s (locks must be '
         . 'acquired database-first, then tables in name order, never '
         . 'upgraded)';
+    case WRITE_LOCK_REQUIRED = 'Internal error: %s requires the table EX '
+        . 'lock on "%s"';
+    case LOCK_DEPTH_DESYNC = 'Internal error: database lock depth out of '
+        . 'sync at frame release';
+    case SCHEMA_TRANSFORM_NO_RESULT = 'Internal error: the schema transform '
+        . 'for table "%s" produced no result';
     case INVALID_JSON = 'Invalid data format in storage file: %s';
     case TABLE_NOT_FOUND = 'Table not found in schema: %s';
     case TABLE_ALREADY_EXISTS = 'Table "%s" already exists';
@@ -150,11 +156,18 @@ enum LangEnEnum: string implements LocaleInterface
         . 'value: "%s"';
     case ZERO_DATE = 'Table "%s", column "%s": zero dates are not allowed: '
         . '"%s"';
+    case TEMPORAL_FRACTION_UNSUPPORTED = 'Table "%s", column "%s": %s does '
+        . 'not accept the given sub-second precision: "%s"';
+    case LIKE_ON_INSTANT_UNSUPPORTED = 'Table "%s", column "%s": LIKE on a '
+        . 'datetime/datetimez column is not supported (stored as UTC); use '
+        . 'comparison or BETWEEN operators';
     case NUMERIC_PART_OUT_OF_RANGE = 'Table "%s", column "%s": %s value out '
         . 'of range: %s';
     case DTO_SCHEMA_MISMATCH = 'DTO %s does not match table "%s": %s';
     case DTO_NOT_REGISTERED = 'No DTO is registered for table "%s"; use the '
         . '*ByArray methods or registerDto()';
+    case DTO_ALREADY_REGISTERED = 'Table "%s" already has DTO %s registered; '
+        . 'unregister it before binding %s';
     case INVALID_ENUM_VALUE = 'Table "%s", column "%s": stored value "%s" is '
         . 'not a valid case of %s';
     case DTO_HYDRATION_FAILED = 'Table "%s", column "%s": cannot hydrate DTO '

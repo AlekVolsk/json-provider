@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Test;
@@ -22,7 +23,6 @@ use Testo\Test;
  */
 final class ValueValidationTest
 {
-    private const string DB_PATH = '/tmp/jp-validation-tests';
     private const string TABLE = 'typed';
 
     private static bool $booted = false;
@@ -195,11 +195,11 @@ final class ValueValidationTest
     private static function db(): JsonDataProvider
     {
         if (self::$booted) {
-            return JsonDataProvider::getInstance(self::DB_PATH);
+            return JsonDataProvider::getInstance(self::dbPathRoot());
         }
 
         self::wipe();
-        $db = JsonDataProvider::createDatabase(self::DB_PATH);
+        $db = JsonDataProvider::createDatabase(self::dbPathRoot());
         $db->createTable(TableSchema::create(
             name: self::TABLE,
             columns: [
@@ -218,13 +218,13 @@ final class ValueValidationTest
 
     private static function wipe(): void
     {
-        if (!is_dir(self::DB_PATH)) {
+        if (!is_dir(self::dbPathRoot())) {
             return;
         }
 
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator(
-                self::DB_PATH,
+                self::dbPathRoot(),
                 \FilesystemIterator::SKIP_DOTS,
             ),
             \RecursiveIteratorIterator::CHILD_FIRST,
@@ -237,6 +237,11 @@ final class ValueValidationTest
                 : unlink($file->getPathname());
         }
 
-        rmdir(self::DB_PATH);
+        rmdir(self::dbPathRoot());
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-validation-tests');
     }
 }

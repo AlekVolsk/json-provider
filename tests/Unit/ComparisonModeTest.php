@@ -11,6 +11,7 @@ use AV\JsonProvider\Query\ValueComparator;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -31,8 +32,6 @@ use Testo\Test;
  */
 final class ComparisonModeTest
 {
-    private const string DB_PATH = '/tmp/jp-cmpmode-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -40,9 +39,9 @@ final class ComparisonModeTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -69,10 +68,8 @@ final class ComparisonModeTest
     public function tearDown(): void
     {
         $this->db->setComparisonMode(ComparisonMode::Binary);
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- ValueComparator units ---------------------------------------------
 
     #[Test]
     public function nullSortsFirst(): void
@@ -112,8 +109,6 @@ final class ComparisonModeTest
             Assert::same($result <=> 0, strcmp('B', 'a') <=> 0);
         }
     }
-
-    // -- three paths, one answer (Binary) ----------------------------------
 
     #[Test]
     public function stringRangeConsistentAcrossAllPaths(): void
@@ -169,8 +164,6 @@ final class ComparisonModeTest
         Assert::count($rows, 2);
         Assert::same(array_column($rows, 'n'), [10, 100]);
     }
-
-    // -- Locale mode -------------------------------------------------------
 
     #[Test]
     public function localeModeStaysConsistentWithFullScan(): void
@@ -268,8 +261,6 @@ final class ComparisonModeTest
         Assert::same($ordered, $expected);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function removeDir(string $path): void
     {
         if (!is_dir($path)) {
@@ -295,5 +286,10 @@ final class ComparisonModeTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-cmpmode-tests');
     }
 }

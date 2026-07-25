@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -24,16 +25,14 @@ use Testo\Test;
  */
 final class SchemaRegistryPkTest
 {
-    private const string DB_PATH = '/tmp/test_json_db_pk';
-
     #[BeforeTest]
     public function setUp(): void
     {
-        if (is_dir(self::DB_PATH)) {
+        if (is_dir(self::dbPathRoot())) {
             $this->dropDatabase();
         }
 
-        mkdir(self::DB_PATH, 0755, true);
+        mkdir(self::dbPathRoot(), 0755, true);
     }
 
     #[AfterTest]
@@ -56,7 +55,7 @@ final class SchemaRegistryPkTest
             'relations' => [],
         ]);
 
-        $registry = new SchemaRegistry(new JsonStorage(self::DB_PATH));
+        $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
         Expect::exception(StorageException::class)
             ->withMessageContaining('mandatory PK column');
@@ -78,7 +77,7 @@ final class SchemaRegistryPkTest
             'relations' => [],
         ]);
 
-        $registry = new SchemaRegistry(new JsonStorage(self::DB_PATH));
+        $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
         Expect::exception(StorageException::class)
             ->withMessageContaining('must have type "int"');
@@ -100,7 +99,7 @@ final class SchemaRegistryPkTest
             'relations' => [],
         ]);
 
-        $registry = new SchemaRegistry(new JsonStorage(self::DB_PATH));
+        $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
         Expect::exception(StorageException::class)
             ->withMessageContaining('must be first in columns');
@@ -130,7 +129,7 @@ final class SchemaRegistryPkTest
             'relations' => [],
         ]);
 
-        $registry = new SchemaRegistry(new JsonStorage(self::DB_PATH));
+        $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
         $tables = $registry->getTables();
 
         Assert::count($tables, 1);
@@ -155,7 +154,7 @@ final class SchemaRegistryPkTest
             'relations' => [],
         ]);
 
-        $registry = new SchemaRegistry(new JsonStorage(self::DB_PATH));
+        $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
         Expect::exception(StorageException::class)
             ->withMessageContaining('mandatory PK index');
@@ -174,18 +173,21 @@ final class SchemaRegistryPkTest
             throw new \RuntimeException('failed to serialize test schema');
         }
 
-        file_put_contents(self::DB_PATH . '/information_schema.json', $json);
+        file_put_contents(
+            self::dbPathRoot() . '/information_schema.json',
+            $json,
+        );
     }
 
     private function dropDatabase(): void
     {
-        if (!is_dir(self::DB_PATH)) {
+        if (!is_dir(self::dbPathRoot())) {
             return;
         }
 
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator(
-                self::DB_PATH,
+                self::dbPathRoot(),
                 \FilesystemIterator::SKIP_DOTS,
             ),
             \RecursiveIteratorIterator::CHILD_FIRST,
@@ -201,6 +203,11 @@ final class SchemaRegistryPkTest
             }
         }
 
-        rmdir(self::DB_PATH);
+        rmdir(self::dbPathRoot());
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('test_json_db_pk');
     }
 }

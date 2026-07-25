@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -22,8 +23,6 @@ use Testo\Test;
  */
 final class FkCascadeConditionsTest
 {
-    private const string DB_PATH = '/tmp/jp-fkcascade-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -33,10 +32,10 @@ final class FkCascadeConditionsTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
         $this->tzBackup = date_default_timezone_get();
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
     }
 
@@ -44,7 +43,7 @@ final class FkCascadeConditionsTest
     public function tearDown(): void
     {
         date_default_timezone_set($this->tzBackup);
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -200,8 +199,6 @@ final class FkCascadeConditionsTest
         Assert::same($this->db->table('orders')->count(), 0);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function injectRelation(
         string $from,
         string $foreignKey,
@@ -257,5 +254,10 @@ final class FkCascadeConditionsTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-fkcascade-tests');
     }
 }

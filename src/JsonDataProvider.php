@@ -2380,8 +2380,6 @@ final class JsonDataProvider
                 $this->schema->getTable($tableName),
             );
 
-            // null = the plan went stale, retry; a completed body is
-            // wrapped in a one-element envelope so its own null survives.
             $outcome = $this->locks->withLocks(
                 $plan,
                 'sh',
@@ -3161,10 +3159,9 @@ final class JsonDataProvider
         TableSchema $tableSchema,
         array $records,
     ): void {
-        \assert(
-            $this->locks->isHeld($tableName, 'ex'),
-            'writeAll requires the table EX lock',
-        );
+        if (!$this->locks->isHeld($tableName, 'ex')) {
+            throw StorageException::writeLockRequired('writeAll', $tableName);
+        }
 
         $records = $this->values->widenFloats($tableSchema, array_values(
             array_map(

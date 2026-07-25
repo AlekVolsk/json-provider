@@ -10,6 +10,7 @@ use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -23,8 +24,6 @@ use Testo\Test;
  */
 final class DdlAtomicityTest
 {
-    private const string DB_PATH = '/tmp/jp-ddl-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -32,19 +31,17 @@ final class DdlAtomicityTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- createTable -------------------------------------------------------
 
     #[Test]
     public function createTableProvisionsSchemaMetaAndFiles(): void
@@ -90,9 +87,6 @@ final class DdlAtomicityTest
     #[Test]
     public function createTableOverGarbageFileSucceedsWithEmptyTable(): void
     {
-        // A crashed drop (or a foreign write) left a non-empty file where
-        // the new table's data file belongs — createFileFresh must clobber
-        // it, never leak old rows into the new table.
         mkdir($this->dbDir . '/users', 0755, true);
         file_put_contents(
             $this->dbDir . '/users/users.ndjson',
@@ -111,13 +105,9 @@ final class DdlAtomicityTest
         Assert::same($id, 1);
     }
 
-    // -- crash-window self-healing ----------------------------------------
-
     #[Test]
     public function schemaOnlyCrashWindowHealsOnFirstInsert(): void
     {
-        // Simulated crash right after registerTable: schema entry exists,
-        // no meta entry, no files.
         $registry = new SchemaRegistry(new JsonStorage($this->dbDir));
         $registry->registerTable($this->userSchema());
 
@@ -134,7 +124,6 @@ final class DdlAtomicityTest
     #[Test]
     public function schemaAndMetaCrashWindowHealsOnFirstInsert(): void
     {
-        // Simulated crash right after initTable: schema + meta, no files.
         $registry = new SchemaRegistry(new JsonStorage($this->dbDir));
         $registry->registerTable($this->userSchema());
 
@@ -187,8 +176,6 @@ final class DdlAtomicityTest
     #[Test]
     public function metaMissingWithExistingRowsResumesIdSequence(): void
     {
-        // Meta entry lost while data survived: healing must resume the id
-        // sequence past the highest stored id, never reuse ids.
         $this->db->createTable($this->userSchema());
         $this->db->insert('users', ['name' => 'a']);
         $this->db->insert('users', ['name' => 'b']);
@@ -215,8 +202,6 @@ final class DdlAtomicityTest
         Assert::same($ids, [1, 2, 3]);
     }
 
-    // -- dropTable ---------------------------------------------------------
-
     #[Test]
     public function dropTableRemovesEverythingAndIsIdempotent(): void
     {
@@ -238,7 +223,6 @@ final class DdlAtomicityTest
         \assert(\is_array($meta));
         Assert::false(\array_key_exists('users', $meta));
 
-        // Idempotent repeat.
         $this->db->dropTable('users');
         Assert::false($this->db->hasTable('users'));
     }
@@ -254,7 +238,6 @@ final class DdlAtomicityTest
 
         Assert::same($this->db->table('users')->count(), 0);
 
-        // The id sequence starts over: the meta entry is brand new.
         $id = $this->db->insert('users', ['name' => 'new']);
         Assert::same($id, 1);
     }
@@ -262,10 +245,6 @@ final class DdlAtomicityTest
     #[Test]
     public function createTableAfterCrashedDropDiscardsOrphanMeta(): void
     {
-        // A crashed dropTable committed the schema removal but left the
-        // meta entry and files behind. Re-creating the table must succeed
-        // with a clean table and a fresh id sequence — never resurrect the
-        // old rows or continue the old sequence.
         $this->db->createTable($this->userSchema());
         $this->db->insert('users', ['name' => 'old-life-1']);
         $this->db->insert('users', ['name' => 'old-life-2']);
@@ -300,10 +279,6 @@ final class DdlAtomicityTest
     #[Test]
     public function healCrashWindowWithRestoredWatermarkReheals(): void
     {
-        // The healing order is watermark first, counters second: a crash in
-        // between leaves {lastInsertedId: max(id), lineCount: 0, byteSize: 0}
-        // — a red byteSize gate. The next insert must re-heal without ever
-        // minting a duplicate id.
         $this->db->createTable($this->userSchema());
         $this->db->insert('users', ['name' => 'a']);
         $this->db->insert('users', ['name' => 'b']);
@@ -343,8 +318,6 @@ final class DdlAtomicityTest
         Assert::same($c, $a);
         Assert::true(JsonDataProvider::exists($this->dbDir . '/'));
     }
-
-    // -- orphan directory repair policy ------------------------------------
 
     #[Test]
     public function orphanDirWithDataSurvivesRepair(): void
@@ -399,8 +372,6 @@ final class DdlAtomicityTest
         Assert::false(is_dir($this->dbDir . '/husk'));
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function userSchema(): TableSchema
     {
         return TableSchema::create(
@@ -436,5 +407,10 @@ final class DdlAtomicityTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-ddl-tests');
     }
 }

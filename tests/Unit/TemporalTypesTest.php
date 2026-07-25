@@ -10,6 +10,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Test;
@@ -20,15 +21,14 @@ use Testo\Test;
  *
  * The suite runs under a fixed non-UTC, non-DST zone (Europe/Moscow, +3) so the
  * UTC storage vs local presentation split is observable and deterministic:
- *  - instant kinds are stored in UTC on disk and presented back in the local
- *    zone (exact round-trip);
- *  - a bare date is stored verbatim (no shift);
- *  - filter values are encoded to UTC too, so a query stated in local time
- *    still matches — including through an index.
+ *  - datetime/datetimez are stored in UTC on disk and presented back in the
+ *    local zone (exact round-trip);
+ *  - date, time and timez are stored verbatim (wall-clock, no shift);
+ *  - datetime/datetimez filter values are encoded to UTC too, so a query
+ *    stated in local time still matches — including through an index.
  */
 final class TemporalTypesTest
 {
-    private const string DB_PATH = '/tmp/jp-temporal-tests';
     private const string TZ = 'Europe/Moscow';
     private const string TABLE = 'events';
 
@@ -54,7 +54,7 @@ final class TemporalTypesTest
         Assert::notNull($raw);
         Assert::same($raw['happens_at'], '2026-07-05 09:30:00');
         Assert::same($raw['precise'], '2026-07-05 09:30:00.250');
-        Assert::same($raw['at_time'], '20:30:00');
+        Assert::same($raw['at_time'], '23:30:00');
 
         $row = $db->table(self::TABLE)
             ->where('id', '=', $id)->selectOneByArray();
@@ -86,17 +86,15 @@ final class TemporalTypesTest
     }
 
     #[Test]
-    public function timeRoundTripsAcrossMidnightBoundary(): void
+    public function timeIsStoredVerbatimWithoutTimezoneShift(): void
     {
         $db = self::db();
 
-        // 01:15 local (+3) is 22:15 UTC the previous day;
-        // only the time is kept.
         $id = self::insertEvent($db, ['at_time' => '01:15:00']);
 
         $raw = self::rawLine($id);
         Assert::notNull($raw);
-        Assert::same($raw['at_time'], '22:15:00');
+        Assert::same($raw['at_time'], '01:15:00');
 
         $row = $db->table(self::TABLE)
             ->where('id', '=', $id)->selectOneByArray();
@@ -111,14 +109,12 @@ final class TemporalTypesTest
     {
         $db = self::db();
 
-        // T separator, interpreted in local zone -> 09:30 UTC.
         $tsep = self::insertEvent($db, ['happens_at' => '2026-07-05T12:30:00']);
         Assert::same(
             self::rawField($tsep, 'happens_at'),
             '2026-07-05 09:30:00',
         );
 
-        // Explicit Zulu -> stored as-is.
         $zulu = self::insertEvent(
             $db,
             ['happens_at' => '2026-07-05T12:30:00Z'],
@@ -128,7 +124,6 @@ final class TemporalTypesTest
             '2026-07-05 12:30:00',
         );
 
-        // Explicit +05:00 offset -> 07:30 UTC.
         $off = self::insertEvent(
             $db,
             ['happens_at' => '2026-07-05T12:30:00+05:00'],
@@ -238,7 +233,6 @@ final class TemporalTypesTest
         Assert::notNull($hit);
         Assert::same($hit['id'], $id);
 
-        // The very same UTC instant stated as Zulu must also match.
         $hitZ = $db->table(self::TABLE)
             ->where('happens_at', '=', '2026-08-01T12:00:00Z')
             ->selectOneByArray();
@@ -328,11 +322,11 @@ final class TemporalTypesTest
         date_default_timezone_set(self::TZ);
 
         if (self::$booted) {
-            return JsonDataProvider::getInstance(self::DB_PATH);
+            return JsonDataProvider::getInstance(self::dbPathRoot());
         }
 
         self::wipe();
-        $db = JsonDataProvider::createDatabase(self::DB_PATH);
+        $db = JsonDataProvider::createDatabase(self::dbPathRoot());
         $db->createTable(TableSchema::create(
             name: self::TABLE,
             columns: [
@@ -384,7 +378,7 @@ final class TemporalTypesTest
      */
     private static function rawLine(int $id): array | null
     {
-        $path = self::DB_PATH . '/' . self::TABLE . '/' . self::TABLE
+        $path = self::dbPathRoot() . '/' . self::TABLE . '/' . self::TABLE
             . '.ndjson';
         $contents = file_get_contents($path);
 
@@ -422,13 +416,13 @@ final class TemporalTypesTest
 
     private static function wipe(): void
     {
-        if (!is_dir(self::DB_PATH)) {
+        if (!is_dir(self::dbPathRoot())) {
             return;
         }
 
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator(
-                self::DB_PATH,
+                self::dbPathRoot(),
                 \FilesystemIterator::SKIP_DOTS,
             ),
             \RecursiveIteratorIterator::CHILD_FIRST,
@@ -441,6 +435,11 @@ final class TemporalTypesTest
                 : unlink($file->getPathname());
         }
 
-        rmdir(self::DB_PATH);
+        rmdir(self::dbPathRoot());
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-temporal-tests');
     }
 }

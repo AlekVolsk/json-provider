@@ -125,3 +125,14 @@ foreach ($db->tableNames() as $table) {
 ```
 
 Rolling back to a package version with the old format is safe only after the same `rebuildAllIndexes()` pass executed by that old version.
+
+## Upgrading time/timez storage (verbatim)
+
+Starting with the version where `time`/`timez` switched to **verbatim** storage (wall-clock, no timezone shift; `date` was already verbatim, `datetime`/`datetimez` stay in UTC — see [Schema model → Temporal types](04-schema-model.md#temporal-types-and-timezones)), the on-disk format of these columns **changed**. Unlike indexes, there is no automatic self-healing: the old values were shifted into UTC, so without a migration a read returns the shifted time and a local-time query will not match the index.
+
+The upgrade is a one-off data rewrite of the `time`/`timez` columns **plus a mandatory rebuild of any index on them** (the old on-disk form disagrees with the new condition encoding):
+
+- **Fixed-offset deploy zone** (no DST): add that zone's local offset to each stored value — the conversion is exact.
+- **DST deploy zone**: the pre-shift `time`/`timez` values are per-row ambiguous (the offset in effect at write time is unknown). The reliable path is exporting the data and re-importing under a controlled zone; an automatic shift here is best-effort.
+
+After the data rewrite, run `rebuildAllIndexes()` (or `optimizeTable()`) on the affected tables. Under a UTC process there was no shift — no migration is needed. Record the version up to which the format was UTC-shifted, to tell migrated databases from un-migrated ones.

@@ -28,13 +28,15 @@ use AV\JsonProvider\Validation\TemporalKind;
 final class DtoMap
 {
     /**
-     * @param class-string               $class
-     * @param array<int,FieldDescriptor> $fields
+     * @param class-string                          $class
+     * @param array<int,FieldDescriptor>            $fields
+     * @param \Closure(object): array<string,mixed> $reader reads the DTO's
      */
     public function __construct(
         public readonly string $class,
         public readonly string $table,
         public readonly array $fields,
+        public readonly \Closure $reader,
     ) {}
 
     /**
@@ -64,7 +66,7 @@ final class DtoMap
             $fields[] = self::compileField($class, $schema, $parameter);
         }
 
-        return new self($class, $table, $fields);
+        return new self($class, $table, $fields, self::buildReader($class));
     }
 
     /**
@@ -89,6 +91,29 @@ final class DtoMap
         }
 
         return $attributes[0]->newInstance()->table;
+    }
+
+    /**
+     * A property reader bound to the DTO's class scope: get_object_vars()
+     * called from inside the class sees promoted constructor properties of
+     * every visibility (public, protected, private). Inherited private
+     * properties of a PARENT class stay invisible — a mapped property must be
+     * declared on the DTO itself.
+     *
+     * @param class-string $class
+     *
+     * @return \Closure(object): array<string,mixed>
+     */
+    private static function buildReader(string $class): \Closure
+    {
+        /** @var \Closure(object): array<string,mixed> $reader */
+        $reader = \Closure::bind(
+            static fn (object $o): array => get_object_vars($o),
+            null,
+            $class,
+        );
+
+        return $reader;
     }
 
     /**
@@ -127,24 +152,69 @@ final class DtoMap
         \ReflectionParameter $parameter,
     ): FieldDescriptor {
         $property = $parameter->getName();
-        $column = self::resolveColumn($parameter);
         $type = $parameter->getType();
+
+        if ($type === null) {
+            throw self::mismatch(
+                $class,
+                $schema,
+                $property,
+                'property has no type declaration; a mapped property must '
+                    . 'be typed',
+            );
+        }
+
+        if ($type instanceof \ReflectionUnionType) {
+            throw self::mismatch(
+                $class,
+                $schema,
+                $property,
+                'union types are not supported',
+            );
+        }
+
+        if ($type instanceof \ReflectionIntersectionType) {
+            throw self::mismatch(
+                $class,
+                $schema,
+                $property,
+                'intersection types are not supported',
+            );
+        }
 
         if (!$type instanceof \ReflectionNamedType) {
             throw self::mismatch(
                 $class,
                 $schema,
                 $property,
-                'only single (non-union) property types are supported',
+                'unsupported type declaration',
             );
         }
+
+        if ($type->getName() === 'mixed') {
+            throw self::mismatch(
+                $class,
+                $schema,
+                $property,
+                "'mixed' is not supported; declare a concrete type",
+            );
+        }
+
+        self::assertReadable($class, $schema, $parameter);
+
+        $derived = $parameter->getAttributes(JsonProviderColumn::class) === [];
+        $column = self::resolveColumn($parameter);
 
         if (!isset($schema->columns[$column])) {
             throw self::mismatch(
                 $class,
                 $schema,
                 $property,
-                'no column "' . $column . '" in the table',
+                $derived
+                    ? 'no column "' . $column . '" (derived from property "'
+                        . $property . '"); add #[JsonProviderColumn("...")] '
+                        . 'to override the name'
+                    : 'no column "' . $column . '" in the table',
             );
         }
 
@@ -295,6 +365,45 @@ final class DtoMap
                     . 'column type "' . $info->base . '"',
             );
         }
+    }
+
+    /**
+     * Rejects a promoted property the extract-time reader cannot see. The
+     * reader (buildReader) is bound to the mapped class scope, so
+     * get_object_vars omits a property declared `private` on a PARENT class;
+     * extracting it would yield a silent null — data loss on a nullable
+     * column, a misleading NULL_NOT_ALLOWED on a non-nullable one. Fail loudly
+     * at compile time so a table can never register a DTO that would truncate
+     * its own rows. A private property declared on the mapped class itself, or
+     * an inherited protected/public one, stays readable and is accepted.
+     */
+    private static function assertReadable(
+        string $class,
+        TableSchema $schema,
+        \ReflectionParameter $parameter,
+    ): void {
+        if (!$parameter->isPromoted()) {
+            return;
+        }
+
+        $declaringClass = $parameter->getDeclaringClass();
+
+        if ($declaringClass === null || $declaringClass->getName() === $class) {
+            return;
+        }
+
+        if (!$declaringClass->getProperty($parameter->getName())->isPrivate()) {
+            return;
+        }
+
+        throw self::mismatch(
+            $class,
+            $schema,
+            $parameter->getName(),
+            'a private property inherited from ' . $declaringClass->getName()
+                . ' is not readable by the mapper; declare it on the DTO class '
+                . 'itself or make it protected',
+        );
     }
 
     private static function assertNullability(

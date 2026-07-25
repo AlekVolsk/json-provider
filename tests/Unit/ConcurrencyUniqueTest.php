@@ -10,6 +10,7 @@ use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Tests\Support\CacheKeys;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -24,7 +25,6 @@ use Testo\Test;
  */
 final class ConcurrencyUniqueTest
 {
-    private const string DB_PATH = '/tmp/jp-unique-race-tests';
     private const string TABLE = 'codes';
 
     private string $dbDir;
@@ -36,9 +36,9 @@ final class ConcurrencyUniqueTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->cache = new InMemoryCache();
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
@@ -56,10 +56,8 @@ final class ConcurrencyUniqueTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- cross-process race ------------------------------------------------
 
     #[Test]
     public function eightConcurrentInsertersYieldExactlyOneRow(): void
@@ -104,16 +102,12 @@ final class ConcurrencyUniqueTest
         Assert::count($this->linesWithCode('dup'), 1);
     }
 
-    // -- probe reads disk, not the cache -----------------------------------
-
     #[Test]
     public function insertSeesRowCommittedByAnotherProcess(): void
     {
         $this->db->insert(self::TABLE, ['code' => 'seed']);
         $this->db->table(self::TABLE)->selectAllByArray();
 
-        // The key of the WARMED state: the external insert below moves
-        // the version tag, so the stale entry stays only under this one.
         $warmedKey = CacheKeys::current($this->dbDir, self::TABLE);
 
         $this->insertExternally('dup');
@@ -153,8 +147,6 @@ final class ConcurrencyUniqueTest
 
         Assert::count($this->linesWithCode('dup'), 1);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     /**
      * Inserts through a real provider in a child process (own meta and
@@ -270,5 +262,10 @@ final class ConcurrencyUniqueTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-unique-race-tests');
     }
 }

@@ -8,6 +8,7 @@ use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -23,8 +24,6 @@ use Testo\Test;
  */
 final class ColumnTypeValidationTest
 {
-    private const string DB_PATH = '/tmp/jp-coltype-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -32,16 +31,16 @@ final class ColumnTypeValidationTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -144,8 +143,6 @@ final class ColumnTypeValidationTest
         Assert::same($this->db->columnNames('m'), ['id', 'a']);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function removeDir(string $path): void
     {
         if (!is_dir($path)) {
@@ -171,5 +168,10 @@ final class ColumnTypeValidationTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-coltype-tests');
     }
 }

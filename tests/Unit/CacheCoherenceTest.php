@@ -8,6 +8,7 @@ use AV\JsonProvider\Cache\InMemoryCache;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -22,7 +23,6 @@ use Testo\Test;
  */
 final class CacheCoherenceTest
 {
-    private const string DB_PATH = '/tmp/jp-cachecoh-tests';
     private const string TABLE = 'items';
 
     private string $dbDir;
@@ -34,9 +34,9 @@ final class CacheCoherenceTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->cache = new InMemoryCache();
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
@@ -53,7 +53,7 @@ final class CacheCoherenceTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -61,9 +61,6 @@ final class CacheCoherenceTest
     {
         $this->db->table(self::TABLE)->selectAllByArray();
 
-        // A foreign writer appends straight into the data file — no
-        // provider, no invalidateCache. The size/lineCount change moves
-        // the version tag, so the warm entry simply stops resolving.
         file_put_contents(
             $this->dataPath(),
             '{"id":2,"name":"foreign"}' . "\n",
@@ -89,9 +86,6 @@ final class CacheCoherenceTest
     {
         $this->db->table(self::TABLE)->selectAllByArray();
 
-        // A same-size content swap moves neither the meta lineCount nor
-        // the physical size: the tag stays, and the read keeps serving
-        // the warm entry — proof it never touched the disk.
         $swapped = str_replace(
             '"name":"cat"',
             '"name":"pig"',
@@ -109,9 +103,6 @@ final class CacheCoherenceTest
     {
         $this->db->table(self::TABLE)->selectAllByArray();
 
-        // The documented residual window: a byte-for-byte-sized foreign
-        // value swap moves neither lineCount nor byteSize, so the warm
-        // entry keeps serving the old value...
         $swapped = str_replace(
             '"name":"cat"',
             '"name":"dog"',
@@ -126,7 +117,6 @@ final class CacheCoherenceTest
             'the same-size swap is the documented blind spot',
         );
 
-        // ...and invalidateCache() is the manual escape hatch.
         $this->db->invalidateCache(self::TABLE);
 
         $fresh = $this->db->table(self::TABLE)->selectAllByArray();
@@ -136,9 +126,6 @@ final class CacheCoherenceTest
     #[Test]
     public function writeRefreshesTheCacheUnderTheNewTag(): void
     {
-        // No select in between: the warm entry under the new tag comes
-        // from the write path itself. The same-size swap proves the
-        // subsequent read is a cache hit, not a disk read.
         $this->db->table(self::TABLE)
             ->where('name', '=', 'cat')
             ->updateByArray(['name' => 'fox']);
@@ -161,11 +148,6 @@ final class CacheCoherenceTest
     #[Test]
     public function abaDeleteInsertOfSameLengthByAnotherProcess(): void
     {
-        // The A-B-A attack on a (lineCount, size)-only tag: a foreign
-        // provider process deletes the row and inserts one of the same
-        // byte length — both components return to their old values. The
-        // rewrite lands on a fresh tmp+rename inode, so the tag must
-        // move anyway.
         $this->db->table(self::TABLE)->selectAllByArray();
 
         $this->runExternally(
@@ -186,10 +168,6 @@ final class CacheCoherenceTest
     #[Test]
     public function sameSizeUpdateByAnotherProviderProcessIsVisible(): void
     {
-        // A same-length value update THROUGH the provider from another
-        // process rewrites the file (new inode) — the warm entry of this
-        // process must stop resolving even though size and lineCount are
-        // unchanged.
         $this->db->table(self::TABLE)->selectAllByArray();
 
         $this->runExternally(
@@ -235,8 +213,6 @@ final class CacheCoherenceTest
         $meta[self::TABLE]['lineCount'] = '1';
         file_put_contents($metaPath, json_encode($meta));
 
-        // Reads must survive (the tag degrades, the data comes from
-        // disk) instead of dying with a bare TypeError.
         $rows = $this->db->table(self::TABLE)->selectAllByArray();
         Assert::count($rows, 1);
         Assert::same($this->db->table(self::TABLE)->count(), 1);
@@ -277,8 +253,6 @@ final class CacheCoherenceTest
         );
         Assert::same($sanitize->invoke(null, []), []);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function runExternally(string $body): void
     {
@@ -345,5 +319,10 @@ final class CacheCoherenceTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-cachecoh-tests');
     }
 }

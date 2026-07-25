@@ -8,6 +8,7 @@ use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\JsonStorageTxHandle;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -22,30 +23,27 @@ use Testo\Test;
  */
 final class StorageAtomicityTest
 {
-    private const string TMP_DIR = '/tmp/jp-atomicity-tests';
     private const string TABLE = 'items';
     private const string DATA_FILE = 'items.ndjson';
 
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::TMP_DIR);
-        mkdir(self::TMP_DIR . '/' . self::TABLE, 0755, true);
-        touch(self::TMP_DIR . '/' . self::TABLE . '/' . self::DATA_FILE);
+        $this->removeDir(self::tmpDirRoot());
+        mkdir(self::tmpDirRoot() . '/' . self::TABLE, 0755, true);
+        touch(self::tmpDirRoot() . '/' . self::TABLE . '/' . self::DATA_FILE);
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::TMP_DIR);
+        $this->removeDir(self::tmpDirRoot());
     }
-
-    // -- NdjsonStorage::write ----------------------------------------------
 
     #[Test]
     public function writeReplacesContentAndReturnsByteSize(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         $size = $storage->write(self::TABLE, self::DATA_FILE, [
             ['id' => 1, 'name' => 'a'],
@@ -64,7 +62,7 @@ final class StorageAtomicityTest
     #[Test]
     public function writePreservesFloatZeroFractionOnDisk(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         $storage->write(self::TABLE, self::DATA_FILE, [
             ['id' => 1, 'price' => 99.0],
@@ -77,7 +75,7 @@ final class StorageAtomicityTest
     #[Test]
     public function failedEncodeMidSetLeavesFileByteIdentical(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $storage->write(self::TABLE, self::DATA_FILE, [
             ['id' => 1, 'name' => 'keep-me'],
             ['id' => 2, 'name' => 'me-too'],
@@ -104,7 +102,7 @@ final class StorageAtomicityTest
     #[Test]
     public function writeLeavesNoTmpFileBehind(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $storage->write(self::TABLE, self::DATA_FILE, [['id' => 1]]);
 
         Assert::same($this->tmpSiblings(), []);
@@ -113,15 +111,13 @@ final class StorageAtomicityTest
     #[Test]
     public function staleTmpFilesAreSweptByNextWrite(): void
     {
-        // Both the legacy fixed name and the writer-unique names of crashed
-        // writers must be swept.
         file_put_contents($this->dataPath() . '.tmp', 'stale garbage');
         file_put_contents(
             $this->dataPath() . '.12345.aabbccdd.tmp',
             'crashed writer leftovers',
         );
 
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $storage->write(self::TABLE, self::DATA_FILE, [['id' => 7]]);
 
         Assert::same($this->tmpSiblings(), []);
@@ -134,7 +130,7 @@ final class StorageAtomicityTest
     #[Test]
     public function writeOnMissingFileThrowsFileNotReadable(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         $caught = null;
 
@@ -148,7 +144,7 @@ final class StorageAtomicityTest
         Assert::same($caught->getErrorKey(), 'FILE_NOT_READABLE');
         Assert::false(
             file_exists(
-                self::TMP_DIR . '/' . self::TABLE . '/absent.ndjson',
+                self::tmpDirRoot() . '/' . self::TABLE . '/absent.ndjson',
             ),
         );
     }
@@ -156,14 +152,12 @@ final class StorageAtomicityTest
     #[Test]
     public function openReaderKeepsSeeingOldContentAfterRewrite(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $storage->write(self::TABLE, self::DATA_FILE, [
             ['id' => 1, 'v' => 'old'],
             ['id' => 2, 'v' => 'old'],
         ]);
 
-        // A reader that opened the file before the rewrite stays on the old
-        // inode: rename replaces the directory entry, not the open handle.
         $handle = fopen($this->dataPath(), 'r');
         \assert($handle !== false);
         $firstLine = fgets($handle);
@@ -187,7 +181,7 @@ final class StorageAtomicityTest
     #[Test]
     public function concurrentReadersAlwaysSeeACompleteFile(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $recordCount = 50;
 
         $records = [];
@@ -198,9 +192,6 @@ final class StorageAtomicityTest
 
         $storage->write(self::TABLE, self::DATA_FILE, $records);
 
-        // Child rewrites the same set in a loop; the parent reads in a loop.
-        // Every read must decode to the full record count — a torn file
-        // would yield fewer.
         $code = <<<'PHP'
             require $argv[1];
             $storage = new \AV\JsonProvider\Storage\NdjsonStorage($argv[2]);
@@ -217,7 +208,7 @@ final class StorageAtomicityTest
 
         $child = $this->spawnPhp($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
-            self::TMP_DIR,
+            self::tmpDirRoot(),
             (string)$recordCount,
         ]);
 
@@ -236,18 +227,13 @@ final class StorageAtomicityTest
             $stdout = $this->drainAndClose($child);
         }
 
-        // The writer child must have survived the whole run — otherwise the
-        // reader loop was trivially reading an unchanging file.
         Assert::string($stdout)->contains('done');
     }
 
     #[Test]
     public function concurrentAppendsFromTwoProcessesAllSurvive(): void
     {
-        // append+append is exactly what the file flock guarantees: two
-        // processes interleaving appends must lose nothing and produce no
-        // torn lines.
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $perProcess = 100;
 
         $code = <<<'PHP'
@@ -266,7 +252,7 @@ final class StorageAtomicityTest
 
         $child = $this->spawnPhp($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
-            self::TMP_DIR,
+            self::tmpDirRoot(),
             (string)$perProcess,
         ]);
 
@@ -300,12 +286,10 @@ final class StorageAtomicityTest
         }
     }
 
-    // -- NdjsonStorage::append ---------------------------------------------
-
     #[Test]
     public function appendReturnsGrowingFileSize(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         $size1 = $storage->append(self::TABLE, self::DATA_FILE, ['id' => 1]);
         Assert::same($size1, filesize($this->dataPath()));
@@ -323,7 +307,7 @@ final class StorageAtomicityTest
     #[Test]
     public function appendRejectsUnencodableRecordWithoutTouchingFile(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $storage->write(self::TABLE, self::DATA_FILE, [['id' => 1]]);
         $before = file_get_contents($this->dataPath());
 
@@ -343,12 +327,10 @@ final class StorageAtomicityTest
         Assert::same(file_get_contents($this->dataPath()), $before);
     }
 
-    // -- NdjsonStorage::encodeRecords --------------------------------------
-
     #[Test]
     public function encodeRecordsProducesNewlineTerminatedLines(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         $bytes = $storage->encodeRecords(self::TABLE, [
             ['id' => 1],
@@ -361,7 +343,7 @@ final class StorageAtomicityTest
     #[Test]
     public function encodeRecordsOfEmptySetIsEmptyString(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         Assert::same($storage->encodeRecords(self::TABLE, []), '');
     }
@@ -369,7 +351,7 @@ final class StorageAtomicityTest
     #[Test]
     public function encodeRecordsThrowsInvalidRecordOnBadUtf8(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
 
         Expect::exception(StorageException::class)
             ->withMessageContaining('Invalid record');
@@ -377,12 +359,10 @@ final class StorageAtomicityTest
         $storage->encodeRecords(self::TABLE, [['name' => "\xC3\x28"]]);
     }
 
-    // -- NdjsonStorage::writeRaw -------------------------------------------
-
     #[Test]
     public function writeRawReplacesAtomicallyAndReturnsSize(): void
     {
-        $storage = new NdjsonStorage(self::TMP_DIR);
+        $storage = new NdjsonStorage(self::tmpDirRoot());
         $contents = "{\"id\":1}\n{\"id\":2}\n";
 
         $size = $storage->writeRaw(self::TABLE, self::DATA_FILE, $contents);
@@ -392,12 +372,10 @@ final class StorageAtomicityTest
         Assert::false(file_exists($this->dataPath() . '.tmp'));
     }
 
-    // -- JsonStorage -------------------------------------------------------
-
     #[Test]
     public function jsonWriteIsAtomicAndLeavesNoTmp(): void
     {
-        $storage = new JsonStorage(self::TMP_DIR);
+        $storage = new JsonStorage(self::tmpDirRoot());
         $storage->createFile('config.json', ['a' => 1]);
 
         $storage->write('config.json', ['a' => 2, 'b' => [1, 2, 3]]);
@@ -406,15 +384,15 @@ final class StorageAtomicityTest
             $storage->read('config.json'),
             ['a' => 2, 'b' => [1, 2, 3]],
         );
-        Assert::false(file_exists(self::TMP_DIR . '/config.json.tmp'));
+        Assert::false(file_exists(self::tmpDirRoot() . '/config.json.tmp'));
     }
 
     #[Test]
     public function transactionExceptionLeavesFileUnchanged(): void
     {
-        $storage = new JsonStorage(self::TMP_DIR);
+        $storage = new JsonStorage(self::tmpDirRoot());
         $storage->createFile('config.json', ['counter' => 5]);
-        $before = file_get_contents(self::TMP_DIR . '/config.json');
+        $before = file_get_contents(self::tmpDirRoot() . '/config.json');
 
         $caught = null;
 
@@ -436,7 +414,7 @@ final class StorageAtomicityTest
 
         Assert::same($caught->getMessage(), 'mid-transaction failure');
         Assert::same(
-            file_get_contents(self::TMP_DIR . '/config.json'),
+            file_get_contents(self::tmpDirRoot() . '/config.json'),
             $before,
         );
     }
@@ -444,9 +422,9 @@ final class StorageAtomicityTest
     #[Test]
     public function transactionWithoutSaveLeavesFileUnchanged(): void
     {
-        $storage = new JsonStorage(self::TMP_DIR);
+        $storage = new JsonStorage(self::tmpDirRoot());
         $storage->createFile('config.json', ['counter' => 5]);
-        $before = file_get_contents(self::TMP_DIR . '/config.json');
+        $before = file_get_contents(self::tmpDirRoot() . '/config.json');
 
         $result = $storage->transaction(
             'config.json',
@@ -455,7 +433,7 @@ final class StorageAtomicityTest
 
         Assert::same($result, 5);
         Assert::same(
-            file_get_contents(self::TMP_DIR . '/config.json'),
+            file_get_contents(self::tmpDirRoot() . '/config.json'),
             $before,
         );
     }
@@ -463,7 +441,7 @@ final class StorageAtomicityTest
     #[Test]
     public function transactionPersistsSavedData(): void
     {
-        $storage = new JsonStorage(self::TMP_DIR);
+        $storage = new JsonStorage(self::tmpDirRoot());
         $storage->createFile('config.json', ['counter' => 5]);
 
         $storage->transaction(
@@ -475,17 +453,17 @@ final class StorageAtomicityTest
         );
 
         Assert::same($storage->read('config.json'), ['counter' => 6]);
-        Assert::false(file_exists(self::TMP_DIR . '/config.json.tmp'));
+        Assert::false(file_exists(self::tmpDirRoot() . '/config.json.tmp'));
     }
 
     #[Test]
     public function createObjectFileWritesEmptyJsonObject(): void
     {
-        $storage = new JsonStorage(self::TMP_DIR);
+        $storage = new JsonStorage(self::tmpDirRoot());
         $storage->createObjectFile('meta.json');
 
         Assert::same(
-            file_get_contents(self::TMP_DIR . '/meta.json'),
+            file_get_contents(self::tmpDirRoot() . '/meta.json'),
             "{}\n",
         );
     }
@@ -493,12 +471,7 @@ final class StorageAtomicityTest
     #[Test]
     public function crossProcessTransactionsNeverLoseIncrements(): void
     {
-        // The regression this guards: the pre-sidecar transaction() held
-        // flock on an opened descriptor while a concurrent writer replaced
-        // the file via rename, so one side read a stale inode and lost the
-        // other's update. Two processes each add N increments; with the
-        // sidecar lock every one of them must survive.
-        $storage = new JsonStorage(self::TMP_DIR);
+        $storage = new JsonStorage(self::tmpDirRoot());
         $storage->createFile('counter.json', ['counter' => 0]);
         $increments = 100;
 
@@ -520,7 +493,7 @@ final class StorageAtomicityTest
 
         $child = $this->spawnPhp($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
-            self::TMP_DIR,
+            self::tmpDirRoot(),
             (string)$increments,
         ]);
 
@@ -546,19 +519,10 @@ final class StorageAtomicityTest
         );
     }
 
-    // -- update encode probe (échelon 1: buffered encode) ------------------
-
     #[Test]
     public function updateWithUnencodableValueLeavesTableFullyIntact(): void
     {
-        // The write API rejects INF up front (NON_FINITE_FLOAT) and the
-        // schema boundary rejects unknown column types, so an unencodable
-        // stored value can only come from foreign tampering with the data
-        // file: JSON "1e999" decodes to float INF, which json_encode then
-        // refuses. The buffered encode in the rewrite path must refuse the
-        // whole operation: the data file stays byte-identical, meta stays
-        // as committed, every row survives.
-        $dbDir = self::TMP_DIR . '/probe-' . uniqid();
+        $dbDir = self::tmpDirRoot() . '/probe-' . uniqid();
         $db = \AV\JsonProvider\JsonDataProvider::createDatabase($dbDir);
         $db->createTable(\AV\JsonProvider\Schema\TableSchema::create(
             name: 'goods',
@@ -600,8 +564,6 @@ final class StorageAtomicityTest
         Assert::true(is_infinite((float)$rows[0]['price']));
         Assert::same($rows[1]['price'], 2.5);
 
-        // Inserts refuse just as loudly: the byteSize gate is red after
-        // the tampering, and canonical self-healing cannot re-encode INF.
         $caughtInsert = null;
 
         try {
@@ -614,11 +576,9 @@ final class StorageAtomicityTest
         Assert::same($caughtInsert->getErrorKey(), 'INVALID_RECORD');
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function dataPath(): string
     {
-        return self::TMP_DIR . '/' . self::TABLE . '/' . self::DATA_FILE;
+        return self::tmpDirRoot() . '/' . self::TABLE . '/' . self::DATA_FILE;
     }
 
     /**
@@ -628,7 +588,7 @@ final class StorageAtomicityTest
      */
     private function tmpSiblings(): array
     {
-        $entries = scandir(self::TMP_DIR . '/' . self::TABLE);
+        $entries = scandir(self::tmpDirRoot() . '/' . self::TABLE);
         \assert($entries !== false);
 
         return array_values(array_filter(
@@ -698,5 +658,10 @@ final class StorageAtomicityTest
         }
 
         rmdir($path);
+    }
+
+    private static function tmpDirRoot(): string
+    {
+        return TempDir::root('jp-atomicity-tests');
     }
 }

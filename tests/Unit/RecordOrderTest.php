@@ -153,7 +153,7 @@ final class RecordOrderTest
         string $tableName,
         callable $predicate,
     ): array | null {
-        $path = Fixture::DB_PATH . '/' . $tableName
+        $path = Fixture::dbPath() . '/' . $tableName
             . '/' . $tableName . '.ndjson';
         $contents = file_get_contents($path);
 

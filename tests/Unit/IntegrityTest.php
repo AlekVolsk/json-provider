@@ -32,7 +32,7 @@ final class IntegrityTest
     #[Test]
     public function validateDetectsMissingIndexFile(): void
     {
-        unlink(Fixture::DB_PATH . '/products/idx_category.index.ndjson');
+        unlink(Fixture::dbPath() . '/products/idx_category.index.ndjson');
 
         $report = Fixture::db()->validateTable('products');
 
@@ -47,7 +47,7 @@ final class IntegrityTest
     public function validateDetectsIndexDriftAfterTampering(): void
     {
         file_put_contents(
-            Fixture::DB_PATH . '/products/idx_category.index.ndjson',
+            Fixture::dbPath() . '/products/idx_category.index.ndjson',
             "{\"key\":\"deadbeef\",\"line\":99999}\n",
         );
 
@@ -63,7 +63,7 @@ final class IntegrityTest
     #[Test]
     public function validateDetectsOrphanIndexFile(): void
     {
-        $orphan = Fixture::DB_PATH . '/products/idx_unused.index.ndjson';
+        $orphan = Fixture::dbPath() . '/products/idx_unused.index.ndjson';
         file_put_contents($orphan, '');
 
         $report = Fixture::db()->validateTable('products');
@@ -87,7 +87,7 @@ final class IntegrityTest
     #[Test]
     public function validateDetectsMetaLineCountDrift(): void
     {
-        $metaFile = Fixture::DB_PATH . '/meta.json';
+        $metaFile = Fixture::dbPath() . '/meta.json';
         $meta = $this->readMeta($metaFile);
         $original = $meta['products']['lineCount'];
         $meta['products']['lineCount'] = 999;
@@ -111,7 +111,7 @@ final class IntegrityTest
     #[Test]
     public function validateDetectsDbOrphanFile(): void
     {
-        $orphan = Fixture::DB_PATH . '/junk.txt';
+        $orphan = Fixture::dbPath() . '/junk.txt';
         file_put_contents($orphan, 'random');
 
         $report = Fixture::db()->validate();
@@ -127,7 +127,7 @@ final class IntegrityTest
     #[Test]
     public function repairSucceedsAndProducesRepairedFlags(): void
     {
-        $orphan = Fixture::DB_PATH . '/products/idx_extra.index.ndjson';
+        $orphan = Fixture::dbPath() . '/products/idx_extra.index.ndjson';
         file_put_contents($orphan, '');
 
         $report = Fixture::db()->repairTable('products');
@@ -163,7 +163,7 @@ final class IntegrityTest
 
         $tbl->optimizeTable();
 
-        $path = Fixture::DB_PATH . '/categories/categories.ndjson';
+        $path = Fixture::dbPath() . '/categories/categories.ndjson';
         $lines = array_filter(
             explode("\n", (string)file_get_contents($path)),
             static fn (string $l): bool => trim($l) !== '',
@@ -199,9 +199,8 @@ final class IntegrityTest
         Assert::string($text)->contains('JsonProvider integrity report');
         Assert::string($text)->contains('tables checked: 3');
 
-        // Add a known issue and re-format.
         file_put_contents(
-            Fixture::DB_PATH . '/products/junk.index.ndjson',
+            Fixture::dbPath() . '/products/junk.index.ndjson',
             '',
         );
 
@@ -215,12 +214,12 @@ final class IntegrityTest
     public function validatorIsReadOnly(): void
     {
         $countBefore = Fixture::db()->table('products')->count();
-        $metaBefore = file_get_contents(Fixture::DB_PATH . '/meta.json');
+        $metaBefore = file_get_contents(Fixture::dbPath() . '/meta.json');
 
         Fixture::db()->validate();
 
         $countAfter = Fixture::db()->table('products')->count();
-        $metaAfter = file_get_contents(Fixture::DB_PATH . '/meta.json');
+        $metaAfter = file_get_contents(Fixture::dbPath() . '/meta.json');
 
         Assert::same($countAfter, $countBefore);
         Assert::same($metaAfter, $metaBefore);

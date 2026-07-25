@@ -109,10 +109,13 @@ The custom locale class can live in any namespace.
 | `INVALID_SORT_DIRECTION` | orderBy direction is not "asc"/"desc" |
 | `INVALID_LIMIT` | negative limit |
 | `INVALID_OFFSET` | negative offset |
-| `INVALID_TEMPORAL_VALUE` | date/time value not in the accepted system format |
+| `INVALID_TEMPORAL_VALUE` | date/time value not in the accepted system format (incl. a TZ offset beyond ±14:00) |
 | `ZERO_DATE` | a zero date (`0000-00-00`) was supplied |
+| `TEMPORAL_FRACTION_UNSUPPORTED` | sub-second precision the kind does not accept (a fraction on a second kind, or more than 3 digits on a millisecond kind) |
+| `LIKE_ON_INSTANT_UNSUPPORTED` | LIKE on a datetime/datetimez column (stored as UTC) |
 | `NUMERIC_PART_OUT_OF_RANGE` | `month`/`day` value outside its valid range |
 | `DTO_SCHEMA_MISMATCH` | a registered DTO does not match its table schema |
 | `DTO_NOT_REGISTERED` | an object method used on a table with no DTO bound |
+| `DTO_ALREADY_REGISTERED` | a different DTO class is already bound to the table — unregister it first |
 | `INVALID_ENUM_VALUE` | a stored value is not a case of the DTO's enum |
 | `DTO_HYDRATION_FAILED` | a stored value cannot be hydrated into the DTO |

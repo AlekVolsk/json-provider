@@ -19,6 +19,12 @@ enum LangRuEnum: string implements LocaleInterface
     case LOCK_ORDER_VIOLATION = 'Нарушен порядок блокировок: %s (порядок '
         . 'захвата: сначала база, затем таблицы по возрастанию имени, '
         . 'повышение режима запрещено)';
+    case WRITE_LOCK_REQUIRED = 'Внутренняя ошибка: %s требует EX-блокировку '
+        . 'таблицы "%s"';
+    case LOCK_DEPTH_DESYNC = 'Внутренняя ошибка: рассинхронизирована глубина '
+        . 'блокировки БД при снятии блокировок';
+    case SCHEMA_TRANSFORM_NO_RESULT = 'Внутренняя ошибка: преобразование '
+        . 'схемы таблицы "%s" не дало результата';
     case INVALID_JSON = 'Недопустимый формат данных в файле хранилища: %s';
     case TABLE_NOT_FOUND = 'Таблица не найдена в схеме: %s';
     case TABLE_ALREADY_EXISTS = 'Таблица "%s" уже существует';
@@ -155,11 +161,18 @@ enum LangRuEnum: string implements LocaleInterface
         . 'значение %s: "%s"';
     case ZERO_DATE = 'Таблица "%s", колонка "%s": нулевые даты недопустимы: '
         . '"%s"';
+    case TEMPORAL_FRACTION_UNSUPPORTED = 'Таблица "%s", колонка "%s": %s не '
+        . 'принимает заданную точность долей секунды: "%s"';
+    case LIKE_ON_INSTANT_UNSUPPORTED = 'Таблица "%s", колонка "%s": LIKE по '
+        . 'колонке datetime/datetimez не поддерживается (хранится в UTC); '
+        . 'используйте операторы сравнения или BETWEEN';
     case NUMERIC_PART_OUT_OF_RANGE = 'Таблица "%s", колонка "%s": значение %s '
         . 'вне диапазона: %s';
     case DTO_SCHEMA_MISMATCH = 'DTO %s не соответствует таблице "%s": %s';
     case DTO_NOT_REGISTERED = 'Для таблицы "%s" не зарегистрирован DTO; '
         . 'используйте методы *ByArray или registerDto()';
+    case DTO_ALREADY_REGISTERED = 'Для таблицы "%s" уже зарегистрирован DTO '
+        . '%s; снимите его через unregister перед привязкой %s';
     case INVALID_ENUM_VALUE = 'Таблица "%s", колонка "%s": хранимое значение '
         . '"%s" не является кейсом %s';
     case DTO_HYDRATION_FAILED = 'Таблица "%s", колонка "%s": не удалось '

@@ -38,7 +38,7 @@ final class RebuildIndexTest
         Assert::count($expected, 100);
 
         file_put_contents(
-            Fixture::DB_PATH . '/products/pk.index.ndjson',
+            Fixture::dbPath() . '/products/pk.index.ndjson',
             "GARBAGE\n",
         );
 
@@ -57,7 +57,7 @@ final class RebuildIndexTest
         Assert::count($expected, 100);
 
         file_put_contents(
-            Fixture::DB_PATH . '/products/idx_category.index.ndjson',
+            Fixture::dbPath() . '/products/idx_category.index.ndjson',
             '',
         );
 
@@ -87,7 +87,7 @@ final class RebuildIndexTest
         foreach ($names as $name) {
             $expected[$name] = $this->readIndexEntries('products', $name);
             file_put_contents(
-                Fixture::DB_PATH . '/products/' . $name . '.index.ndjson',
+                Fixture::dbPath() . '/products/' . $name . '.index.ndjson',
                 "CORRUPTED\n",
             );
         }
@@ -152,7 +152,7 @@ final class RebuildIndexTest
         string $tableName,
         string $indexName,
     ): array {
-        $manager = new IndexManager(new NdjsonStorage(Fixture::DB_PATH));
+        $manager = new IndexManager(new NdjsonStorage(Fixture::dbPath()));
 
         $idx = new IndexSchema(
             name: $indexName,

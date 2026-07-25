@@ -6,6 +6,7 @@ namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -24,7 +25,6 @@ use Testo\Test;
  */
 final class DistinctTypingTest
 {
-    private const string DB_PATH = '/tmp/jp-distinct-tests';
     private const string TABLE = 'mixed';
 
     private string $dbDir;
@@ -34,9 +34,9 @@ final class DistinctTypingTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -54,7 +54,7 @@ final class DistinctTypingTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -122,8 +122,6 @@ final class DistinctTypingTest
         Assert::count($rows, 2);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     /**
      * Writes rows straight into the table's NDJSON file (bypassing the
      * typed write API) — the only way a column can end up holding mixed
@@ -176,5 +174,10 @@ final class DistinctTypingTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-distinct-tests');
     }
 }

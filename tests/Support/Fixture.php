@@ -26,8 +26,6 @@ use AV\JsonProvider\Schema\TableSchema;
  */
 final class Fixture
 {
-    public const string DB_PATH = '/tmp/test_json_db';
-
     private static bool $initialized = false;
 
     /** @var array<int,array<string,null|scalar>> */
@@ -40,6 +38,17 @@ final class Fixture
     private static array $tagsFixture = [];
 
     /**
+     * The run-unique database directory (see TempDir). Every caller — internal
+     * and external — resolves the fixture path through this, so two overlapping
+     * runs never share or delete each other's fixture, and the tree is removed
+     * at process shutdown.
+     */
+    public static function dbPath(): string
+    {
+        return TempDir::root('test_json_db');
+    }
+
+    /**
      * Creates (if missing) and seeds the shared test DB.
      * Idempotent: a repeat call is a no-op.
      */
@@ -49,11 +58,11 @@ final class Fixture
             return;
         }
 
-        if (JsonDataProvider::exists(self::DB_PATH)) {
+        if (JsonDataProvider::exists(self::dbPath())) {
             self::drop();
         }
 
-        $db = JsonDataProvider::createDatabase(self::DB_PATH);
+        $db = JsonDataProvider::createDatabase(self::dbPath());
 
         self::createSchema($db);
         self::seedCategories($db);
@@ -70,7 +79,7 @@ final class Fixture
     {
         self::boot();
 
-        return JsonDataProvider::getInstance(self::DB_PATH);
+        return JsonDataProvider::getInstance(self::dbPath());
     }
 
     /**
@@ -108,7 +117,7 @@ final class Fixture
      */
     public static function drop(): void
     {
-        $path = self::DB_PATH;
+        $path = self::dbPath();
 
         if (!is_dir($path)) {
             return;

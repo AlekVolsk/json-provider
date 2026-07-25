@@ -392,6 +392,15 @@ final class ValueValidator
             );
         }
 
+        $kind = $info->temporalKind();
+
+        if (
+            $kind === TemporalKind::DateTime
+            || $kind === TemporalKind::DateTimeZ
+        ) {
+            throw StorageException::likeOnInstantColumn($table, $column);
+        }
+
         return $value;
     }
 
@@ -453,30 +462,21 @@ final class ValueValidator
             return $this->encodeTemporal($table, $column, $kind, $value);
         }
 
-        $expected = match ($info->base) {
-            ColumnTypes::STRING => \is_string($value) ? null : 'string',
-            ColumnTypes::BOOL   => \is_bool($value) ? null : 'bool',
-            ColumnTypes::INT,
-            ColumnTypes::YEAR,
-            ColumnTypes::MONTH,
-            ColumnTypes::DAY => \is_int($value) ? null : 'int',
-            default          => \is_int($value) || \is_float($value)
-                ? null
-                : 'float (or int)',
-        };
-
-        if ($expected !== null) {
-            throw StorageException::conditionTypeMismatch(
-                $table,
-                $column,
-                $operator,
-                $expected,
-                get_debug_type($value),
-            );
-        }
-
+        /*
+         * Validate-and-encode per base: each branch checks the value's type
+         * itself (narrowing it for the encode that follows), so the correct
+         * PHP type is proven by the guard, not asserted.
+         */
         if ($info->base === ColumnTypes::FLOAT) {
-            \assert(\is_int($value) || \is_float($value));
+            if (!\is_int($value) && !\is_float($value)) {
+                throw StorageException::conditionTypeMismatch(
+                    $table,
+                    $column,
+                    $operator,
+                    'float (or int)',
+                    get_debug_type($value),
+                );
+            }
 
             if (\is_float($value) && !is_finite($value)) {
                 throw StorageException::nonFiniteFloat($table, $column);
@@ -486,7 +486,15 @@ final class ValueValidator
         }
 
         if ($info->base === ColumnTypes::STRING) {
-            \assert(\is_string($value));
+            if (!\is_string($value)) {
+                throw StorageException::conditionTypeMismatch(
+                    $table,
+                    $column,
+                    $operator,
+                    'string',
+                    get_debug_type($value),
+                );
+            }
 
             return $this->requireString($table, $column, $value);
         }
@@ -496,13 +504,41 @@ final class ValueValidator
             || $info->base === ColumnTypes::MONTH
             || $info->base === ColumnTypes::DAY
         ) {
-            \assert(\is_int($value));
+            if (!\is_int($value)) {
+                throw StorageException::conditionTypeMismatch(
+                    $table,
+                    $column,
+                    $operator,
+                    'int',
+                    get_debug_type($value),
+                );
+            }
 
             return $this->encodeNumericPart(
                 $table,
                 $column,
                 $info->base,
                 $value,
+            );
+        }
+
+        if ($info->base === ColumnTypes::INT && !\is_int($value)) {
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                $operator,
+                'int',
+                get_debug_type($value),
+            );
+        }
+
+        if ($info->base === ColumnTypes::BOOL && !\is_bool($value)) {
+            throw StorageException::conditionTypeMismatch(
+                $table,
+                $column,
+                $operator,
+                'bool',
+                get_debug_type($value),
             );
         }
 
@@ -597,6 +633,15 @@ final class ValueValidator
         } catch (TemporalParseException $e) {
             if ($e->zeroDate) {
                 throw StorageException::zeroDate($table, $column, $value);
+            }
+
+            if ($e->fractionUnsupported) {
+                throw StorageException::temporalFractionUnsupported(
+                    $table,
+                    $column,
+                    $kind->value,
+                    $value,
+                );
             }
 
             throw StorageException::invalidTemporalValue(

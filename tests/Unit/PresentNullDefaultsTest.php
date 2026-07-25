@@ -9,6 +9,7 @@ use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -26,7 +27,6 @@ use Testo\Test;
  */
 final class PresentNullDefaultsTest
 {
-    private const string DB_PATH = '/tmp/jp-presentnull-tests';
     private const string TABLE = 'items';
 
     private string $dbDir;
@@ -36,9 +36,9 @@ final class PresentNullDefaultsTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -57,7 +57,7 @@ final class PresentNullDefaultsTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -234,7 +234,7 @@ final class PresentNullDefaultsTest
     public function restoreBackfillsMissingColumnsWithTypedDefaults(): void
     {
         $this->insertRow(1);
-        $archive = $this->db->backup(self::DB_PATH . '/backfill.tar.gz');
+        $archive = $this->db->backup(self::dbPathRoot() . '/backfill.tar.gz');
 
         $manifestRaw = file_get_contents(
             'phar://' . $archive . '/manifest.json',
@@ -342,5 +342,10 @@ final class PresentNullDefaultsTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-presentnull-tests');
     }
 }

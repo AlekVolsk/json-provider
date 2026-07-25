@@ -51,8 +51,8 @@ final class RelationSchema
         // phpcs:disable Generic.Files.LineLength
         public readonly ForeignKeyActionEnum $onDelete = ForeignKeyActionEnum::NO_ACTION,
         public readonly ForeignKeyActionEnum $onUpdate = ForeignKeyActionEnum::NO_ACTION,
-        public readonly string | null $backingIndex = null,
         // phpcs:enable
+        public readonly string | null $backingIndex = null,
     ) {
         IdentifierRules::assertTableName($fromTable);
         IdentifierRules::assertTableName($toTable);

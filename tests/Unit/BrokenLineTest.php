@@ -9,6 +9,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Services\Integrity\IssueSeverity;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -24,7 +25,6 @@ use Testo\Test;
  */
 final class BrokenLineTest
 {
-    private const string DB_PATH = '/tmp/jp-broken-tests';
     private const string TABLE = 'items';
 
     private string $dbDir;
@@ -34,9 +34,9 @@ final class BrokenLineTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -48,7 +48,7 @@ final class BrokenLineTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -213,5 +213,10 @@ final class BrokenLineTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-broken-tests');
     }
 }

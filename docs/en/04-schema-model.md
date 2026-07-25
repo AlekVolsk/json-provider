@@ -54,7 +54,7 @@ By construction a valid name can never escape the database directory when used a
 A column type is a string value in the `columns` map. The list is **closed**: 12 base types and their `|null` variants — exactly the 24 strings enumerated by `ColumnTypes::all()`. Any other string (`'integer'`, `'datetime|nullable'`, a typo in a hand-edited schema file) is rejected by the `TableSchema` constructor with `INVALID_COLUMN_TYPE` — in the DDL API and on schema load alike. Each base type has a `|null` variant (which additionally permits `null`):
 
 - **Primitives** — `string`, `int`, `float`, `bool`.
-- **Temporal** — `date`, `time`, `timez`, `datetime`, `datetimez`. Values that carry a moment (everything except a bare `date`) are stored in UTC and presented in the current PHP timezone; see [Temporal types and timezones](#temporal-types-and-timezones).
+- **Temporal** — `date`, `time`, `timez`, `datetime`, `datetimez`. An absolute moment (`datetime`/`datetimez`) is stored in UTC and presented in the current PHP timezone; wall-clock with no moment (`date`/`time`/`timez`) is stored verbatim; see [Temporal types and timezones](#temporal-types-and-timezones).
 - **Numeric parts** — `year`, `month`, `day`. Plain integers with a range check, never timezone-shifted; `year` may be negative (BC).
 
 To avoid scattering these literals across the code, use the `Schema\ColumnTypes` constants (a constants-only class):
@@ -121,9 +121,9 @@ Condition values are checked by the same contract as writes — the first violat
 | `>` `>=` `<` `<=` | non-`null` scalar of the column's exact type |
 | `BETWEEN` | array of exactly two non-`null` scalars following the range rule; otherwise `CONDITION_MALFORMED` |
 | `IN` | array whose elements follow the `=` rule; an empty array is valid and matches nothing; a non-array → `CONDITION_MALFORMED` |
-| `LIKE` | a string pattern; string/temporal columns only |
+| `LIKE` | a string pattern; string and `date`/`time`/`timez` columns (matched against the stored=local form); `datetime`/`datetimez` → `LIKE_ON_INSTANT_UNSUPPORTED` |
 
-The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `CONDITION_TYPE_MISMATCH`. `NAN`/`INF` against a `float` column → `NON_FINITE_FLOAT` (the same guard as on write). Temporal conditions accept only system-format strings and are encoded to the stored UTC form. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QUERY_UNKNOWN_COLUMN`.
+The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `CONDITION_TYPE_MISMATCH`. `NAN`/`INF` against a `float` column → `NON_FINITE_FLOAT` (the same guard as on write). `datetime`/`datetimez` conditions are encoded to the stored UTC form; `date`/`time`/`timez` conditions match the stored (verbatim=local) form. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QUERY_UNKNOWN_COLUMN`.
 
 ## Float format on disk
 
@@ -146,16 +146,18 @@ Constraints from `uniqueConstraints` are checked on `insert` and `update` before
 
 ## Temporal types and timezones
 
-Temporal columns exist so that a moment written by a process in one timezone reads back as the same moment for a process in another: instant-bearing values are always stored in UTC on disk and converted to the current PHP timezone (`date_default_timezone_get()`) on the way out. All arithmetic goes through `DateTimeImmutable`.
+Temporal columns exist so that a moment written by a process in one timezone reads back as the same moment for a process in another. An absolute moment (`datetime`/`datetimez`) is always stored in UTC on disk and converted to the current PHP timezone (`date_default_timezone_get()`) on the way out. Wall-clock values with no moment (`date`, `time`, `timez`) are stored **verbatim** — as-is, never timezone-shifted. All arithmetic goes through `DateTimeImmutable`.
 
-| Type | Stored (UTC) | Timezone-shifted | Notes |
+| Type | Stored | Timezone-shifted | Notes |
 | - | - | - | - |
-| `date` | `Y-m-d` | no | a calendar date has no instant — stored verbatim |
-| `time` | `H:i:s` | yes | time of day, second resolution |
-| `timez` | `H:i:s.v` | yes | time of day with milliseconds |
-| `datetime` | `Y-m-d H:i:s` | yes | full instant, second resolution |
-| `datetimez` | `Y-m-d H:i:s.v` | yes | full instant with milliseconds |
+| `date` | `Y-m-d` (verbatim) | no | a calendar date has no instant |
+| `time` | `H:i:s` (verbatim) | no | time of day, second resolution |
+| `timez` | `H:i:s.v` (verbatim) | no | time of day with milliseconds |
+| `datetime` | `Y-m-d H:i:s` (UTC) | yes | full instant, second resolution |
+| `datetimez` | `Y-m-d H:i:s.v` (UTC) | yes | full instant with milliseconds |
 | `year` / `month` / `day` | integer | no | range-validated parts |
+
+**Sub-second precision.** The second-resolution kinds (`time`, `datetime`) reject any fraction; the millisecond kinds (`timez`, `datetimez`) accept 1–3 digits and reject more — never silently truncating (`TEMPORAL_FRACTION_UNSUPPORTED`). For `datetime`/`datetimez` a TZ offset beyond ±14:00 (`+25:00`, `+00:99`) raises `INVALID_TEMPORAL_VALUE`.
 
 Input is accepted **only** in the correct system format — no dots, slashes, or reversed order, and no zero dates (`0000-00-00` throws):
 
@@ -165,7 +167,7 @@ date_default_timezone_set('Europe/Moscow'); // UTC+3
 $db->table('events')->insertByArray([
     'happensAt' => '2026-07-05 12:30:00',    // stored as 2026-07-05 09:30:00 (UTC)
     'onDate'    => '2026-07-05',              // stored verbatim
-    'atTime'    => '23:30:00',               // stored as 20:30:00 (UTC)
+    'atTime'    => '23:30:00',               // stored verbatim (wall-clock)
 ]);
 
 // read back in the same zone — exact round-trip
@@ -193,7 +195,7 @@ $db->table('events')
     ->selectAllByArray();
 ```
 
-> A bare `date` is intentionally **not** timezone-shifted: a date has no instant, and anchoring it at local midnight to move it into UTC is not round-trip stable (it would read back as a different day). When you need a timezone-anchored point in time, use `datetime`.
+> `date`, `time` and `timez` are intentionally **not** timezone-shifted: a bare date and a bare wall-clock time have no absolute instant, and anchoring them at local midnight/date to move into UTC is not round-trip stable — a date would read back as a different day, and a time would drift under DST. When you need a timezone-anchored point in time, use `datetime`/`datetimez`.
 
 ## Relations
 

@@ -7,6 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -21,7 +22,6 @@ use Testo\Test;
  */
 final class NonFiniteFloatTest
 {
-    private const string DB_PATH = '/tmp/jp-nonfinite-tests';
     private const string TABLE = 'measures';
 
     private string $dbDir;
@@ -31,9 +31,9 @@ final class NonFiniteFloatTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -51,10 +51,8 @@ final class NonFiniteFloatTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- rejection on insert -----------------------------------------------
 
     #[Test]
     public function insertInfRejected(): void
@@ -105,8 +103,6 @@ final class NonFiniteFloatTest
         }
     }
 
-    // -- rejection on update, disk untouched -------------------------------
-
     #[Test]
     public function updateNonFiniteRejectedBeforeAnyWrite(): void
     {
@@ -125,8 +121,6 @@ final class NonFiniteFloatTest
         $after = md5((string)file_get_contents($this->dataPath()));
         Assert::same($after, $before);
     }
-
-    // -- finite values pass ------------------------------------------------
 
     #[Test]
     public function finiteEdgeValuesPass(): void
@@ -170,8 +164,6 @@ final class NonFiniteFloatTest
         Assert::null($row['opt']);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function dataPath(): string
     {
         return $this->dbDir . '/' . self::TABLE . '/' . self::TABLE
@@ -203,5 +195,10 @@ final class NonFiniteFloatTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-nonfinite-tests');
     }
 }

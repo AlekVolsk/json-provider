@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -25,8 +26,6 @@ use Testo\Test;
  */
 final class ForeignKeyTest
 {
-    private const string DB_PATH = '/tmp/jp-fk-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -34,9 +33,9 @@ final class ForeignKeyTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -63,7 +62,7 @@ final class ForeignKeyTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -313,7 +312,6 @@ final class ForeignKeyTest
             Assert::same($e->getErrorKey(), 'RELATION_TYPE_MISMATCH');
         }
 
-        // int|null FK into the int PK: the base types match.
         $this->db->addRelation(new RelationSchema(
             fromTable: 'posts',
             foreignKey: 'userId',
@@ -554,8 +552,6 @@ final class ForeignKeyTest
         );
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function removeDir(string $path): void
     {
         if (!is_dir($path)) {
@@ -581,5 +577,10 @@ final class ForeignKeyTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-fk-tests');
     }
 }

@@ -37,6 +37,37 @@ class StorageException extends JsonProviderException
         return new self('LOCK_ORDER_VIOLATION', $details);
     }
 
+    /**
+     * A caller entered a full-rewrite path without holding the required
+     * table EX lock — a programming bug, surfaced loudly through the
+     * localized package exception rather than a production-disabled assert().
+     * The operation is a code identifier (verbatim, like the table name).
+     */
+    public static function writeLockRequired(
+        string $operation,
+        string $table,
+    ): self {
+        return new self('WRITE_LOCK_REQUIRED', $operation, $table);
+    }
+
+    /**
+     * The database lock depth drifted from its expected value at frame
+     * release: an internal self-consistency invariant of the lock manager.
+     */
+    public static function lockDepthDesync(): self
+    {
+        return new self('LOCK_DEPTH_DESYNC');
+    }
+
+    /**
+     * A schema RMW transform returned without producing a table descriptor:
+     * an internal invariant of updateTable.
+     */
+    public static function schemaTransformNoResult(string $table): self
+    {
+        return new self('SCHEMA_TRANSFORM_NO_RESULT', $table);
+    }
+
     public static function invalidJson(string $path): self
     {
         return new self('INVALID_JSON', $path);
@@ -552,6 +583,28 @@ class StorageException extends JsonProviderException
         return new self('ZERO_DATE', $table, $column, $value);
     }
 
+    public static function temporalFractionUnsupported(
+        string $table,
+        string $column,
+        string $type,
+        string $value,
+    ): self {
+        return new self(
+            'TEMPORAL_FRACTION_UNSUPPORTED',
+            $table,
+            $column,
+            $type,
+            $value,
+        );
+    }
+
+    public static function likeOnInstantColumn(
+        string $table,
+        string $column,
+    ): self {
+        return new self('LIKE_ON_INSTANT_UNSUPPORTED', $table, $column);
+    }
+
     public static function numericPartOutOfRange(
         string $table,
         string $column,
@@ -578,6 +631,19 @@ class StorageException extends JsonProviderException
     public static function dtoNotRegistered(string $table): self
     {
         return new self('DTO_NOT_REGISTERED', $table);
+    }
+
+    public static function dtoAlreadyRegistered(
+        string $table,
+        string $existing,
+        string $incoming,
+    ): self {
+        return new self(
+            'DTO_ALREADY_REGISTERED',
+            $table,
+            $existing,
+            $incoming,
+        );
     }
 
     public static function invalidEnumValue(

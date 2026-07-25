@@ -262,8 +262,6 @@ final class IndexKeyV2Test
         );
     }
 
-    // -- helpers -----------------------------------------------------------
-
     /**
      * @param array<int,null|scalar> $values values in ascending engine order
      */

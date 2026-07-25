@@ -8,6 +8,7 @@ use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -29,8 +30,6 @@ use Testo\Test;
  */
 final class UniqueConstraintTest
 {
-    private const string DB_PATH = '/tmp/jp-unique-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -38,9 +37,9 @@ final class UniqueConstraintTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -72,10 +71,8 @@ final class UniqueConstraintTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- NULL never participates -------------------------------------------
 
     #[Test]
     public function twoNullsPass(): void
@@ -120,14 +117,6 @@ final class UniqueConstraintTest
         $this->db->insert('u_code', ['code' => 'x']);
     }
 
-    // -- type-strict keys ---------------------------------------------------
-    //
-    // The schema boundary rejects unknown column types, so one column can
-    // hold mixed scalar types only through foreign tampering with the data
-    // file. The key codec stays type-strict regardless of how the values
-    // got there: keyOf-level units pin the four-way distinction, and the
-    // tampering test pins the disk roundtrip.
-
     #[Test]
     public function fourScalarTypesProduceFourDistinctKeys(): void
     {
@@ -164,8 +153,6 @@ final class UniqueConstraintTest
         Assert::int($id)->greaterThan(0);
         Assert::same($this->db->table('u_code')->count(), 3);
     }
-
-    // -- float column: storage format merges the int/float boundary ---------
 
     #[Test]
     public function sameFloatTwiceViolates(): void
@@ -207,8 +194,6 @@ final class UniqueConstraintTest
         $this->db->insert('u_float', ['price' => 7.0]);
     }
 
-    // -- composite constraints ----------------------------------------------
-
     #[Test]
     public function compositeWithNullFieldNeverConflicts(): void
     {
@@ -230,8 +215,6 @@ final class UniqueConstraintTest
 
         $this->db->insert('u_pair', ['a' => 1, 'b' => 2]);
     }
-
-    // -- update paths --------------------------------------------------------
 
     #[Test]
     public function updateToConflictingValueViolates(): void
@@ -277,8 +260,6 @@ final class UniqueConstraintTest
         Assert::same($this->db->table('u_code')->count(), 2);
     }
 
-    // -- ghost rows -----------------------------------------------------------
-
     #[Test]
     public function recordMissingConstraintFieldIsSkipped(): void
     {
@@ -295,8 +276,6 @@ final class UniqueConstraintTest
 
         Assert::int($id)->greaterThan(0);
     }
-
-    // -- keyOf / keyPart units ------------------------------------------------
 
     #[Test]
     public function keyPartDistinguishesScalarTypes(): void
@@ -398,8 +377,6 @@ final class UniqueConstraintTest
         Assert::same($this->db->table('u_nul')->count(), 2);
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function removeDir(string $path): void
     {
         if (!is_dir($path)) {
@@ -425,5 +402,10 @@ final class UniqueConstraintTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-unique-tests');
     }
 }

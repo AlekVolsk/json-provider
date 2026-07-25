@@ -12,6 +12,7 @@ use AV\JsonProvider\Tests\Support\Dto\EventDto;
 use AV\JsonProvider\Tests\Support\Dto\EventStatus;
 use AV\JsonProvider\Tests\Support\Dto\LabelDto;
 use AV\JsonProvider\Tests\Support\Dto\UnboundDto;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Test;
@@ -25,7 +26,6 @@ use Testo\Test;
  */
 final class DtoMappingTest
 {
-    private const string DB_PATH = '/tmp/jp-dto-tests';
     private const string TZ = 'Europe/Moscow';
 
     private static bool $booted = false;
@@ -262,11 +262,11 @@ final class DtoMappingTest
         date_default_timezone_set(self::TZ);
 
         if (self::$booted) {
-            return JsonDataProvider::getInstance(self::DB_PATH);
+            return JsonDataProvider::getInstance(self::dbPathRoot());
         }
 
         self::wipe();
-        $db = JsonDataProvider::createDatabase(self::DB_PATH);
+        $db = JsonDataProvider::createDatabase(self::dbPathRoot());
         $db->createTable(TableSchema::create(
             name: 'dto_events',
             columns: [
@@ -299,7 +299,7 @@ final class DtoMappingTest
      */
     private static function rawLine(string $table, int $id): array | null
     {
-        $path = self::DB_PATH . '/' . $table . '/' . $table . '.ndjson';
+        $path = self::dbPathRoot() . '/' . $table . '/' . $table . '.ndjson';
         $contents = file_get_contents($path);
 
         if ($contents === false) {
@@ -336,13 +336,13 @@ final class DtoMappingTest
 
     private static function wipe(): void
     {
-        if (!is_dir(self::DB_PATH)) {
+        if (!is_dir(self::dbPathRoot())) {
             return;
         }
 
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator(
-                self::DB_PATH,
+                self::dbPathRoot(),
                 \FilesystemIterator::SKIP_DOTS,
             ),
             \RecursiveIteratorIterator::CHILD_FIRST,
@@ -355,6 +355,11 @@ final class DtoMappingTest
                 : unlink($file->getPathname());
         }
 
-        rmdir(self::DB_PATH);
+        rmdir(self::dbPathRoot());
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-dto-tests');
     }
 }

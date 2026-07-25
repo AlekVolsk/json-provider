@@ -15,6 +15,7 @@ use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -30,8 +31,6 @@ use Testo\Test;
  */
 final class FkBackingIndexTest
 {
-    private const string DB_PATH = '/tmp/jp-fkbacking-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -39,9 +38,9 @@ final class FkBackingIndexTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -57,7 +56,7 @@ final class FkBackingIndexTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -137,7 +136,6 @@ final class FkBackingIndexTest
             'the unused service index file must be removed',
         );
 
-        // A reused user index survives its relation.
         $this->db->addIndex('posts', new IndexSchema(
             name: 'byUser',
             fields: [
@@ -206,7 +204,6 @@ final class FkBackingIndexTest
             '_fk_userId',
         );
 
-        // The probe still works end to end.
         $userId = $this->db->insert('users', []);
         $this->db->insert('posts', ['userId' => $userId]);
 
@@ -320,7 +317,6 @@ final class FkBackingIndexTest
         $service = $this->indexByName('posts', '_fk_userId');
         Assert::true($service !== null && $service->isService);
 
-        // The healed edge enforces restrict end to end.
         $userId = $this->db->insert('users', []);
         $this->db->insert('posts', ['userId' => $userId]);
 
@@ -340,8 +336,6 @@ final class FkBackingIndexTest
         $userId = $this->db->insert('users', []);
         $this->db->insert('posts', ['userId' => $userId]);
 
-        // Structural corruption: a malformed key with the byteSize gate
-        // left green (the data file is untouched).
         file_put_contents(
             $this->dbDir . '/posts/_fk_userId.index.ndjson',
             '{"key":"broken","line":0}' . "\n",
@@ -367,9 +361,6 @@ final class FkBackingIndexTest
 
         $userId = $this->db->insert('users', []);
 
-        // A foreign append desyncs byteSize: the index is no longer
-        // trusted, and the probe must fall back to scanning the real
-        // rows — finding the reference the index does not know about.
         file_put_contents(
             $this->dbDir . '/posts/posts.ndjson',
             '{"id":77,"userId":' . $userId . '}' . "\n",
@@ -390,7 +381,6 @@ final class FkBackingIndexTest
     {
         $this->db->addRelation($this->cascadeRelation());
 
-        // An unrelated column first: the schema copy must carry isService.
         $this->db->createTable(TableSchema::create(
             name: 'other',
             columns: ['id' => 'int'],
@@ -410,7 +400,6 @@ final class FkBackingIndexTest
             'the old service file must not linger',
         );
 
-        // The edge still enforces end to end after the rename.
         $userId = $this->db->insert('users', []);
         $this->db->insert('posts', ['ownerId' => $userId]);
         $this->db->table('users')->deleteById($userId);
@@ -440,8 +429,6 @@ final class FkBackingIndexTest
     public function orphanedServiceIndexIsReportedAndRepaired(): void
     {
         $this->db->addRelation($this->cascadeRelation());
-        // A zombie: the relation vanishes (schema tamper emulating a
-        // crashed dropRelation) while the service index stays declared.
         $storage = new JsonStorage($this->dbDir);
 
         /** @var array{relations?: array<int,mixed>} $schema */
@@ -503,16 +490,12 @@ final class FkBackingIndexTest
         $u2 = $this->db->insert('users', []);
         $this->db->insert('posts', ['userId' => $u2]);
 
-        // u1 has no posts: the probe proves it and the child is skipped;
-        // the observable contract is simply a correct cascade result.
         $this->db->table('users')->deleteById($u1);
         Assert::same($this->db->table('posts')->count(), 1);
 
         $this->db->table('users')->deleteById($u2);
         Assert::same($this->db->table('posts')->count(), 0);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function cascadeRelation(): RelationSchema
     {
@@ -624,5 +607,10 @@ final class FkBackingIndexTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-fkbacking-tests');
     }
 }

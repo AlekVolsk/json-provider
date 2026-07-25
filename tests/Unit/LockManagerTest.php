@@ -6,6 +6,7 @@ namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Exception\StorageException;
 use AV\JsonProvider\Storage\TableLockManager;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -19,30 +20,26 @@ use Testo\Test;
  */
 final class LockManagerTest
 {
-    private const string TMP_DIR = '/tmp/jp-lock-tests';
-
     /** @var null|array{proc: resource, pipes: array<int,resource>} */
     private array | null $pendingChild = null;
 
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::TMP_DIR);
-        mkdir(self::TMP_DIR, 0755, true);
+        $this->removeDir(self::tmpDirRoot());
+        mkdir(self::tmpDirRoot(), 0755, true);
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::TMP_DIR);
+        $this->removeDir(self::tmpDirRoot());
     }
-
-    // -- basic behaviour ---------------------------------------------------
 
     #[Test]
     public function withLocksRunsCallbackAndReturnsItsValue(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withLocks(
             ['users' => 'ex'],
@@ -56,24 +53,24 @@ final class LockManagerTest
     #[Test]
     public function locksDirIsCreatedLazilyAsHiddenDirectory(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
-        Assert::false(is_dir(self::TMP_DIR . '/.locks'));
+        Assert::false(is_dir(self::tmpDirRoot() . '/.locks'));
 
         $manager->withLocks(['users' => 'ex'], null, static fn (): int => 1);
 
-        Assert::true(is_dir(self::TMP_DIR . '/.locks'));
+        Assert::true(is_dir(self::tmpDirRoot() . '/.locks'));
     }
 
     #[Test]
     public function lockFilesArePersistentAndEmptyAfterRelease(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withLocks(['users' => 'ex'], 'sh', static fn (): int => 1);
 
         $tableLock = $this->tableLockPath('users');
-        $dbLock = self::TMP_DIR . '/.locks/db.lock';
+        $dbLock = self::tmpDirRoot() . '/.locks/db.lock';
 
         Assert::true(file_exists($tableLock));
         Assert::true(file_exists($dbLock));
@@ -84,7 +81,7 @@ final class LockManagerTest
     #[Test]
     public function locksAreReleasedAfterCallbackReturns(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withLocks(['users' => 'ex'], 'ex', static fn (): int => 1);
 
@@ -95,7 +92,7 @@ final class LockManagerTest
     #[Test]
     public function locksAreReleasedWhenCallbackThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $caught = null;
 
@@ -121,7 +118,7 @@ final class LockManagerTest
     #[Test]
     public function invalidModeIsRejected(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         Expect::exception(\InvalidArgumentException::class)
             ->withMessageContaining('Lock mode');
@@ -133,12 +130,10 @@ final class LockManagerTest
         );
     }
 
-    // -- isHeld semantics --------------------------------------------------
-
     #[Test]
     public function isHeldReflectsTableLocksOnly(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         Assert::false($manager->isHeld('users', 'sh'));
 
@@ -161,7 +156,7 @@ final class LockManagerTest
     #[Test]
     public function databaseExDoesNotImplyTableEx(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withDatabase(static function () use ($manager): void {
             Assert::true($manager->isDatabaseHeld('ex'));
@@ -176,7 +171,7 @@ final class LockManagerTest
     #[Test]
     public function databaseShIsCoveredByEx(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withLocks([], 'sh', static function () use ($manager): void {
             Assert::true($manager->isDatabaseHeld('sh'));
@@ -184,12 +179,10 @@ final class LockManagerTest
         });
     }
 
-    // -- re-entrancy -------------------------------------------------------
-
     #[Test]
     public function nestedSubsetPassesAndInnerExitKeepsOuterLockHeld(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withLocks(
             ['users' => 'ex'],
@@ -203,7 +196,6 @@ final class LockManagerTest
 
                 Assert::same($inner, 'nested');
 
-                // The inner frame must not have dropped the outer flock.
                 Assert::false($this->probeFree(
                     $this->tableLockPath('users'),
                     'sh',
@@ -218,7 +210,7 @@ final class LockManagerTest
     #[Test]
     public function nestedShRequestAgainstHeldExPasses(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withLocks(
             ['users' => 'ex'],
@@ -236,7 +228,7 @@ final class LockManagerTest
     #[Test]
     public function nestedTablesUnderHeldDatabaseLockPass(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withDatabase(
             static fn (): mixed => $manager->withLocks(
@@ -251,12 +243,10 @@ final class LockManagerTest
         Assert::false($manager->isDatabaseHeld('sh'));
     }
 
-    // -- ordering violations -----------------------------------------------
-
     #[Test]
     public function tableUpgradeShToExThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->withLocks(
@@ -280,7 +270,7 @@ final class LockManagerTest
     #[Test]
     public function freshTableOutsideNonEmptyHeldSetThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->withLocks(
@@ -306,7 +296,7 @@ final class LockManagerTest
     #[Test]
     public function databaseLockOnTopOfHeldTablesThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->withLocks(
@@ -329,7 +319,7 @@ final class LockManagerTest
     #[Test]
     public function databaseUpgradeShToExThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->withLocks(
@@ -350,15 +340,13 @@ final class LockManagerTest
     #[Test]
     public function partialAcquisitionFailureReleasesEverything(): void
     {
-        // A frame that freshly acquired the db lock, then timed out on a
-        // contended table, must release the db lock on the way out.
         $holder = $this->spawnFlockHolder(
             $this->tableLockPath('users'),
             'ex',
         );
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.1);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.1);
 
             try {
                 $manager->withLocks(
@@ -381,12 +369,10 @@ final class LockManagerTest
     #[Test]
     public function timeoutOnSecondFreshTableReleasesTheFirst(): void
     {
-        // Sorted order acquires 'aaa' first, then parks on contended 'bbb':
-        // the timeout must release the already-acquired 'aaa'.
         $holder = $this->spawnFlockHolder($this->tableLockPath('bbb'), 'ex');
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.1);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.1);
 
             try {
                 $manager->withLocks(
@@ -409,9 +395,7 @@ final class LockManagerTest
     #[Test]
     public function nestedFrameExceptionKeepsOuterLockHeld(): void
     {
-        // The decrement path of a re-entered frame unwinding via an
-        // exception must not release the outer lock.
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withLocks(
             ['users' => 'ex'],
@@ -444,7 +428,7 @@ final class LockManagerTest
     #[Test]
     public function tripleNestedSubsetKeepsLockUntilOutermostExit(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withLocks(
             ['users' => 'ex'],
@@ -476,7 +460,7 @@ final class LockManagerTest
     #[Test]
     public function invalidLockSubjectNamesAreRejected(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         foreach (['', '.', '..', 'a/b', '../escape'] as $bad) {
             try {
@@ -498,38 +482,34 @@ final class LockManagerTest
             Assert::same($e->getErrorKey(), 'INVALID_FILE_NAME');
         }
 
-        // Nothing escaped the .locks directory or the DB root.
-        Assert::false(file_exists(self::TMP_DIR . '/escape.table.lock'));
-        Assert::false(file_exists(\dirname(self::TMP_DIR) . '/db.lock'));
+        Assert::false(file_exists(self::tmpDirRoot() . '/escape.table.lock'));
+        Assert::false(file_exists(\dirname(self::tmpDirRoot()) . '/db.lock'));
     }
 
     #[Test]
     public function lockFileNamespacesDoNotCollide(): void
     {
-        // A service file named 'db' or '<table>.table' must not alias the
-        // level-1/level-2 lock files.
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withServiceFile('db', static fn (): int => 1);
         $manager->withServiceFile('users.table', static fn (): int => 1);
 
         Assert::true(
-            file_exists(self::TMP_DIR . '/.locks/svc.db.lock'),
+            file_exists(self::tmpDirRoot() . '/.locks/svc.db.lock'),
         );
         Assert::true(
-            file_exists(self::TMP_DIR . '/.locks/svc.users.table.lock'),
+            file_exists(self::tmpDirRoot() . '/.locks/svc.users.table.lock'),
         );
-        Assert::false(file_exists(self::TMP_DIR . '/.locks/db.lock'));
+        Assert::false(file_exists(self::tmpDirRoot() . '/.locks/db.lock'));
         Assert::false(file_exists($this->tableLockPath('users')));
 
-        // And a service lock on 'db' does not exclude the database lock.
         $holder = $this->spawnFlockHolder(
             $this->serviceLockPath('db'),
             'ex',
         );
 
         try {
-            $quick = new TableLockManager(self::TMP_DIR, 0.5);
+            $quick = new TableLockManager(self::tmpDirRoot(), 0.5);
             $result = $quick->withDatabase(static fn (): string => 'db-ok');
             Assert::same($result, 'db-ok');
         } finally {
@@ -537,12 +517,10 @@ final class LockManagerTest
         }
     }
 
-    // -- service-file (leaf) locks -----------------------------------------
-
     #[Test]
     public function serviceFileLockRunsAndReleases(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withServiceFile(
             'meta.json',
@@ -559,7 +537,7 @@ final class LockManagerTest
     #[Test]
     public function serviceFileSameFileReenters(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withServiceFile(
             'meta.json',
@@ -579,7 +557,7 @@ final class LockManagerTest
     #[Test]
     public function serviceFileDifferentFileNestingThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->withServiceFile(
@@ -603,7 +581,7 @@ final class LockManagerTest
     #[Test]
     public function tableLockUnderServiceFileLockThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->withServiceFile(
@@ -623,7 +601,7 @@ final class LockManagerTest
     #[Test]
     public function serviceFileUnderTableLockPasses(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $result = $manager->withLocks(
             ['users' => 'ex'],
@@ -637,8 +615,6 @@ final class LockManagerTest
         Assert::same($result, 'commit');
     }
 
-    // -- timeout -----------------------------------------------------------
-
     #[Test]
     public function contendedLockTimesOutWithInjectedCeiling(): void
     {
@@ -648,7 +624,7 @@ final class LockManagerTest
         );
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.15);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.15);
             $start = microtime(true);
 
             try {
@@ -672,8 +648,6 @@ final class LockManagerTest
         }
     }
 
-    // -- cross-process semantics -------------------------------------------
-
     #[Test]
     public function exclusiveBlocksBothExclusiveAndShared(): void
     {
@@ -683,7 +657,7 @@ final class LockManagerTest
         );
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.1);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.1);
 
             try {
                 $manager->withLocks(
@@ -720,7 +694,7 @@ final class LockManagerTest
         );
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.1);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.1);
 
             $result = $manager->withLocks(
                 ['users' => 'sh'],
@@ -750,7 +724,7 @@ final class LockManagerTest
         $holder = $this->spawnFlockHolder($this->dbLockPath(), 'sh');
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.1);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.1);
 
             $result = $manager->withLocks(
                 ['users' => 'ex'],
@@ -781,7 +755,7 @@ final class LockManagerTest
         proc_terminate($holder['proc'], 9);
         proc_close($holder['proc']);
 
-        $manager = new TableLockManager(self::TMP_DIR, 5.0);
+        $manager = new TableLockManager(self::tmpDirRoot(), 5.0);
         $result = $manager->withLocks(
             ['users' => 'ex'],
             null,
@@ -794,11 +768,7 @@ final class LockManagerTest
     #[Test]
     public function acquisitionOrderIsSortedByTableName(): void
     {
-        // A child manager requests ['c', 'a', 'b'] while this process holds
-        // 'b'. Sorted acquisition means the child grabs 'a' and then parks on
-        // 'b' without ever touching 'c'. Once 'b' is released, the child
-        // finishes the whole set.
-        mkdir(self::TMP_DIR . '/.locks', 0755, true);
+        mkdir(self::tmpDirRoot() . '/.locks', 0755, true);
         $holder = $this->spawnFlockHolder($this->tableLockPath('b'), 'ex');
 
         $code = <<<'PHP'
@@ -819,11 +789,10 @@ final class LockManagerTest
 
         $child = $this->spawnPhp($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
-            self::TMP_DIR,
+            self::tmpDirRoot(),
         ]);
 
         try {
-            // Wait until the child has taken 'a' (proof it started acquiring).
             $deadline = microtime(true) + 10.0;
 
             while ($this->probeFree($this->tableLockPath('a'), 'sh')) {
@@ -834,8 +803,6 @@ final class LockManagerTest
                 usleep(2_000);
             }
 
-            // While parked on 'b', 'c' must still be free: sorted order means
-            // 'c' comes last.
             Assert::true($this->probeFree($this->tableLockPath('c'), 'sh'));
 
             $this->releaseHolder($holder);
@@ -864,7 +831,7 @@ final class LockManagerTest
         );
 
         try {
-            $manager = new TableLockManager(self::TMP_DIR, 0.1);
+            $manager = new TableLockManager(self::tmpDirRoot(), 0.1);
 
             try {
                 $manager->withServiceFile('meta.json', static fn (): int => 1);
@@ -877,12 +844,10 @@ final class LockManagerTest
         }
     }
 
-    // -- deleteTableLock ---------------------------------------------------
-
     #[Test]
     public function deleteTableLockRemovesFileAndAllowsReacquisition(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $manager->withLocks(
             ['users' => 'ex'],
@@ -894,7 +859,6 @@ final class LockManagerTest
 
         Assert::false(file_exists($this->tableLockPath('users')));
 
-        // A fresh lock cycle recreates the file and works.
         $result = $manager->withLocks(
             ['users' => 'ex'],
             null,
@@ -907,7 +871,7 @@ final class LockManagerTest
     #[Test]
     public function deleteTableLockWithoutHoldingExThrows(): void
     {
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         try {
             $manager->deleteTableLock('users');
@@ -916,7 +880,6 @@ final class LockManagerTest
             Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
         }
 
-        // Under SH only — still forbidden.
         $manager->withLocks(
             ['users' => 'sh'],
             null,
@@ -936,10 +899,7 @@ final class LockManagerTest
     #[Test]
     public function deleteTableLockKeepsExclusionUntilFrameEnd(): void
     {
-        // A waiter parked on the lock must NOT enter the critical section
-        // when the holder deletes the lock file mid-frame: only the frame
-        // exit releases it.
-        $manager = new TableLockManager(self::TMP_DIR);
+        $manager = new TableLockManager(self::tmpDirRoot());
 
         $code = <<<'PHP'
             require $argv[1];
@@ -963,11 +923,10 @@ final class LockManagerTest
             function () use ($manager, $code): void {
                 $child = $this->spawnPhp($code, [
                     \dirname(__DIR__, 2) . '/vendor/autoload.php',
-                    self::TMP_DIR,
+                    self::tmpDirRoot(),
                 ]);
                 stream_set_blocking($child['pipes'][1], false);
 
-                // Let the waiter park on the lock, then drop the lock file.
                 usleep(150_000);
                 $manager->deleteTableLock('users');
                 usleep(300_000);
@@ -979,7 +938,6 @@ final class LockManagerTest
             },
         );
 
-        // Frame closed — now the waiter must get in and finish.
         $child = $this->pendingChild;
         \assert($child !== null);
         $this->pendingChild = null;
@@ -993,17 +951,10 @@ final class LockManagerTest
     #[Test]
     public function staleCachedHandleCannotBypassRecreatedLockFile(): void
     {
-        // Regression for the two-EX-holders scenario: manager A cached a
-        // handle to the old lock file inode; the table was dropped
-        // (deleteTableLock) and re-created; a fresh process holds EX on the
-        // NEW lock file. A's next acquisition must contend with the new
-        // file — not silently succeed on the orphaned inode.
-        $managerA = new TableLockManager(self::TMP_DIR, 0.2);
+        $managerA = new TableLockManager(self::tmpDirRoot(), 0.2);
 
-        // Populate A's handle cache.
         $managerA->withLocks(['users' => 'ex'], null, static fn (): int => 1);
 
-        // Drop + recreate cycle.
         $managerA->withLocks(
             ['users' => 'ex'],
             null,
@@ -1012,7 +963,6 @@ final class LockManagerTest
             },
         );
 
-        // A fresh holder takes EX on the newly created lock file.
         $holder = $this->spawnManagerHolder('users');
 
         try {
@@ -1032,7 +982,6 @@ final class LockManagerTest
             $this->releaseHolder($holder);
         }
 
-        // After the holder exits, A re-syncs onto the new file and works.
         $result = $managerA->withLocks(
             ['users' => 'ex'],
             null,
@@ -1041,21 +990,19 @@ final class LockManagerTest
         Assert::same($result, 'resynced');
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function tableLockPath(string $table): string
     {
-        return self::TMP_DIR . '/.locks/table.' . $table . '.lock';
+        return self::tmpDirRoot() . '/.locks/table.' . $table . '.lock';
     }
 
     private function serviceLockPath(string $file): string
     {
-        return self::TMP_DIR . '/.locks/svc.' . $file . '.lock';
+        return self::tmpDirRoot() . '/.locks/svc.' . $file . '.lock';
     }
 
     private function dbLockPath(): string
     {
-        return self::TMP_DIR . '/.locks/db.lock';
+        return self::tmpDirRoot() . '/.locks/db.lock';
     }
 
     /**
@@ -1154,7 +1101,7 @@ final class LockManagerTest
 
         $child = $this->spawnPhp($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
-            self::TMP_DIR,
+            self::tmpDirRoot(),
             $table,
         ]);
         $line = fgets($child['pipes'][1]);
@@ -1240,5 +1187,10 @@ final class LockManagerTest
         }
 
         rmdir($path);
+    }
+
+    private static function tmpDirRoot(): string
+    {
+        return TempDir::root('jp-lock-tests');
     }
 }

@@ -38,10 +38,19 @@ final class User
 }
 ```
 
-Only the constructor's promoted parameters are mapped. Columns the DTO omits
-keep the array-core rules (a missing nullable column is `null`, a missing
-non-nullable one is an error on insert). Reading is reflection-free — the map
-is compiled once at registration.
+Only the constructor's promoted parameters are mapped, of **any visibility**
+(`public`, `protected`, `private`) — values are read through a closure bound to
+the class scope, so a non-nullable `private` property with a non-empty value
+never raises a false `NULL_NOT_ALLOWED`. Inherited `private` properties of a
+parent class are not supported — a mapped property is declared on the DTO
+itself. Columns the DTO omits keep the array-core rules (a missing nullable
+column is `null`, a missing non-nullable one is an error on insert). Reading is
+reflection-free per row — the map (and its reader closure) is compiled once at
+registration.
+
+Every mapped property's type must be a single named type: untyped, `union`,
+`intersection` and `mixed` are rejected at compile time with a precise message
+(`DTO_SCHEMA_MISMATCH`).
 
 ## Registration
 
@@ -68,14 +77,17 @@ enum backing must all line up. Any mismatch throws `StorageException`
 | `<type>\|null` | a nullable property `?T` |
 
 Temporal columns become real `DateTimeImmutable` objects; the timezone
-conversion (UTC on disk, local in code) is the same as the array API — see
-[Schema model → Temporal types](04-schema-model.md#temporal-types-and-timezones).
+conversion is the same as the array API: `datetime`/`datetimez` are stored in
+UTC and presented locally, while `date`/`time`/`timez` are verbatim (wall-clock)
+— see [Schema model → Temporal types](04-schema-model.md#temporal-types-and-timezones).
 
 ## Names — snake_case ↔ camelCase
 
-By default a property maps to the snake_case form of its name (`createdAt` →
-`created_at`), so no attribute is needed for the common case. Only a genuinely
-irregular column name needs an override:
+By default a property maps to the snake_case form of its name, splitting acronym
+runs correctly: `createdAt` → `created_at`, `userID` → `user_id`, `HTTPStatus` →
+`http_status`, `APIKey` → `api_key`. No attribute is needed for the common case.
+`#[JsonProviderColumn("...")]` is the standard escape hatch for a column name the
+strategy cannot derive (a genuinely irregular one):
 
 ```php
 use AV\JsonProvider\Mapping\Attribute\JsonProviderColumn;
@@ -85,6 +97,15 @@ public function __construct(
     public string $title,
 ) {}
 ```
+
+If the derived column is absent from the schema, the error names the property and
+points at `#[JsonProviderColumn]`.
+
+## One DTO per table
+
+A table binds exactly one DTO class. Re-registering the same class is an
+idempotent no-op; binding a **different** class to a table that already has one
+raises `DTO_ALREADY_REGISTERED` (unregister the current one first).
 
 ## Enums
 

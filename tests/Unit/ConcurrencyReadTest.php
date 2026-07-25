@@ -10,6 +10,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -23,8 +24,6 @@ use Testo\Test;
  */
 final class ConcurrencyReadTest
 {
-    private const string DB_PATH = '/tmp/jp-read-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -32,9 +31,9 @@ final class ConcurrencyReadTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -64,14 +63,12 @@ final class ConcurrencyReadTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
     public function fullScanIsLockFreeEvenUnderForeignTableEx(): void
     {
-        // A foreign process holds the table EX lock; a full scan must not
-        // block on it (level 1 of the reader model takes no locks at all).
         $holder = $this->spawnFlockHolder(
             $this->dbDir . '/.locks/table.events.lock',
         );
@@ -91,10 +88,6 @@ final class ConcurrencyReadTest
     #[Test]
     public function indexedSelectsStayCoherentDuringRewriteChurn(): void
     {
-        // The child endlessly deletes and re-inserts the 'b' group, which
-        // rewrites the data file and shifts line numbers. Every indexed
-        // select for 'a' must return exactly the 'a' rows: a torn
-        // index/data pair would leak 'b' rows or lose 'a' rows.
         $code = <<<'PHP'
             require $argv[1];
             $db = \AV\JsonProvider\JsonDataProvider::getInstance($argv[2]);
@@ -212,8 +205,6 @@ final class ConcurrencyReadTest
         }
     }
 
-    // -- helpers -----------------------------------------------------------
-
     /**
      * @return array{proc: resource, pipes: array<int,resource>}
      */
@@ -318,5 +309,10 @@ final class ConcurrencyReadTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-read-tests');
     }
 }

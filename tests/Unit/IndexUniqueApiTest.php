@@ -12,6 +12,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -26,7 +27,6 @@ use Testo\Test;
  */
 final class IndexUniqueApiTest
 {
-    private const string DB_PATH = '/tmp/jp-ddlindex-tests';
     private const string TABLE = 'goods';
 
     private string $dbDir;
@@ -36,9 +36,9 @@ final class IndexUniqueApiTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $this->db->createTable(TableSchema::create(
@@ -61,10 +61,8 @@ final class IndexUniqueApiTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- addIndex ------------------------------------------------------------
 
     #[Test]
     public function addIndexBuildsFileAndServesSelects(): void
@@ -136,8 +134,6 @@ final class IndexUniqueApiTest
         }
     }
 
-    // -- dropIndex -----------------------------------------------------------
-
     #[Test]
     public function dropIndexRemovesSchemaEntryAndFile(): void
     {
@@ -178,8 +174,6 @@ final class IndexUniqueApiTest
             Assert::same($e->getErrorKey(), 'INDEX_NOT_FOUND');
         }
     }
-
-    // -- addUniqueConstraint -----------------------------------------------
 
     #[Test]
     public function addUniqueOnCleanDataEnforcesFromThenOn(): void
@@ -228,7 +222,6 @@ final class IndexUniqueApiTest
     #[Test]
     public function addUniqueTreatsNullsAsNonParticipating(): void
     {
-        // Two stored null prices must not read as a duplicate pair.
         $this->db->addUniqueConstraint(
             self::TABLE,
             new UniqueConstraint('uq_price', ['price']),
@@ -280,8 +273,6 @@ final class IndexUniqueApiTest
         }
     }
 
-    // -- dropUniqueConstraint ----------------------------------------------
-
     #[Test]
     public function dropUniqueLiftsEnforcement(): void
     {
@@ -309,8 +300,6 @@ final class IndexUniqueApiTest
             Assert::same($e->getErrorKey(), 'UNIQUE_CONSTRAINT_NOT_FOUND');
         }
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function nameIndex(): IndexSchema
     {
@@ -387,5 +376,10 @@ final class IndexUniqueApiTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-ddlindex-tests');
     }
 }

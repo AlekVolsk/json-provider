@@ -9,6 +9,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -23,8 +24,6 @@ use Testo\Test;
  */
 final class IndexEquivalenceTest
 {
-    private const string DB_PATH = '/tmp/jp-ixequiv-tests';
-
     private string $dbDir;
 
     private JsonDataProvider $db;
@@ -32,9 +31,9 @@ final class IndexEquivalenceTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
 
         $columns = [
@@ -98,10 +97,8 @@ final class IndexEquivalenceTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- DESC range mirroring (ix-desc-range-swap) -------------------------
 
     #[Test]
     public function descIndexRangeOperatorsMatchFullScan(): void
@@ -129,8 +126,6 @@ final class IndexEquivalenceTest
         $this->assertSameIds('price', '=', 2.5);
         $this->assertSameIds('price', 'IN', [0.5, 4.0, 99.0]);
     }
-
-    // -- composite first-component search (ix-composite-eq-prefix) ---------
 
     #[Test]
     public function compositeEqOnFirstFieldMatchesFullScan(): void
@@ -160,8 +155,6 @@ final class IndexEquivalenceTest
         $this->assertSameIds('val', '=', 3);
         $this->assertSameIds('val', '>', 5);
     }
-
-    // -- string ranges are bytewise and index-served (Binary) --------------
 
     #[Test]
     public function stringRangeViaIndexMatchesFullScan(): void
@@ -197,8 +190,6 @@ final class IndexEquivalenceTest
         Assert::same($actual, $expected);
     }
 
-    // -- pagination through the ordering index -----------------------------
-
     #[Test]
     public function orderingIndexPaginationMatchesFullScanSlice(): void
     {
@@ -224,8 +215,6 @@ final class IndexEquivalenceTest
             );
         }
     }
-
-    // -- distinct never paginates inside the index path --------------------
 
     #[Test]
     public function distinctWithOrderingIndexPaginatesAfterDedup(): void
@@ -268,8 +257,6 @@ final class IndexEquivalenceTest
 
         Assert::same($pages, \array_slice($full, 0, \count($pages)));
     }
-
-    // -- audit regressions -------------------------------------------------
 
     #[Test]
     public function bigFloatBoundaryRangesMatchFullScan(): void
@@ -364,8 +351,6 @@ final class IndexEquivalenceTest
         Assert::same($viaIndex, $sorted, 'file order is ascending-id here');
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function assertSameIds(
         string $field,
         string $op,
@@ -417,5 +402,10 @@ final class IndexEquivalenceTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-ixequiv-tests');
     }
 }

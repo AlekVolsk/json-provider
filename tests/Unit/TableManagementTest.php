@@ -17,6 +17,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Tests\Support\Dto\LabelDto;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -40,8 +41,6 @@ use Testo\Test;
  */
 final class TableManagementTest
 {
-    private const string TMP = '/tmp/jp-table-mgmt-tests';
-
     private static int $seq = 0;
 
     private string $dbPath = '';
@@ -49,18 +48,16 @@ final class TableManagementTest
     #[BeforeTest]
     public function setUp(): void
     {
-        if (!is_dir(self::TMP)) {
-            mkdir(self::TMP, 0755, true);
+        if (!is_dir(self::tmpRoot())) {
+            mkdir(self::tmpRoot(), 0755, true);
         }
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->rmrf(self::TMP);
+        $this->rmrf(self::tmpRoot());
     }
-
-    // ------------------------------------------------------------------ drop
 
     #[Test]
     public function dropRemovesDataSchemaMeta(): void
@@ -122,9 +119,6 @@ final class TableManagementTest
         ));
         $this->injectRelation($db, onDelete: 'cascade', onUpdate: 'restrict');
 
-        // Dropping an unrelated table re-serializes the schema; the
-        // orders->users relation must keep its FK actions rather than silently
-        // reset to none.
         $db->dropTable('logs');
 
         $relation = $this->schemaRelations()[0] ?? [];
@@ -155,8 +149,6 @@ final class TableManagementTest
 
         Assert::null($this->dtoRegistry($db)->forTable('dto_labels'));
     }
-
-    // -------------------------------------------------------------- migrate
 
     #[Test]
     public function migrateAddsColumns(): void
@@ -218,7 +210,6 @@ final class TableManagementTest
         ));
         $db->table('t')->insertByArray(['a' => 'x', 'b' => 5]);
 
-        // add 'c' and reorder to id, b, a, c
         $db->migrateColumns(TableSchema::create(
             name: 't',
             columns: [
@@ -338,7 +329,6 @@ final class TableManagementTest
             Assert::same($key, 'MIGRATE_COLUMN_NO_DEFAULT', $type);
         }
 
-        // the nullable variant is accepted and defaults to null
         $db->migrateColumns(TableSchema::create(
             name: 'ev',
             columns: [
@@ -497,12 +487,10 @@ final class TableManagementTest
         Assert::same($key, 'TABLE_NOT_FOUND');
     }
 
-    // ------------------------------------------------------------- helpers
-
     private function makeDb(): JsonDataProvider
     {
         self::$seq++;
-        $this->dbPath = self::TMP . '/db_' . self::$seq;
+        $this->dbPath = self::tmpRoot() . '/db_' . self::$seq;
         $this->rmrf($this->dbPath);
 
         return JsonDataProvider::createDatabase(
@@ -659,5 +647,10 @@ final class TableManagementTest
         }
 
         rmdir($path);
+    }
+
+    private static function tmpRoot(): string
+    {
+        return TempDir::root('jp-table-mgmt-tests');
     }
 }

@@ -8,6 +8,7 @@ use AV\JsonProvider\Cache\RedisCache;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\SpyLogger;
+use AV\JsonProvider\Tests\Support\TempDir;
 use AV\JsonProvider\Tests\Support\ThrowingRedis;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -21,8 +22,6 @@ use Testo\Test;
  */
 final class CacheFaultToleranceTest
 {
-    private const string DB_PATH = '/tmp/jp-cachefault-tests';
-
     private string $dbDir;
 
     private SpyLogger $logger;
@@ -32,9 +31,9 @@ final class CacheFaultToleranceTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->logger = new SpyLogger();
         $this->db = JsonDataProvider::createDatabase(
             $this->dbDir,
@@ -50,7 +49,7 @@ final class CacheFaultToleranceTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -121,8 +120,6 @@ final class CacheFaultToleranceTest
         );
     }
 
-    // -- helpers -----------------------------------------------------------
-
     private function removeDir(string $path): void
     {
         if (!is_dir($path)) {
@@ -148,5 +145,10 @@ final class CacheFaultToleranceTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-cachefault-tests');
     }
 }

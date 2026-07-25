@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -24,7 +25,6 @@ use Testo\Test;
  */
 final class CrashRecoveryTest
 {
-    private const string DB_PATH = '/tmp/jp-crash-tests';
     private const string TABLE = 'events';
 
     private JsonDataProvider $db;
@@ -32,10 +32,10 @@ final class CrashRecoveryTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
         $this->db = JsonDataProvider::createDatabase(
-            self::DB_PATH . '/' . uniqid('db', true),
+            self::dbPathRoot() . '/' . uniqid('db', true),
         );
 
         $this->db->createTable(TableSchema::create(
@@ -64,10 +64,8 @@ final class CrashRecoveryTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
-
-    // -- insert lifecycle --------------------------------------------------
 
     #[Test]
     public function insertCommitsLineCountAndByteSize(): void
@@ -101,18 +99,13 @@ final class CrashRecoveryTest
         Assert::notNull($caught);
         Assert::same($this->readMeta(), $before);
 
-        // The id sequence has no gap: the probe fails before allocateId.
         $id = $this->db->insert(self::TABLE, ['name' => 'd', 'rank' => 40]);
         Assert::same($id, 4);
     }
 
-    // -- self-healing: meta drift ------------------------------------------
-
     #[Test]
     public function lineCountDriftHealsOnNextInsert(): void
     {
-        // Simulate the historical bug: meta counted a line that was never
-        // appended. byteSize is stamped accordingly stale.
         $this->patchMeta(static function (array $entry): array {
             $entry['lineCount']++;
             $entry['byteSize'] = ($entry['byteSize'] ?? 0) + 10;
@@ -133,13 +126,9 @@ final class CrashRecoveryTest
         $this->assertIndexMatchesFullScan();
     }
 
-    // -- self-healing: torn tail -------------------------------------------
-
     #[Test]
     public function validJsonTailWithoutNewlineIsSavedOnNextInsert(): void
     {
-        // A crash after the record bytes hit the disk but before "\n": the
-        // record is complete, so repair keeps it by adding the newline.
         file_put_contents(
             $this->dataPath(),
             '{"id":99,"name":"crashed","rank":5}',
@@ -157,7 +146,6 @@ final class CrashRecoveryTest
         Assert::count($crashed, 1);
         Assert::same($crashed[0]['name'], 'crashed');
 
-        // The new insert did not glue itself onto the crashed record's line.
         $fresh = $this->db->table(self::TABLE)
             ->where('name', '=', 'd')
             ->selectAllByArray();
@@ -170,8 +158,6 @@ final class CrashRecoveryTest
     #[Test]
     public function invalidTailIsTruncatedOnNextInsert(): void
     {
-        // A crash mid-record: the tail is not valid JSON and was never
-        // acknowledged, so repair truncates it.
         file_put_contents(
             $this->dataPath(),
             '{"id":99,"name":"tor',
@@ -225,15 +211,9 @@ final class CrashRecoveryTest
         Assert::same($truncated['size'], filesize($this->dataPath()));
     }
 
-    // -- self-healing: foreign append / index drift ------------------------
-
     #[Test]
     public function foreignAppendIsAbsorbedAndIndexRebuilt(): void
     {
-        // An external writer appended a full valid line without touching
-        // meta or indexes (crash between append and commitAppend looks the
-        // same). The next insert must absorb it: correct meta, rebuilt
-        // index, no data loss.
         file_put_contents(
             $this->dataPath(),
             '{"id":50,"name":"foreign","rank":25}' . "\n",
@@ -254,8 +234,6 @@ final class CrashRecoveryTest
 
         $this->assertIndexMatchesFullScan();
     }
-
-    // -- lazy v1 -> v2 meta upgrade ----------------------------------------
 
     #[Test]
     public function metaV1WithoutByteSizeIsUpgradedOnFirstInsert(): void
@@ -278,8 +256,6 @@ final class CrashRecoveryTest
         $rows = $this->db->table(self::TABLE)->selectAllByArray();
         Assert::count($rows, 4);
     }
-
-    // -- allocateId contract -----------------------------------------------
 
     #[Test]
     public function allocateIdDoesNotTouchLineCountOrByteSize(): void
@@ -307,7 +283,6 @@ final class CrashRecoveryTest
     #[Test]
     public function idGapFromUncommittedAllocateIsAcceptedBySequence(): void
     {
-        // Simulate a crash between allocateId and append: the id is burned.
         $storage = new JsonStorage($this->dbPath());
         $meta = new \AV\JsonProvider\Registry\MetaRegistry($storage);
         $meta->allocateId(self::TABLE);
@@ -319,8 +294,6 @@ final class CrashRecoveryTest
         $rows = $this->db->table(self::TABLE)->selectAllByArray();
         Assert::count($rows, 4);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     private function dbPath(): string
     {
@@ -436,5 +409,10 @@ final class CrashRecoveryTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-crash-tests');
     }
 }

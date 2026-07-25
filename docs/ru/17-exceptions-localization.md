@@ -109,10 +109,13 @@ $db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
 | `INVALID_SORT_DIRECTION` | направление orderBy не "asc"/"desc" |
 | `INVALID_LIMIT` | отрицательный limit |
 | `INVALID_OFFSET` | отрицательный offset |
-| `INVALID_TEMPORAL_VALUE` | дата/время не в принятом системном формате |
+| `INVALID_TEMPORAL_VALUE` | дата/время не в принятом системном формате (в т.ч. TZ-оффсет вне ±14:00) |
 | `ZERO_DATE` | передана нулевая дата (`0000-00-00`) |
+| `TEMPORAL_FRACTION_UNSUPPORTED` | доли секунды не приняты типом (дробь у секундного типа или >3 знаков у миллисекундного) |
+| `LIKE_ON_INSTANT_UNSUPPORTED` | LIKE по колонке datetime/datetimez (хранится в UTC) |
 | `NUMERIC_PART_OUT_OF_RANGE` | значение `month`/`day` вне допустимого диапазона |
 | `DTO_SCHEMA_MISMATCH` | зарегистрированный DTO не соответствует схеме таблицы |
 | `DTO_NOT_REGISTERED` | объектный метод на таблице без привязанного DTO |
+| `DTO_ALREADY_REGISTERED` | к таблице уже привязан другой DTO-класс — сначала unregister |
 | `INVALID_ENUM_VALUE` | хранимое значение не является кейсом enum из DTO |
 | `DTO_HYDRATION_FAILED` | хранимое значение нельзя гидрировать в DTO |

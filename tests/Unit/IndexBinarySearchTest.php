@@ -13,6 +13,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -27,8 +28,6 @@ use Testo\Test;
  */
 final class IndexBinarySearchTest
 {
-    private const string DB_PATH = '/tmp/jp-ixbinsearch-tests';
-
     private string $dbDir;
 
     private NdjsonStorage $storage;
@@ -38,9 +37,9 @@ final class IndexBinarySearchTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
 
-        $this->dbDir = self::DB_PATH . '/' . uniqid('db', true);
+        $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         mkdir($this->dbDir . '/t', 0755, true);
         $this->storage = new NdjsonStorage($this->dbDir);
         $this->manager = new IndexManager($this->storage);
@@ -49,7 +48,7 @@ final class IndexBinarySearchTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::DB_PATH);
+        $this->removeDir(self::dbPathRoot());
     }
 
     #[Test]
@@ -112,8 +111,6 @@ final class IndexBinarySearchTest
         $this->assertAllOperators($values, $probes, SortDirectionEnum::ASC);
         $this->assertAllOperators($values, $probes, SortDirectionEnum::DESC);
     }
-
-    // -- helpers -----------------------------------------------------------
 
     /**
      * The declared column type matching the homogeneous dataset — the
@@ -325,5 +322,10 @@ final class IndexBinarySearchTest
         }
 
         rmdir($path);
+    }
+
+    private static function dbPathRoot(): string
+    {
+        return TempDir::root('jp-ixbinsearch-tests');
     }
 }

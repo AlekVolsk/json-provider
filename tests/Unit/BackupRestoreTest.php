@@ -10,6 +10,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Backup\BackupManifest;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
 use AV\JsonProvider\Tests\Support\Fixture;
+use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
@@ -31,22 +32,19 @@ use Testo\Test;
  */
 final class BackupRestoreTest
 {
-    private const string TMP_DIR = '/tmp/jp-backup-tests';
-    private const string ADOPT_DIR = '/tmp/jp-adopt-tests';
-
     #[BeforeTest]
     public function setUp(): void
     {
-        if (!is_dir(self::TMP_DIR)) {
-            mkdir(self::TMP_DIR, 0755, true);
+        if (!is_dir(self::tmpDirRoot())) {
+            mkdir(self::tmpDirRoot(), 0755, true);
         }
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        if (is_dir(self::TMP_DIR)) {
-            $entries = glob(self::TMP_DIR . '/*');
+        if (is_dir(self::tmpDirRoot())) {
+            $entries = glob(self::tmpDirRoot() . '/*');
 
             if ($entries !== false) {
                 foreach ($entries as $f) {
@@ -57,13 +55,13 @@ final class BackupRestoreTest
             }
         }
 
-        $this->removeDir(self::ADOPT_DIR);
+        $this->removeDir(self::adoptDirRoot());
     }
 
     #[Test]
     public function backupCreatesArchiveAtExplicitPath(): void
     {
-        $path = self::TMP_DIR . '/explicit.tar.gz';
+        $path = self::tmpDirRoot() . '/explicit.tar.gz';
         $written = Fixture::db()->backup($path);
 
         Assert::same($written, $path);
@@ -74,9 +72,11 @@ final class BackupRestoreTest
     #[Test]
     public function backupGeneratesNameWhenDestinationIsDirectory(): void
     {
-        $written = Fixture::db()->backup(self::TMP_DIR);
+        $written = Fixture::db()->backup(self::tmpDirRoot());
 
-        Assert::true(str_starts_with($written, self::TMP_DIR . '/backup-'));
+        Assert::true(
+            str_starts_with($written, self::tmpDirRoot() . '/backup-'),
+        );
         Assert::true(str_ends_with($written, '.tar.gz'));
         Assert::true(file_exists($written));
     }
@@ -87,13 +87,13 @@ final class BackupRestoreTest
         Expect::exception(StorageException::class)
             ->withMessageContaining('outside the DB directory');
 
-        Fixture::db()->backup(Fixture::DB_PATH . '/internal.tar.gz');
+        Fixture::db()->backup(Fixture::dbPath() . '/internal.tar.gz');
     }
 
     #[Test]
     public function backupRefusesExistingFile(): void
     {
-        $path = self::TMP_DIR . '/existing.tar.gz';
+        $path = self::tmpDirRoot() . '/existing.tar.gz';
         file_put_contents($path, 'not really an archive');
 
         Expect::exception(StorageException::class)
@@ -111,7 +111,7 @@ final class BackupRestoreTest
         $beforeCount = $tbl->count();
         $beforeRows = $tbl->selectAllByArray();
 
-        $archive = $db->backup(self::TMP_DIR . '/roundtrip.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/roundtrip.tar.gz');
 
         $newId = $tbl->insertByArray(['name' => 'TempBackup', 'sort' => 4242]);
         Assert::same($tbl->count(), $beforeCount + 1);
@@ -132,10 +132,10 @@ final class BackupRestoreTest
     {
         $db = Fixture::db();
 
-        $archive = $db->backup(self::TMP_DIR . '/rebuild.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/rebuild.tar.gz');
 
         file_put_contents(
-            Fixture::DB_PATH . '/products/idx_category.index.ndjson',
+            Fixture::dbPath() . '/products/idx_category.index.ndjson',
             "GARBAGE\n",
         );
 
@@ -149,9 +149,9 @@ final class BackupRestoreTest
     public function restoreRollsBackOnSchemaMismatch(): void
     {
         $db = Fixture::db();
-        $archive = $db->backup(self::TMP_DIR . '/mismatch.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/mismatch.tar.gz');
 
-        $tamperedPath = self::TMP_DIR . '/tampered.tar.gz';
+        $tamperedPath = self::tmpDirRoot() . '/tampered.tar.gz';
         $this->buildTamperedArchive($archive, $tamperedPath);
 
         $beforeCount = $db->table('products')->count();
@@ -172,13 +172,13 @@ final class BackupRestoreTest
         Expect::exception(StorageException::class)
             ->withMessageContaining('archive not found');
 
-        Fixture::db()->restore(self::TMP_DIR . '/does-not-exist.tar.gz');
+        Fixture::db()->restore(self::tmpDirRoot() . '/does-not-exist.tar.gz');
     }
 
     #[Test]
     public function restoreThrowsOnCorruptArchive(): void
     {
-        $path = self::TMP_DIR . '/garbage.tar.gz';
+        $path = self::tmpDirRoot() . '/garbage.tar.gz';
         file_put_contents($path, 'this is definitely not a tar.gz');
 
         Expect::exception(StorageException::class)
@@ -191,7 +191,7 @@ final class BackupRestoreTest
     public function manifestCarriesCountersAndChecksums(): void
     {
         $db = Fixture::db();
-        $archive = $db->backup(self::TMP_DIR . '/manifest-v2.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/manifest-v2.tar.gz');
 
         $manifest = $this->readManifestFromArchive($archive);
 
@@ -234,9 +234,9 @@ final class BackupRestoreTest
     public function tamperedTableMemberFailsChecksumAndLeavesDbIntact(): void
     {
         $db = Fixture::db();
-        $archive = $db->backup(self::TMP_DIR . '/tamper-member.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/tamper-member.tar.gz');
 
-        $tampered = self::TMP_DIR . '/tamper-member-x.tar.gz';
+        $tampered = self::tmpDirRoot() . '/tamper-member-x.tar.gz';
         copy($archive, $tampered);
         $phar = new \PharData($tampered);
         $phar->addFromString(
@@ -264,9 +264,9 @@ final class BackupRestoreTest
     public function legacyArchiveWithoutChecksumsRestores(): void
     {
         $db = Fixture::db();
-        $archive = $db->backup(self::TMP_DIR . '/legacy.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/legacy.tar.gz');
 
-        $legacy = self::TMP_DIR . '/legacy-x.tar.gz';
+        $legacy = self::tmpDirRoot() . '/legacy-x.tar.gz';
         copy($archive, $legacy);
         $this->stripManifestV2Fields($legacy);
 
@@ -291,7 +291,7 @@ final class BackupRestoreTest
         $tempId = $tbl->insertByArray(['name' => 'HighWater', 'sort' => 1]);
         $tbl->deleteById($tempId);
 
-        $archive = $db->backup(self::TMP_DIR . '/highwater.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/highwater.tar.gz');
         $db->restore($archive);
 
         $nextId = $tbl->insertByArray(['name' => 'AfterRestore', 'sort' => 2]);
@@ -310,9 +310,9 @@ final class BackupRestoreTest
     public function rollbackRestoresDataAndCountersFromSnapshot(): void
     {
         $db = Fixture::db();
-        $archive = $db->backup(self::TMP_DIR . '/rollback-src.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/rollback-src.tar.gz');
 
-        $broken = self::TMP_DIR . '/rollback-broken.tar.gz';
+        $broken = self::tmpDirRoot() . '/rollback-broken.tar.gz';
         copy($archive, $broken);
         $this->stripManifestV2Fields($broken);
         $phar = new \PharData($broken);
@@ -349,24 +349,24 @@ final class BackupRestoreTest
     public function restoreSweepsUndeclaredFilesFromTableDirs(): void
     {
         $db = Fixture::db();
-        $archive = $db->backup(self::TMP_DIR . '/sweep.tar.gz');
+        $archive = $db->backup(self::tmpDirRoot() . '/sweep.tar.gz');
 
         file_put_contents(
-            Fixture::DB_PATH . '/products/orphan_stray.txt',
+            Fixture::dbPath() . '/products/orphan_stray.txt',
             'junk',
         );
         file_put_contents(
-            Fixture::DB_PATH . '/products/leftover.ndjson.tmp',
+            Fixture::dbPath() . '/products/leftover.ndjson.tmp',
             'half-written',
         );
 
         $db->restore($archive);
 
         Assert::false(
-            file_exists(Fixture::DB_PATH . '/products/orphan_stray.txt'),
+            file_exists(Fixture::dbPath() . '/products/orphan_stray.txt'),
         );
         Assert::false(
-            file_exists(Fixture::DB_PATH . '/products/leftover.ndjson.tmp'),
+            file_exists(Fixture::dbPath() . '/products/leftover.ndjson.tmp'),
         );
 
         $report = $db->validate();
@@ -383,12 +383,12 @@ final class BackupRestoreTest
         $db = Fixture::db();
 
         file_put_contents(
-            Fixture::DB_PATH . '/products/concurrent.ndjson.tmp',
+            Fixture::dbPath() . '/products/concurrent.ndjson.tmp',
             'in-flight',
         );
 
-        $archive = $db->backup(self::TMP_DIR . '/no-tmp.tar.gz');
-        unlink(Fixture::DB_PATH . '/products/concurrent.ndjson.tmp');
+        $archive = $db->backup(self::tmpDirRoot() . '/no-tmp.tar.gz');
+        unlink(Fixture::dbPath() . '/products/concurrent.ndjson.tmp');
 
         $members = $this->listArchiveMembers($archive);
         sort($members);
@@ -413,10 +413,10 @@ final class BackupRestoreTest
     public function adoptRestoreMaterializesArchiveIntoEmptyDatabase(): void
     {
         $source = Fixture::db();
-        $archive = $source->backup(self::TMP_DIR . '/adopt-src.tar.gz');
+        $archive = $source->backup(self::tmpDirRoot() . '/adopt-src.tar.gz');
 
         $target = JsonDataProvider::createDatabase(
-            self::ADOPT_DIR . '/' . uniqid('db', true),
+            self::adoptDirRoot() . '/' . uniqid('db', true),
         );
 
         $target->restore($archive, adoptArchivedSchema: true);
@@ -450,10 +450,10 @@ final class BackupRestoreTest
     public function adoptRestoreRefusesExtraTablesWithoutPrune(): void
     {
         $source = Fixture::db();
-        $archive = $source->backup(self::TMP_DIR . '/adopt-extra.tar.gz');
+        $archive = $source->backup(self::tmpDirRoot() . '/adopt-extra.tar.gz');
 
         $target = JsonDataProvider::createDatabase(
-            self::ADOPT_DIR . '/' . uniqid('db', true),
+            self::adoptDirRoot() . '/' . uniqid('db', true),
         );
         $target->createTable(TableSchema::create(
             name: 'local_only',
@@ -491,9 +491,9 @@ final class BackupRestoreTest
     public function adoptRejectsInvalidArchivedSchema(): void
     {
         $source = Fixture::db();
-        $archive = $source->backup(self::TMP_DIR . '/adopt-bad.tar.gz');
+        $archive = $source->backup(self::tmpDirRoot() . '/adopt-bad.tar.gz');
 
-        $bad = self::TMP_DIR . '/adopt-bad-x.tar.gz';
+        $bad = self::tmpDirRoot() . '/adopt-bad-x.tar.gz';
         copy($archive, $bad);
         $this->stripManifestV2Fields($bad);
         $this->rewriteArchivedSchema(
@@ -511,7 +511,7 @@ final class BackupRestoreTest
         );
 
         $target = JsonDataProvider::createDatabase(
-            self::ADOPT_DIR . '/' . uniqid('db', true),
+            self::adoptDirRoot() . '/' . uniqid('db', true),
         );
 
         Expect::exception(StorageException::class);
@@ -523,9 +523,9 @@ final class BackupRestoreTest
     public function adoptRejectsTraversalTableName(): void
     {
         $source = Fixture::db();
-        $archive = $source->backup(self::TMP_DIR . '/adopt-trav.tar.gz');
+        $archive = $source->backup(self::tmpDirRoot() . '/adopt-trav.tar.gz');
 
-        $bad = self::TMP_DIR . '/adopt-trav-x.tar.gz';
+        $bad = self::tmpDirRoot() . '/adopt-trav-x.tar.gz';
         copy($archive, $bad);
         $this->stripManifestV2Fields($bad);
         $this->rewriteArchivedSchema(
@@ -541,7 +541,7 @@ final class BackupRestoreTest
         );
 
         $target = JsonDataProvider::createDatabase(
-            self::ADOPT_DIR . '/' . uniqid('db', true),
+            self::adoptDirRoot() . '/' . uniqid('db', true),
         );
 
         Expect::exception(StorageException::class);
@@ -553,9 +553,9 @@ final class BackupRestoreTest
     public function tamperedSchemaMemberFailsChecksumBeforeAdopt(): void
     {
         $source = Fixture::db();
-        $archive = $source->backup(self::TMP_DIR . '/adopt-sum.tar.gz');
+        $archive = $source->backup(self::tmpDirRoot() . '/adopt-sum.tar.gz');
 
-        $bad = self::TMP_DIR . '/adopt-sum-x.tar.gz';
+        $bad = self::tmpDirRoot() . '/adopt-sum-x.tar.gz';
         copy($archive, $bad);
         $this->rewriteArchivedSchema(
             $bad,
@@ -570,7 +570,7 @@ final class BackupRestoreTest
         );
 
         $target = JsonDataProvider::createDatabase(
-            self::ADOPT_DIR . '/' . uniqid('db', true),
+            self::adoptDirRoot() . '/' . uniqid('db', true),
         );
 
         try {
@@ -705,5 +705,15 @@ final class BackupRestoreTest
         );
 
         $phar->addFromString('manifest.json', (string)$encoded);
+    }
+
+    private static function tmpDirRoot(): string
+    {
+        return TempDir::root('jp-backup-tests');
+    }
+
+    private static function adoptDirRoot(): string
+    {
+        return TempDir::root('jp-adopt-tests');
     }
 }
