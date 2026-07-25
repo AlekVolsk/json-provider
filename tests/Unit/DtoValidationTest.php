@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\NameStrategy;
@@ -110,10 +110,96 @@ final class DtoValidationTest
         try {
             $this->db->registerDto(VisibilityDtoTwin::class);
             Assert::fail('a second DTO on the same table must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'DTO_ALREADY_REGISTERED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'DtoAlreadyRegistered');
             Assert::string($e->getMessage())->contains('VisibilityDto');
         }
+    }
+
+    /**
+     * The point of unregisterDto: a table can be rebound to another class
+     * once the live binding is released — and the new class really drives
+     * hydration afterwards.
+     */
+    #[Test]
+    public function unregisterDtoReleasesTheTableForAnotherClass(): void
+    {
+        $this->db->registerDto(VisibilityDto::class);
+        $id = $this->db->table('dto_visibility')->insert(
+            new VisibilityDto(0, 'note', 'tag'),
+        );
+
+        $same = $this->db->unregisterDto('dto_visibility');
+        Assert::same($same, $this->db, 'unregisterDto must stay fluent');
+
+        $this->db->registerDto(VisibilityDtoTwin::class);
+
+        $row = $this->db->table('dto_visibility')
+            ->where('id', '=', $id)->selectOne();
+        Assert::instanceOf(
+            $row,
+            VisibilityDtoTwin::class,
+            'the rebound class must drive hydration',
+        );
+        Assert::same($row->note(), 'note');
+    }
+
+    /**
+     * Unbinding is process-local: the stored rows and the array surface
+     * are untouched, only the object methods lose their map.
+     */
+    #[Test]
+    public function unregisteredTableFallsBackToTheArraySurface(): void
+    {
+        $this->db->registerDto(VisibilityDto::class);
+        $id = $this->db->table('dto_visibility')->insert(
+            new VisibilityDto(0, 'kept', 'tag'),
+        );
+
+        $this->db->unregisterDto('dto_visibility');
+
+        $row = $this->db->table('dto_visibility')
+            ->where('id', '=', $id)->selectOneByArray();
+        \assert(\is_array($row));
+        Assert::same($row['note'], 'kept');
+
+        try {
+            $this->db->table('dto_visibility')->selectOne();
+            Assert::fail('object methods must fail without a binding');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'DtoNotRegistered');
+        }
+    }
+
+    #[Test]
+    public function unregisterDtoIsLoudOnNothingToUnbind(): void
+    {
+        try {
+            $this->db->unregisterDto('dto_visibility');
+            Assert::fail('unbinding an unbound table must be loud');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'DtoNotRegistered');
+        }
+    }
+
+    /**
+     * The argument is a table name, so a class-string cannot be mistaken
+     * for one and silently unbind nothing.
+     */
+    #[Test]
+    public function unregisterDtoRejectsAClassString(): void
+    {
+        $this->db->registerDto(VisibilityDto::class);
+
+        try {
+            $this->db->unregisterDto(VisibilityDto::class);
+            Assert::fail('a class-string is not a table name');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidTableName');
+        }
+
+        $row = $this->db->table('dto_visibility')->selectOne();
+        Assert::null($row, 'the binding must survive the rejected call');
     }
 
     #[Test]
@@ -168,8 +254,8 @@ final class DtoValidationTest
         try {
             DtoMap::compile(DerivedMissDto::class, $schema);
             Assert::fail('a missing derived column must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'DTO_SCHEMA_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'DtoPropertyColumnDerivedMiss');
             Assert::string($e->getMessage())->contains('userName');
             Assert::string($e->getMessage())->contains('user_name');
             Assert::string($e->getMessage())->contains('JsonProviderColumn');
@@ -187,7 +273,7 @@ final class DtoValidationTest
         try {
             DtoMap::compile(UntypedPropertyDto::class, $schema);
             Assert::fail('an untyped property must be rejected');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::string($e->getMessage())->contains('no type declaration');
         }
     }
@@ -203,7 +289,7 @@ final class DtoValidationTest
         try {
             DtoMap::compile(UnionPropertyDto::class, $schema);
             Assert::fail('a union type must be rejected');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::string($e->getMessage())->contains('union types');
         }
     }
@@ -219,7 +305,7 @@ final class DtoValidationTest
         try {
             DtoMap::compile(IntersectionPropertyDto::class, $schema);
             Assert::fail('an intersection type must be rejected');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::string($e->getMessage())->contains('intersection types');
         }
     }
@@ -235,7 +321,7 @@ final class DtoValidationTest
         try {
             DtoMap::compile(MixedPropertyDto::class, $schema);
             Assert::fail('a mixed type must be rejected');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::string($e->getMessage())->contains('mixed');
             Assert::false(
                 str_contains($e->getMessage(), 'nullability'),
@@ -260,9 +346,9 @@ final class DtoValidationTest
                     . 'unreadable by the mapper and must be rejected '
                     . 'at compile time, not silently written as null',
             );
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $message = $e->getMessage();
-            Assert::same($e->getErrorKey(), 'DTO_SCHEMA_MISMATCH');
+            Assert::same($e->getErrorKey(), 'DtoPropertyInheritedPrivate');
             Assert::string($message)->contains('secret');
             Assert::string($message)->contains('InheritedPrivateBase');
         }

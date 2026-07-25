@@ -92,18 +92,19 @@ foreach ((new InitialMigration())->tables() as $schema) {
 }
 ```
 
-**Пропускать сбойный шаг с логированием** уместно, когда шаги независимы: незачем ронять создание остальных таблиц из-за одной. Ошибку ловим, пишем в лог и продолжаем; а `TABLE_ALREADY_EXISTS` заодно делает повторный прогон идемпотентным.
+**Пропускать сбойный шаг с логированием** уместно, когда шаги независимы: незачем ронять создание остальных таблиц из-за одной. Ошибку ловим, пишем в лог и продолжаем; а `TableAlreadyExists` заодно делает повторный прогон идемпотентным.
 
 ```php
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 $db = Db::provider();
 
 foreach ((new InitialMigration())->tables() as $schema) {
     try {
         $db->createTable($schema);
-    } catch (StorageException $e) {
-        if ($e->getErrorKey() === 'TABLE_ALREADY_EXISTS') {
+    } catch (JsonProviderException $e) {
+        if ($e->error === JsonProviderErrorEn::TableAlreadyExists) {
             continue;   // уже применено — повторный прогон безопасен
         }
 

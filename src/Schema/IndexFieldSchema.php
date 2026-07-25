@@ -14,5 +14,6 @@ final class IndexFieldSchema
     public function __construct(
         public readonly string $field,
         public readonly SortDirectionEnum $direction,
-    ) {}
+    ) {
+    }
 }

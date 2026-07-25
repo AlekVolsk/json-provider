@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Query;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderQueryException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Comparison operators for record filtering.
@@ -114,7 +115,8 @@ enum FilterOperatorEnum: string
         $result = preg_match('/^' . $regex . '$/s', $recordValue);
 
         if ($result === false) {
-            throw StorageException::likeEvaluationFailed(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::LikeEvaluationFailed,
                 $conditionValue,
                 preg_last_error_msg(),
             );

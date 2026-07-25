@@ -21,7 +21,7 @@ $db = JsonDataProvider::getInstance('/path', new RedisCache($redis, ttl: 300));
 $db = JsonDataProvider::getInstance('/path', new InMemoryCache());
 ```
 
-Only APCu carries an explicit extension check in its constructor (`EXTENSION_REQUIRED`); for Redis/Memcached the client type hint itself requires the extension — without it `new RedisCache(...)`/`new MemcachedCache(...)` fails with a `TypeError` before the constructor runs.
+Only APCu carries an explicit extension check in its constructor (`ExtensionRequired`); for Redis/Memcached the client type hint itself requires the extension — without it `new RedisCache(...)`/`new MemcachedCache(...)` fails with a `TypeError` before the constructor runs.
 
 ## Key format: namespace and version tag
 

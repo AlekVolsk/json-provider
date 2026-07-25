@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Backup\BackupManifest;
@@ -84,8 +84,8 @@ final class BackupRestoreTest
     #[Test]
     public function backupRefusesDestinationInsideDb(): void
     {
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('outside the DB directory');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('outside the database directory');
 
         Fixture::db()->backup(Fixture::dbPath() . '/internal.tar.gz');
     }
@@ -96,7 +96,7 @@ final class BackupRestoreTest
         $path = self::tmpDirRoot() . '/existing.tar.gz';
         file_put_contents($path, 'not really an archive');
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('already exists');
 
         Fixture::db()->backup($path);
@@ -159,7 +159,7 @@ final class BackupRestoreTest
         try {
             $db->restore($tamperedPath);
             Assert::fail('restore should have thrown on schema mismatch');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::string(strtolower($e->getMessage()))->contains('schema');
         }
 
@@ -169,8 +169,8 @@ final class BackupRestoreTest
     #[Test]
     public function restoreThrowsOnMissingArchive(): void
     {
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('archive not found');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('archive was not found');
 
         Fixture::db()->restore(self::tmpDirRoot() . '/does-not-exist.tar.gz');
     }
@@ -181,7 +181,7 @@ final class BackupRestoreTest
         $path = self::tmpDirRoot() . '/garbage.tar.gz';
         file_put_contents($path, 'this is definitely not a tar.gz');
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('archive');
 
         Fixture::db()->restore($path);
@@ -251,8 +251,8 @@ final class BackupRestoreTest
         try {
             $db->restore($tampered);
             Assert::fail('checksum mismatch must abort the restore');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'BACKUP_CHECKSUM_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'BackupChecksumMismatch');
             Assert::string($e->getMessage())
                 ->contains('tables/products.ndjson');
         }
@@ -324,8 +324,8 @@ final class BackupRestoreTest
         try {
             $db->restore($broken);
             Assert::fail('a missing member must fail the restore');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RESTORE_FAILED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RestoreRolledBack');
             Assert::string($e->getMessage())->contains('rolled back');
         }
 
@@ -464,8 +464,8 @@ final class BackupRestoreTest
         try {
             $target->restore($archive, adoptArchivedSchema: true);
             Assert::fail('extra table must block the adopt without prune');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'BACKUP_SCHEMA_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RestoreLocalTablesAbsent');
             Assert::string($e->getMessage())->contains('pruneExtraTables');
         }
 
@@ -514,7 +514,7 @@ final class BackupRestoreTest
             self::adoptDirRoot() . '/' . uniqid('db', true),
         );
 
-        Expect::exception(StorageException::class);
+        Expect::exception(JsonProviderException::class);
 
         $target->restore($bad, adoptArchivedSchema: true);
     }
@@ -544,7 +544,7 @@ final class BackupRestoreTest
             self::adoptDirRoot() . '/' . uniqid('db', true),
         );
 
-        Expect::exception(StorageException::class);
+        Expect::exception(JsonProviderException::class);
 
         $target->restore($bad, adoptArchivedSchema: true);
     }
@@ -576,8 +576,8 @@ final class BackupRestoreTest
         try {
             $target->restore($bad, adoptArchivedSchema: true);
             Assert::fail('schema tampering must fail the checksum');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'BACKUP_CHECKSUM_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'BackupChecksumMismatch');
             Assert::string($e->getMessage())
                 ->contains('information_schema.json');
         }

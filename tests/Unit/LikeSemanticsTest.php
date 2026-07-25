@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -133,8 +133,8 @@ final class LikeSemanticsTest
             $this->db->table(self::TABLE)
                 ->where('t', 'LIKE', 5)->selectAllByArray();
             Assert::fail('a non-string LIKE pattern must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'CONDITION_TYPE_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ConditionExpectsStringPattern');
         }
     }
 
@@ -163,8 +163,8 @@ final class LikeSemanticsTest
                     ->where('t', 'LIKE', $pattern, not: $not)
                     ->selectAllByArray();
                 Assert::fail('a PCRE failure must not read as a mismatch');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LIKE_EVALUATION_FAILED');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LikeEvaluationFailed');
             }
         }
     }

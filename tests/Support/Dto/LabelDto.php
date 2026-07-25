@@ -18,5 +18,6 @@ final class LabelDto
         public int $id,
         #[JsonProviderColumn('label')]
         public string $text,
-    ) {}
+    ) {
+    }
 }

@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Mapping;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderMappingException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Holds the compiled DTO map for each table that has one bound.
@@ -21,15 +22,17 @@ final class DtoRegistry
     /**
      * Binds a compiled DTO map to its table. Re-registering the SAME class is
      * an idempotent no-op; binding a DIFFERENT class to a table that already
-     * has one throws DTO_ALREADY_REGISTERED — swap it out through unregister()
-     * first, so a table can never silently serve two conflicting shapes.
+     * has one throws DTO_ALREADY_REGISTERED — swap it out through
+     * JsonDataProvider::unregisterDto() first, so a table can never silently
+     * serve two conflicting shapes.
      */
     public function register(DtoMap $map): void
     {
         $existing = $this->byTable[$map->table] ?? null;
 
         if ($existing !== null && $existing->class !== $map->class) {
-            throw StorageException::dtoAlreadyRegistered(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::DtoAlreadyRegistered,
                 $map->table,
                 $existing->class,
                 $map->class,
@@ -41,8 +44,9 @@ final class DtoRegistry
 
     /**
      * Removes the compiled DTO map bound to a table, if any. Idempotent — an
-     * unbound table is a no-op. Called when a table is dropped so a later
-     * re-create does not reuse a stale mapping.
+     * unbound table is a no-op. Called by the public unregisterDto(), and
+     * whenever a table is dropped, renamed or its DTO no longer matches the
+     * schema, so a later re-create never reuses a stale mapping.
      */
     public function unregister(string $table): void
     {

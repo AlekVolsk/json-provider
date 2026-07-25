@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\RelationSchema;
@@ -138,8 +138,8 @@ final class ForeignKeyTest
                 'hasMany with from=child resolves the FK column into the '
                     . 'users table, which has no userId',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_COLUMN_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationColumnNotFound');
         }
     }
 
@@ -168,8 +168,8 @@ final class ForeignKeyTest
                 'the mirrored hasMany describes the same canonical edge '
                     . 'and must be rejected',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_ALREADY_EXISTS');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationAlreadyExists');
         }
 
         Assert::count($this->db->relations(), 1);
@@ -233,8 +233,8 @@ final class ForeignKeyTest
         try {
             $this->db->dropRelation('posts', 'userId', 'users');
             Assert::fail('the relation is gone; the drop must fail');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationNotFound');
         }
     }
 
@@ -251,8 +251,8 @@ final class ForeignKeyTest
                 onDelete: ForeignKeyActionEnum::CASCADE,
             ));
             Assert::fail('posts has no authorId column');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_COLUMN_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationColumnNotFound');
         }
     }
 
@@ -269,8 +269,8 @@ final class ForeignKeyTest
                 onDelete: ForeignKeyActionEnum::CASCADE,
             ));
             Assert::fail('the comments table does not exist');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'TABLE_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'TableNotFound');
         }
     }
 
@@ -287,10 +287,10 @@ final class ForeignKeyTest
                 onDelete: ForeignKeyActionEnum::CASCADE,
             ));
             Assert::fail('users.note is neither the PK nor unique');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same(
                 $e->getErrorKey(),
-                'RELATION_REFERENCES_NOT_UNIQUE',
+                'RelationReferencesNotUnique',
             );
         }
     }
@@ -308,8 +308,8 @@ final class ForeignKeyTest
                 onDelete: ForeignKeyActionEnum::CASCADE,
             ));
             Assert::fail('string FK into an int PK must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_TYPE_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationTypeMismatch');
         }
 
         $this->db->addRelation(new RelationSchema(
@@ -336,8 +336,8 @@ final class ForeignKeyTest
                 onUpdate: ForeignKeyActionEnum::CASCADE,
             ));
             Assert::fail('id never changes; onUpdate on it could not fire');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_ON_UPDATE_ON_PK');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationOnUpdateOnPk');
         }
     }
 
@@ -396,10 +396,10 @@ final class ForeignKeyTest
                 onDelete: ForeignKeyActionEnum::SET_NULL,
             ));
             Assert::fail('SET NULL on a non-nullable FK cannot work');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same(
                 $e->getErrorKey(),
-                'FOREIGN_KEY_SET_NULL_NOT_NULLABLE',
+                'ForeignKeySetNullNotNullable',
             );
         }
     }
@@ -457,10 +457,10 @@ final class ForeignKeyTest
                 'dropping the uniqueness ground would let a cascade '
                     . 'delete the children of a living duplicate parent',
             );
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same(
                 $e->getErrorKey(),
-                'RELATION_REFERENCES_NOT_UNIQUE',
+                'RelationReferencesNotUnique',
             );
         }
 
@@ -494,10 +494,10 @@ final class ForeignKeyTest
                 'dropping the FK column of a live setNull relation would '
                     . 'leave every parent delete failing',
             );
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same(
                 $e->getErrorKey(),
-                'MIGRATE_FIELD_UNKNOWN_COLUMN',
+                'MigrateFieldUnknownColumnRelation',
             );
         }
 

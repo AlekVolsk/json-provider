@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Validation;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\JsonProviderQueryException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Schema\ColumnTypes;
@@ -14,9 +16,8 @@ use AV\JsonProvider\Schema\TableSchema;
 /**
  * Strict, schema-driven validation and encoding of record values.
  *
- * Types were previously descriptive only — a column declared `int` accepted
- * anything. This layer enforces the declared type on every write and converts
- * temporal values across the storage boundary:
+ * The declared column type is enforced on every write, and temporal values
+ * are converted across the storage boundary:
  *
  *  - write side (encodeForWrite / encodeConditions): the caller's local values
  *    are validated against the column type and, for instant-bearing temporal
@@ -28,8 +29,10 @@ use AV\JsonProvider\Schema\TableSchema;
  *
  * Strictness (chosen contract): a value must match the declared PHP type
  * exactly; the single widening allowed is int into a float column. `null` is
- * accepted only for `<type>|null` columns. Unknown/custom type strings are
- * passed through unchecked for backward compatibility.
+ * accepted only for `<type>|null` columns. The passthrough branch for an
+ * unknown type string is defense in depth only — the schema boundary
+ * rejects every type outside the closed ColumnTypes list, so no supported
+ * path can reach it.
  *
  * Tables without a single temporal column pay nothing on decodeRecord — it
  * short-circuits via a memoized per-schema check. encodeConditions always
@@ -37,6 +40,10 @@ use AV\JsonProvider\Schema\TableSchema;
  */
 final class ValueValidator
 {
+    private const string CONTEXT_WHERE = 'where';
+    private const string TYPE_NULL = 'null';
+    private const string TYPE_SCALAR = 'scalar';
+
     /** @var \WeakMap<TableSchema,bool> */
     private \WeakMap $temporalMemo;
 
@@ -90,7 +97,8 @@ final class ValueValidator
             }
 
             if ($requireNonNullable && !$info->nullable) {
-                throw StorageException::requiredColumnMissing(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::RequiredColumnMissing,
                     $schema->name,
                     $column,
                 );
@@ -214,10 +222,11 @@ final class ValueValidator
         $type = $schema->columns[$condition->field] ?? null;
 
         if ($type === null) {
-            throw StorageException::queryUnknownColumn(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::QueryUnknownColumn,
                 $schema->name,
                 $condition->field,
-                'where',
+                self::CONTEXT_WHERE,
             );
         }
 
@@ -277,11 +286,11 @@ final class ValueValidator
         mixed $value,
     ): array {
         if (!\is_array($value) || \count($value) !== 2) {
-            throw StorageException::conditionMalformed(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionBetweenShape,
                 $table,
                 $column,
-                'BETWEEN',
-                'expects [min, max] array of two non-null scalars',
+                FilterOperatorEnum::BETWEEN->value,
             );
         }
 
@@ -289,11 +298,11 @@ final class ValueValidator
 
         foreach ($bounds as $bound) {
             if (!\is_scalar($bound)) {
-                throw StorageException::conditionMalformed(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::ConditionBetweenShape,
                     $table,
                     $column,
-                    'BETWEEN',
-                    'expects [min, max] array of two non-null scalars',
+                    FilterOperatorEnum::BETWEEN->value,
                 );
             }
         }
@@ -302,7 +311,7 @@ final class ValueValidator
             $this->conditionScalar(
                 $table,
                 $column,
-                'BETWEEN',
+                FilterOperatorEnum::BETWEEN->value,
                 $info,
                 $bounds[0],
                 false,
@@ -310,7 +319,7 @@ final class ValueValidator
             $this->conditionScalar(
                 $table,
                 $column,
-                'BETWEEN',
+                FilterOperatorEnum::BETWEEN->value,
                 $info,
                 $bounds[1],
                 false,
@@ -328,11 +337,11 @@ final class ValueValidator
         mixed $value,
     ): array {
         if (!\is_array($value)) {
-            throw StorageException::conditionMalformed(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionInShape,
                 $table,
                 $column,
-                'IN',
-                'expects an array of scalars',
+                FilterOperatorEnum::IN->value,
             );
         }
 
@@ -340,18 +349,18 @@ final class ValueValidator
 
         foreach (array_values($value) as $item) {
             if (!\is_scalar($item) && $item !== null) {
-                throw StorageException::conditionMalformed(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::ConditionInShape,
                     $table,
                     $column,
-                    'IN',
-                    'expects an array of scalars',
+                    FilterOperatorEnum::IN->value,
                 );
             }
 
             $out[] = $this->conditionScalar(
                 $table,
                 $column,
-                'IN',
+                FilterOperatorEnum::IN->value,
                 $info,
                 $item,
                 true,
@@ -368,11 +377,11 @@ final class ValueValidator
         mixed $value,
     ): string {
         if (!\is_string($value)) {
-            throw StorageException::conditionTypeMismatch(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionExpectsStringPattern,
                 $table,
                 $column,
-                'LIKE',
-                'a string pattern',
+                FilterOperatorEnum::LIKE->value,
                 get_debug_type($value),
             );
         }
@@ -382,12 +391,10 @@ final class ValueValidator
             && $info->temporalKind() === null
             && $info->base !== ColumnTypes::STRING
         ) {
-            throw StorageException::conditionTypeMismatch(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::LikeOnNonStringColumn,
                 $table,
                 $column,
-                'LIKE',
-                'a string or temporal column (LIKE is not defined for '
-                    . $info->base . ')',
                 $info->base,
             );
         }
@@ -398,7 +405,11 @@ final class ValueValidator
             $kind === TemporalKind::DateTime
             || $kind === TemporalKind::DateTimeZ
         ) {
-            throw StorageException::likeOnInstantColumn($table, $column);
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::LikeOnInstantUnsupported,
+                $table,
+                $column,
+            );
         }
 
         return $value;
@@ -423,21 +434,21 @@ final class ValueValidator
                 return null;
             }
 
-            throw StorageException::conditionTypeMismatch(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionExpectsNonNullScalar,
                 $table,
                 $column,
                 $operator,
-                'a non-null scalar',
-                'null',
+                self::TYPE_NULL,
             );
         }
 
         if (!\is_scalar($value)) {
-            throw StorageException::conditionTypeMismatch(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionExpectsScalar,
                 $table,
                 $column,
                 $operator,
-                'a scalar',
                 get_debug_type($value),
             );
         }
@@ -450,11 +461,12 @@ final class ValueValidator
 
         if ($kind !== null) {
             if (!\is_string($value)) {
-                throw StorageException::conditionTypeMismatch(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::ConditionExpectsTemporalString,
                     $table,
                     $column,
                     $operator,
-                    'a ' . $kind->value . ' string',
+                    $kind->value,
                     get_debug_type($value),
                 );
             }
@@ -469,17 +481,21 @@ final class ValueValidator
          */
         if ($info->base === ColumnTypes::FLOAT) {
             if (!\is_int($value) && !\is_float($value)) {
-                throw StorageException::conditionTypeMismatch(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::ConditionExpectsFloatOrInt,
                     $table,
                     $column,
                     $operator,
-                    'float (or int)',
                     get_debug_type($value),
                 );
             }
 
             if (\is_float($value) && !is_finite($value)) {
-                throw StorageException::nonFiniteFloat($table, $column);
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::NonFiniteFloat,
+                    $table,
+                    $column,
+                );
             }
 
             return (float)$value;
@@ -487,11 +503,12 @@ final class ValueValidator
 
         if ($info->base === ColumnTypes::STRING) {
             if (!\is_string($value)) {
-                throw StorageException::conditionTypeMismatch(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::ConditionExpectsType,
                     $table,
                     $column,
                     $operator,
-                    'string',
+                    ColumnTypes::STRING,
                     get_debug_type($value),
                 );
             }
@@ -505,11 +522,12 @@ final class ValueValidator
             || $info->base === ColumnTypes::DAY
         ) {
             if (!\is_int($value)) {
-                throw StorageException::conditionTypeMismatch(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::ConditionExpectsType,
                     $table,
                     $column,
                     $operator,
-                    'int',
+                    ColumnTypes::INT,
                     get_debug_type($value),
                 );
             }
@@ -523,21 +541,23 @@ final class ValueValidator
         }
 
         if ($info->base === ColumnTypes::INT && !\is_int($value)) {
-            throw StorageException::conditionTypeMismatch(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionExpectsType,
                 $table,
                 $column,
                 $operator,
-                'int',
+                ColumnTypes::INT,
                 get_debug_type($value),
             );
         }
 
         if ($info->base === ColumnTypes::BOOL && !\is_bool($value)) {
-            throw StorageException::conditionTypeMismatch(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::ConditionExpectsType,
                 $table,
                 $column,
                 $operator,
-                'bool',
+                ColumnTypes::BOOL,
                 get_debug_type($value),
             );
         }
@@ -579,14 +599,19 @@ final class ValueValidator
                 return null;
             }
 
-            throw StorageException::nullNotAllowed($table, $column);
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::NullNotAllowed,
+                $table,
+                $column,
+            );
         }
 
         $kind = $info->temporalKind();
 
         if ($kind !== null) {
             if (!\is_string($value)) {
-                throw StorageException::typeMismatch(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::TypeMismatch,
                     $table,
                     $column,
                     $info->base,
@@ -632,11 +657,17 @@ final class ValueValidator
             return $this->codec->encode($kind, $value);
         } catch (TemporalParseException $e) {
             if ($e->zeroDate) {
-                throw StorageException::zeroDate($table, $column, $value);
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::ZeroDate,
+                    $table,
+                    $column,
+                    $value,
+                );
             }
 
             if ($e->fractionUnsupported) {
-                throw StorageException::temporalFractionUnsupported(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::TemporalFractionUnsupported,
                     $table,
                     $column,
                     $kind->value,
@@ -644,7 +675,8 @@ final class ValueValidator
                 );
             }
 
-            throw StorageException::invalidTemporalValue(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::InvalidTemporalValue,
                 $table,
                 $column,
                 $kind->value,
@@ -660,7 +692,8 @@ final class ValueValidator
         mixed $value,
     ): int {
         if (!\is_int($value)) {
-            throw StorageException::typeMismatch(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::TypeMismatch,
                 $table,
                 $column,
                 $base,
@@ -675,7 +708,8 @@ final class ValueValidator
         };
 
         if (!$ok) {
-            throw StorageException::numericPartOutOfRange(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::NumericPartOutOfRange,
                 $table,
                 $column,
                 $base,
@@ -696,7 +730,8 @@ final class ValueValidator
         mixed $value,
     ): string {
         if (!\is_string($value)) {
-            throw StorageException::typeMismatch(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::TypeMismatch,
                 $table,
                 $column,
                 ColumnTypes::STRING,
@@ -705,7 +740,11 @@ final class ValueValidator
         }
 
         if (preg_match('//u', $value) !== 1) {
-            throw StorageException::invalidUtf8($table, $column);
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::InvalidUtf8,
+                $table,
+                $column,
+            );
         }
 
         return $value;
@@ -717,7 +756,8 @@ final class ValueValidator
         mixed $value,
     ): int {
         if (!\is_int($value)) {
-            throw StorageException::typeMismatch(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::TypeMismatch,
                 $table,
                 $column,
                 ColumnTypes::INT,
@@ -743,7 +783,8 @@ final class ValueValidator
         }
 
         if (!\is_float($value)) {
-            throw StorageException::typeMismatch(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::TypeMismatch,
                 $table,
                 $column,
                 ColumnTypes::FLOAT,
@@ -752,7 +793,11 @@ final class ValueValidator
         }
 
         if (!is_finite($value)) {
-            throw StorageException::nonFiniteFloat($table, $column);
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::NonFiniteFloat,
+                $table,
+                $column,
+            );
         }
 
         return $value;
@@ -764,7 +809,8 @@ final class ValueValidator
         mixed $value,
     ): bool {
         if (!\is_bool($value)) {
-            throw StorageException::typeMismatch(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::TypeMismatch,
                 $table,
                 $column,
                 ColumnTypes::BOOL,
@@ -781,10 +827,11 @@ final class ValueValidator
         mixed $value,
     ): bool | float | int | string {
         if (!\is_scalar($value)) {
-            throw StorageException::typeMismatch(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::TypeMismatch,
                 $table,
                 $column,
-                'scalar',
+                self::TYPE_SCALAR,
                 get_debug_type($value),
             );
         }

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\RelationSchema;
@@ -164,8 +164,8 @@ final class FkCascadeEngineTest
         try {
             $this->db->update('goods', [], ['code' => 'x']);
             Assert::fail('two targets collapse into one unique key');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
 
         Assert::same(
@@ -185,8 +185,8 @@ final class FkCascadeEngineTest
         try {
             $this->db->table('parents')->deleteById($parentId);
             Assert::fail('the restrict child must block the delete');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FOREIGN_KEY_RESTRICT');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ForeignKeyRestrict');
         }
 
         Assert::same(
@@ -223,8 +223,8 @@ final class FkCascadeEngineTest
                 'MySQL-immediate restrict counts the referencing row even '
                     . 'when the same statement deletes it',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FOREIGN_KEY_RESTRICT');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ForeignKeyRestrict');
         }
 
         Assert::same($this->db->table('cats')->count(), 2);
@@ -361,10 +361,10 @@ final class FkCascadeEngineTest
         try {
             $this->db->table('users')->deleteById($userId);
             Assert::fail('SET NULL cannot land on a non-nullable column');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same(
                 $e->getErrorKey(),
-                'FOREIGN_KEY_SET_NULL_NOT_NULLABLE',
+                'ForeignKeySetNullNotNullable',
             );
         }
 
@@ -433,8 +433,8 @@ final class FkCascadeEngineTest
             Assert::fail(
                 'the cascaded patch collides on the composite unique key',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
 
         Assert::same(
@@ -535,8 +535,8 @@ final class FkCascadeEngineTest
                 'the restrict grandchild references b.aRef and must '
                     . 'block the setNull chain',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FOREIGN_KEY_RESTRICT');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ForeignKeyRestrict');
         }
 
         Assert::same($this->db->table('a')->count(), 1);
@@ -699,8 +699,8 @@ final class FkCascadeEngineTest
                 ['code' => 'v9'],
             );
             Assert::fail('the INF row cannot be re-encoded');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_RECORD');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RecordJsonEncodeFailed');
         }
 
         Assert::same(

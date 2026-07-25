@@ -6,7 +6,7 @@ The provider uses a three-level hierarchy of inter-process locks (flock on persi
 2. **Tables** — `table.<name>.lock`. EX for tables being written, SH for tables only read inside the critical section (FK parents, restrict children). Acquired strictly in ascending name order.
 3. **Service files** — `svc.<name>.lock`, short "leaf" sidecars for `meta.json` and `information_schema.json`. Taken last and non-composable: level 1–2 locks must not be acquired while holding a leaf.
 
-The acquisition order is total: database → tables by name → leaves. Mode upgrades (SH→EX) and out-of-order acquisition are forbidden and raise `LOCK_ORDER_VIOLATION`. Waiting is capped at 30 seconds, then `LOCK_TIMEOUT`. Locks die with the process: a crashed holder leaves nothing locked.
+The acquisition order is total: database → tables by name → leaves. Mode upgrades (SH→EX) and out-of-order acquisition are forbidden and raise `JsonProviderLockException`. Waiting is capped at 30 seconds, then `JsonProviderLockException`. Locks die with the process: a crashed holder leaves nothing locked.
 
 The set of tables to lock for a write is derived from the schema's relations graph: the mutated table EX, transitively all CASCADE/SET_NULL children EX, RESTRICT children SH, parents of enforced relations SH. Graph cycles are safe.
 
@@ -33,6 +33,6 @@ The cache layer serves reads only; keys are versioned by the table state (see [c
 
 - POSIX-only: flock over network filesystems (NFS) and Windows are not supported, see [requirements](20-requirements-dependencies.md).
 - Lock descriptors are inherited by child processes: a long-lived child spawned from inside a critical section (proc_open, exec) keeps the lock held until it exits. Do not spawn long-lived children while holding locks.
-- There is no wait queue (non-blocking flock with retries): a continuous stream of short SH readers can in theory starve an EX writer up to `LOCK_TIMEOUT` under high load. The provider targets moderate concurrency.
+- There is no wait queue (non-blocking flock with retries): a continuous stream of short SH readers can in theory starve an EX writer up to `JsonProviderLockException` under high load. The provider targets moderate concurrency.
 - Cross-file transactionality (several tables as one atom) is not provided; see the self-healing recipe above.
 - Upgrading the library on a live deployment requires stopping all writing processes: a writer of the old version (taking no locks) and a writer of the new one do not mutually exclude.

@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Cache;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderServiceException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -20,6 +21,8 @@ use Psr\Log\LoggerInterface;
  */
 final class ApcuCache implements CacheInterface
 {
+    private const string EXTENSION = 'apcu';
+
     /**
      * @param int $ttl time-to-live in seconds (0 = no expiry)
      */
@@ -27,8 +30,11 @@ final class ApcuCache implements CacheInterface
         private readonly int $ttl = 0,
         private readonly LoggerInterface | null $logger = null,
     ) {
-        if (!\extension_loaded('apcu')) {
-            throw StorageException::extensionRequired('apcu');
+        if (!\extension_loaded(self::EXTENSION)) {
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ExtensionRequired,
+                self::EXTENSION,
+            );
         }
     }
 

@@ -44,7 +44,8 @@ final class BackupManifest
         public readonly array $counters = [],
         public readonly array $checksums = [],
         public readonly bool $legacy = false,
-    ) {}
+    ) {
+    }
 
     /**
      * @return array<string,mixed>

@@ -18,5 +18,6 @@ final class FloatPriceDto
         public int $id,
         public string $name,
         public float $price,
-    ) {}
+    ) {
+    }
 }

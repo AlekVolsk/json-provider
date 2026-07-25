@@ -18,7 +18,8 @@ final class ColumnTypeInfo
     public function __construct(
         public readonly string $base,
         public readonly bool $nullable,
-    ) {}
+    ) {
+    }
 
     public static function parse(string $type): self
     {

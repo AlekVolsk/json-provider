@@ -12,5 +12,6 @@ final class UnboundDto
 {
     public function __construct(
         public int $id,
-    ) {}
+    ) {
+    }
 }

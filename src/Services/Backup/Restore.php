@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Services\Backup;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\JsonProviderServiceException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
@@ -47,11 +49,13 @@ use Psr\Log\LoggerInterface;
  *
  * If anything in step 4 fails, the restore is rolled back from the safety
  * snapshot (schema, data, counters). If the rollback itself fails, both
- * errors are reported in StorageException::restoreFailed and the snapshot
- * path is kept.
+ * errors are reported in RestoreRolledBack / RestoreRollbackFailed
+ * and the snapshot path is kept.
  */
 final class Restore
 {
+    private const string ARCHIVE_TABLES_DIR = 'tables/';
+
     public function __construct(
         private readonly Backup $backup,
         private readonly SchemaRegistry $schema,
@@ -61,7 +65,8 @@ final class Restore
         private readonly ValueValidator $values,
         private readonly TableLockManager $locks,
         private readonly LoggerInterface | null $logger = null,
-    ) {}
+    ) {
+    }
 
     /**
      * Restores DB state from the archive.
@@ -156,11 +161,9 @@ final class Restore
             );
 
             if ($extraTables !== [] && !$pruneExtraTables) {
-                throw StorageException::backupSchemaMismatch(
-                    'current DB has tables absent from the archive: '
-                        . implode(', ', $extraTables)
-                        . '; pass pruneExtraTables=true to drop them '
-                        . 'during the adopting restore',
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::RestoreLocalTablesAbsent,
+                    implode(', ', $extraTables),
                 );
             }
         }
@@ -185,18 +188,19 @@ final class Restore
             try {
                 $this->rollbackFromSnapshot($snapshotPath);
             } catch (\Throwable $rollback) {
-                throw StorageException::restoreFailed(
-                    'primary error: ' . $primary->getMessage()
-                        . '; rollback also failed: ' . $rollback->getMessage()
-                        . '; snapshot kept at: ' . $snapshotPath,
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::RestoreRollbackFailed,
+                    $primary->getMessage(),
+                    $rollback->getMessage(),
+                    $snapshotPath,
                 );
             }
 
             @unlink($snapshotPath);
 
-            throw StorageException::restoreFailed(
-                'restore failed and was rolled back; original error: '
-                    . $primary->getMessage(),
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::RestoreRolledBack,
+                $primary->getMessage(),
             );
         }
 
@@ -249,14 +253,16 @@ final class Restore
     private function ensureArchiveReadable(string $archivePath): void
     {
         if (!file_exists($archivePath)) {
-            throw StorageException::backupArchiveCorrupt(
-                'archive not found: ' . $archivePath,
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveNotFound,
+                $archivePath,
             );
         }
 
         if (!is_readable($archivePath)) {
-            throw StorageException::backupArchiveCorrupt(
-                'archive not readable: ' . $archivePath,
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveNotReadable,
+                $archivePath,
             );
         }
     }
@@ -266,44 +272,47 @@ final class Restore
         try {
             $tar = new \PharData($archivePath);
         } catch (\Throwable $e) {
-            throw StorageException::backupArchiveCorrupt(
-                'cannot open archive: ' . $e->getMessage(),
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveOpenFailed,
+                $e->getMessage(),
             );
         }
 
         if (!isset($tar['manifest.json'])) {
-            throw StorageException::backupArchiveCorrupt(
-                'manifest.json is missing',
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveManifestMissing,
             );
         }
 
         $raw = file_get_contents('phar://' . $archivePath . '/manifest.json');
 
         if ($raw === false) {
-            throw StorageException::backupArchiveCorrupt(
-                'manifest.json is unreadable',
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveManifestUnreadable,
             );
         }
 
         $decoded = json_decode($raw, true);
 
         if (!\is_array($decoded)) {
-            throw StorageException::backupArchiveCorrupt(
-                'manifest.json is not valid JSON',
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveManifestNotJson,
             );
         }
 
         $manifest = BackupManifest::fromArray($decoded);
 
         if ($manifest->format !== BackupManifest::FORMAT) {
-            throw StorageException::backupArchiveCorrupt(
-                'unexpected manifest format: "' . $manifest->format . '"',
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveManifestFormat,
+                $manifest->format,
             );
         }
 
         if ($manifest->version !== BackupManifest::VERSION) {
-            throw StorageException::backupArchiveCorrupt(
-                'unsupported manifest version: ' . $manifest->version,
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveManifestVersion,
+                (string)$manifest->version,
             );
         }
 
@@ -325,14 +334,17 @@ final class Restore
             );
 
             if ($bytes === false) {
-                throw StorageException::backupArchiveCorrupt(
-                    'archive member with a declared checksum is missing '
-                        . 'or unreadable: ' . $member,
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::ArchiveMemberUnreadable,
+                    $member,
                 );
             }
 
             if (!hash_equals($expected, hash('sha256', $bytes))) {
-                throw StorageException::backupChecksumMismatch($member);
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::BackupChecksumMismatch,
+                    $member,
+                );
             }
         }
     }
@@ -349,16 +361,16 @@ final class Restore
         );
 
         if ($raw === false) {
-            throw StorageException::backupArchiveCorrupt(
-                'information_schema.json is missing or unreadable',
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveSchemaUnreadable,
             );
         }
 
         $decoded = json_decode($raw, true);
 
         if (!\is_array($decoded)) {
-            throw StorageException::backupArchiveCorrupt(
-                'information_schema.json is not valid JSON',
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::ArchiveSchemaNotJson,
             );
         }
 
@@ -376,18 +388,18 @@ final class Restore
         $missing = array_diff($currentTables, $archiveTables);
 
         if ($missing !== []) {
-            throw StorageException::backupSchemaMismatch(
-                'archive is missing tables required by the current schema: '
-                    . implode(', ', $missing),
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::RestoreArchiveMissesTables,
+                implode(', ', $missing),
             );
         }
 
         $extra = array_diff($archiveTables, $currentTables);
 
         if ($extra !== []) {
-            throw StorageException::backupSchemaMismatch(
-                'archive contains tables not declared in the current schema: '
-                    . implode(', ', $extra),
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::RestoreArchiveExtraTables,
+                implode(', ', $extra),
             );
         }
     }
@@ -427,18 +439,18 @@ final class Restore
                 . $tableSchema->getFileName();
 
             if (!file_exists($entryPath)) {
-                throw StorageException::backupArchiveCorrupt(
-                    'archive entry missing: tables/'
-                        . $tableSchema->getFileName(),
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::ArchiveEntryMissing,
+                    self::ARCHIVE_TABLES_DIR . $tableSchema->getFileName(),
                 );
             }
 
             $raw = file_get_contents($entryPath);
 
             if ($raw === false) {
-                throw StorageException::backupArchiveCorrupt(
-                    'archive entry unreadable: tables/'
-                        . $tableSchema->getFileName(),
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::ArchiveEntryUnreadable,
+                    self::ARCHIVE_TABLES_DIR . $tableSchema->getFileName(),
                 );
             }
 
@@ -567,11 +579,11 @@ final class Restore
                 }
 
                 if (!ColumnDefaults::hasSafeDefault($type)) {
-                    throw StorageException::invalidRecord(
+                    throw new JsonProviderDataException(
+                        JsonProviderErrorEn::RecordArchivedColumnNoDefault,
                         $tableSchema->name,
-                        'column "' . $column . '" of type ' . $type
-                            . ' is missing from an archived record and has '
-                            . 'no safe default; resolve manually',
+                        $column,
+                        $type,
                     );
                 }
 

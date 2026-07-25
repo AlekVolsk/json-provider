@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\OrderBy;
 use AV\JsonProvider\Query\SortDirectionEnum;
@@ -98,8 +98,8 @@ final class IndexUniqueApiTest
         try {
             $this->db->addIndex(self::TABLE, $this->nameIndex());
             Assert::fail('a duplicate index name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_ALREADY_EXISTS');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexAlreadyExists');
         }
     }
 
@@ -112,8 +112,8 @@ final class IndexUniqueApiTest
                 [new IndexFieldSchema('ghost', SortDirectionEnum::ASC)],
             ));
             Assert::fail('an index over an unknown column must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'MIGRATE_FIELD_UNKNOWN_COLUMN');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'MigrateFieldUnknownColumnIndex');
         }
 
         Assert::false(file_exists($this->indexPath('idx_ghost')));
@@ -129,8 +129,8 @@ final class IndexUniqueApiTest
                 true,
             ));
             Assert::fail('the PK index must not be addable');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'PK_CONTRACT_VIOLATED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'PkIndexNotAddable');
         }
     }
 
@@ -159,8 +159,8 @@ final class IndexUniqueApiTest
         try {
             $this->db->dropIndex(self::TABLE, 'pk');
             Assert::fail('the PK index must not be droppable');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'PK_CONTRACT_VIOLATED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'PkIndexNotDroppable');
         }
     }
 
@@ -170,8 +170,8 @@ final class IndexUniqueApiTest
         try {
             $this->db->dropIndex(self::TABLE, 'idx_missing');
             Assert::fail('an unknown index name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexNotFound');
         }
     }
 
@@ -186,8 +186,8 @@ final class IndexUniqueApiTest
         try {
             $this->db->insert(self::TABLE, ['name' => 'a', 'price' => null]);
             Assert::fail('the fresh constraint must reject a duplicate');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
     }
 
@@ -206,8 +206,8 @@ final class IndexUniqueApiTest
                 new UniqueConstraint('uq_name', ['name']),
             );
             Assert::fail('stored duplicates must reject the new constraint');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
 
         Assert::same(
@@ -232,8 +232,8 @@ final class IndexUniqueApiTest
         try {
             $this->db->insert(self::TABLE, ['name' => 'e', 'price' => 1.5]);
             Assert::fail('a real duplicate must still be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
     }
 
@@ -251,10 +251,10 @@ final class IndexUniqueApiTest
                 new UniqueConstraint('uq_name', ['price']),
             );
             Assert::fail('a duplicate constraint name must be rejected');
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same(
                 $e->getErrorKey(),
-                'UNIQUE_CONSTRAINT_ALREADY_EXISTS',
+                'UniqueConstraintAlreadyExists',
             );
         }
     }
@@ -268,8 +268,8 @@ final class IndexUniqueApiTest
                 new UniqueConstraint('uq_ghost', ['ghost']),
             );
             Assert::fail('an unknown constraint field must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'MIGRATE_FIELD_UNKNOWN_COLUMN');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'MigrateFieldUnknownColumnUnique');
         }
     }
 
@@ -296,8 +296,8 @@ final class IndexUniqueApiTest
         try {
             $this->db->dropUniqueConstraint(self::TABLE, 'uq_missing');
             Assert::fail('an unknown constraint name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_CONSTRAINT_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueConstraintNotFound');
         }
     }
 

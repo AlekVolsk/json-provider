@@ -33,5 +33,6 @@ final class FkWritePlan
         public readonly array $writeOrder,
         public readonly string $rootTable,
         public readonly int $affected,
-    ) {}
+    ) {
+    }
 }

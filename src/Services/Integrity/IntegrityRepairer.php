@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Services\Integrity;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\JsonProviderTableException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Registry\MetaRegistry;
@@ -69,7 +71,8 @@ final class IntegrityRepairer
         private readonly JsonStorage $json,
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
-    ) {}
+    ) {
+    }
 
     public function repairTable(string $tableName): IntegrityReport
     {
@@ -332,7 +335,10 @@ final class IntegrityRepairer
                 $indexName,
             ): array {
                 $table = $tables[$tableName]
-                    ?? throw StorageException::tableNotFound($tableName);
+                    ?? throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableNotFound,
+                        $tableName,
+                    );
 
                 $tables[$tableName] = new TableSchema(
                     name: $table->name,
@@ -445,7 +451,10 @@ final class IntegrityRepairer
                 $backing,
             ): array {
                 $table = $tables[$tableName]
-                    ?? throw StorageException::tableNotFound($tableName);
+                    ?? throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableNotFound,
+                        $tableName,
+                    );
 
                 if ($backing->isService) {
                     $indexes = array_values(array_filter(
@@ -914,11 +923,11 @@ final class IntegrityRepairer
             }
 
             if (!ColumnDefaults::hasSafeDefault($type)) {
-                throw StorageException::invalidRecord(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::RecordColumnNoDefaultManual,
                     $tableSchema->name,
-                    'column "' . $column . '" of type ' . $type
-                        . ' is missing and has no safe default; '
-                        . 'resolve manually',
+                    $column,
+                    $type,
                 );
             }
 

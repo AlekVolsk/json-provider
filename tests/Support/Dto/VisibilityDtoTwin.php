@@ -17,7 +17,8 @@ final class VisibilityDtoTwin
         public int $id,
         private string $note,
         private string $tag,
-    ) {}
+    ) {
+    }
 
     public function note(): string
     {

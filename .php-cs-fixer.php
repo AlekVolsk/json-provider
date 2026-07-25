@@ -28,6 +28,7 @@ return (new PhpCsFixer\Config())
         'ordered_class_elements' => true,
         'yoda_style' => false,
         'no_superfluous_phpdoc_tags' => true,
+        'single_line_empty_body' => false,
         'phpdoc_to_comment' => true,
         'operator_linebreak' => true,
         'fully_qualified_strict_types' => true,

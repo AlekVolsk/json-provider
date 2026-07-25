@@ -6,9 +6,17 @@ namespace AV\JsonProvider;
 
 use AV\JsonProvider\Cache\CacheInterface;
 use AV\JsonProvider\Cache\NullCache;
+use AV\JsonProvider\Exception\JsonProviderDataException;
 use AV\JsonProvider\Exception\JsonProviderException;
-use AV\JsonProvider\Exception\LocaleInterface;
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderLockException;
+use AV\JsonProvider\Exception\JsonProviderMappingException;
+use AV\JsonProvider\Exception\JsonProviderQueryException;
+use AV\JsonProvider\Exception\JsonProviderRelationException;
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\JsonProviderServiceException;
+use AV\JsonProvider\Exception\JsonProviderTableException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
+use AV\JsonProvider\Exception\Locale\LocaleInterface;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
@@ -61,6 +69,8 @@ final class JsonDataProvider
      * (they expire by TTL/eviction) instead of serving stale shapes.
      */
     public const string CACHE_FORMAT_VERSION = '2';
+    private const string CONTEXT_ORDER_BY = 'orderBy';
+    private const string CONTEXT_DISTINCT = 'distinct';
 
     /** @var array<string,self> */
     private static array $instances = [];
@@ -91,6 +101,11 @@ final class JsonDataProvider
         LoggerInterface | null $logger = null,
     ) {
         $this->logger = $logger;
+
+        if ($logger !== null) {
+            JsonProviderException::setLogger($logger);
+        }
+
         $this->dbPath = $dbPath;
         $real = realpath($dbPath);
         $this->cacheNs = 'jdp:' . self::CACHE_FORMAT_VERSION . ':'
@@ -177,6 +192,17 @@ final class JsonDataProvider
     }
 
     /**
+     * Drops the locale: messages render in the vocabulary they were thrown
+     * with.
+     */
+    public function resetLocale(): self
+    {
+        JsonProviderException::resetLocale();
+
+        return $this;
+    }
+
+    /**
      * Sets the string comparison mode for ordering operators and ORDER BY
      * on this instance. Binary (default) is bytewise and index-compatible;
      * Locale orders string pairs via the intl Collator and excludes
@@ -205,6 +231,38 @@ final class JsonDataProvider
             $table = DtoMap::tableName($class);
             $schema = $this->schema->getTable($table);
             $this->dtoRegistry->register(DtoMap::compile($class, $schema));
+        }
+
+        return $this;
+    }
+
+    /**
+     * Unbinds the DTO of each named table, so another class can be bound
+     * to it (registerDto refuses to replace a live binding). The binding
+     * is process-local state, not schema: nothing on disk changes and the
+     * *ByArray surface is unaffected.
+     *
+     * Loud by name: the argument is a TABLE name, so a class-string
+     * (backslashes) fails INVALID_TABLE_NAME instead of silently doing
+     * nothing, and a table with no DTO bound fails DTO_NOT_REGISTERED
+     * rather than pretending a typo was a no-op.
+     *
+     * A JsonTable handle obtained earlier keeps the map it was built
+     * with — take a fresh $db->table(...) after rebinding.
+     */
+    public function unregisterDto(string ...$tables): self
+    {
+        foreach ($tables as $table) {
+            IdentifierRules::assertTableName($table);
+
+            if ($this->dtoRegistry->forTable($table) === null) {
+                throw new JsonProviderMappingException(
+                    JsonProviderErrorEn::DtoNotRegistered,
+                    $table,
+                );
+            }
+
+            $this->dtoRegistry->unregister($table);
         }
 
         return $this;
@@ -382,14 +440,18 @@ final class JsonDataProvider
                 $pending = $this->meta->getPendingRename();
 
                 if ($pending !== null) {
-                    throw StorageException::renameIncomplete(
+                    throw new JsonProviderTableException(
+                        JsonProviderErrorEn::RenameIncomplete,
                         $pending['from'],
                         $pending['to'],
                     );
                 }
 
                 if (!$this->schema->hasTable($from)) {
-                    throw StorageException::tableNotFound($from);
+                    throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableNotFound,
+                        $from,
+                    );
                 }
 
                 if (
@@ -397,7 +459,10 @@ final class JsonDataProvider
                     || $this->meta->hasEntry($to)
                     || $this->ndjson->tableDirExists($to)
                 ) {
-                    throw StorageException::tableAlreadyExists($to);
+                    throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableAlreadyExists,
+                        $to,
+                    );
                 }
 
                 $tableSchema = $this->schema->getTable($from);
@@ -421,7 +486,10 @@ final class JsonDataProvider
                         $to
                     ): array {
                         $current = $tables[$from]
-                            ?? throw StorageException::tableNotFound($from);
+                            ?? throw new JsonProviderTableException(
+                                JsonProviderErrorEn::TableNotFound,
+                                $from,
+                            );
 
                         unset($tables[$from]);
                         $tables[$to] = new TableSchema(
@@ -514,7 +582,7 @@ final class JsonDataProvider
      * column names; a no-op (empty lists) when columns and order already
      * match.
      *
-     * Guards (all throw StorageException, nothing is written):
+     * Guards (all throw a provider exception, nothing is written):
      *  - the table does not exist;
      *  - a retained column changes type — this method never re-encodes data, so
      *    a type change must be migrated separately;
@@ -679,7 +747,8 @@ final class JsonDataProvider
                 $encoded = json_encode($probe, JSON_PRESERVE_ZERO_FRACTION);
 
                 if ($encoded === false) {
-                    throw StorageException::invalidRecord(
+                    throw new JsonProviderDataException(
+                        JsonProviderErrorEn::RecordJsonEncodeFailed,
                         $tableSchema->name,
                         json_last_error_msg(),
                     );
@@ -870,21 +939,22 @@ final class JsonDataProvider
      * Reorders columns of an existing table.
      *
      * $newOrder is a list of column names in the desired order. Behaviour:
-     *  - unknown columns — StorageException::reorderColumnsUnknown;
-     *  - duplicate columns — StorageException::reorderColumnsDuplicate;
+     *  - unknown columns — ReorderColumnsUnknown;
+     *  - duplicate columns — ReorderColumnsDuplicate;
      *  - id missing in $newOrder — id is prepended;
      *  - id present but not first — id is moved to position 0;
      *  - after the id-normalization the list must contain every existing
-     *    column; otherwise StorageException::reorderColumnsIncomplete.
+     *    column; otherwise ReorderColumnsIncomplete.
      *
      * Order of disk operations: schema first, then NDJSON data. Rationale:
      * if the data write fails after the schema write, lazy normalization on
      * the next mutation will re-emit each record in the new column order.
      * If the schema write fails first, the operation is invisible.
      *
-     * Indexes are not rebuilt — column order in records does not affect
-     * index file contents (key/line pairs only). For a forced rebuild use
-     * rebuildIndex / rebuildAllIndexes.
+     * Indexes are rebuilt by the standard full rewrite (writeAll): their
+     * logical content stays the same — column order inside a record does
+     * not affect index keys — and the pass re-stamps the current index
+     * format along the way.
      *
      * @param array<int,string> $newOrder
      */
@@ -907,7 +977,8 @@ final class JsonDataProvider
                         $normalized,
                     );
 
-                    throw StorageException::reorderColumnsIncomplete(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::ReorderColumnsIncomplete,
                         $tableName,
                         implode(', ', $missing),
                     );
@@ -1018,20 +1089,25 @@ final class JsonDataProvider
                 $tableSchema = $this->schema->getTable($tableName);
 
                 if (!isset($tableSchema->columns[$from])) {
-                    throw StorageException::columnNotFound($tableName, $from);
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::ColumnNotFound,
+                        $tableName,
+                        $from,
+                    );
                 }
 
                 if ($from === PrimaryKey::FIELD) {
-                    throw StorageException::pkContractViolated(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::PkColumnNotRenamable,
                         $tableName,
-                        'the primary key column cannot be renamed',
                     );
                 }
 
                 IdentifierRules::assertColumnName($to);
 
                 if (isset($tableSchema->columns[$to])) {
-                    throw StorageException::columnAlreadyExists(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::ColumnAlreadyExists,
                         $tableName,
                         $to,
                     );
@@ -1077,7 +1153,10 @@ final class JsonDataProvider
                         $newSchema,
                     ): array {
                         if (!isset($tables[$tableName])) {
-                            throw StorageException::tableNotFound($tableName);
+                            throw new JsonProviderTableException(
+                                JsonProviderErrorEn::TableNotFound,
+                                $tableName,
+                            );
                         }
 
                         $tables[$tableName] = $newSchema;
@@ -1160,7 +1239,7 @@ final class JsonDataProvider
 
     /**
      * Sets (or clears, when null/empty) the description of a single column.
-     * Throws StorageException::columnNotFound if the column is not declared in
+     * Throws ColumnNotFound if the column is not declared in
      * the table. Schema-only meta-operation — data and indexes are untouched.
      */
     public function setColumnComment(
@@ -1176,7 +1255,8 @@ final class JsonDataProvider
                 $comment,
             ): TableSchema {
                 if (!isset($t->columns[$column])) {
-                    throw StorageException::columnNotFound(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::ColumnNotFound,
                         $tableName,
                         $column,
                     );
@@ -1191,7 +1271,7 @@ final class JsonDataProvider
      * Sets the column-comment map. By default replaces the whole map; with
      * $merge=true merges the given entries on top of the existing ones. Every
      * key must be an existing column, otherwise
-     * StorageException::columnNotFound.
+     * ColumnNotFound.
      * An empty-string value clears that column. Schema-only meta-operation.
      *
      * @param array<string,string> $comments column name => description
@@ -1210,7 +1290,8 @@ final class JsonDataProvider
             ): TableSchema {
                 foreach (array_keys($comments) as $column) {
                     if (!isset($t->columns[$column])) {
-                        throw StorageException::columnNotFound(
+                        throw new JsonProviderSchemaException(
+                            JsonProviderErrorEn::ColumnNotFound,
                             $tableName,
                             $column,
                         );
@@ -1291,7 +1372,7 @@ final class JsonDataProvider
      * window when the index file is missing — NdjsonStorage::write replaces
      * the file under flock.
      *
-     * Throws StorageException::indexNotFound if the index name does not
+     * Throws IndexNotFound if the index name does not
      * exist in the table schema.
      */
     public function rebuildIndex(string $tableName, string $indexName): void
@@ -1368,16 +1449,16 @@ final class JsonDataProvider
                     $index->isPrimary
                     || $index->name === IndexSchema::PK_NAME
                 ) {
-                    throw StorageException::pkContractViolated(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::PkIndexNotAddable,
                         $tableName,
-                        'the PK index cannot be added or replaced '
-                            . 'via addIndex',
                     );
                 }
 
                 foreach ($tableSchema->indexes as $existing) {
                     if ($existing->name === $index->name) {
-                        throw StorageException::indexAlreadyExists(
+                        throw new JsonProviderSchemaException(
+                            JsonProviderErrorEn::IndexAlreadyExists,
                             $tableName,
                             $index->name,
                         );
@@ -1386,9 +1467,10 @@ final class JsonDataProvider
 
                 foreach ($index->fields as $field) {
                     if (!isset($tableSchema->columns[$field->field])) {
-                        throw StorageException::migrateFieldUnknownColumn(
+                        throw new JsonProviderSchemaException(
+                            JsonProviderErrorEn::MigrateFieldUnknownColumnIndex,
                             $tableName,
-                            'index "' . $index->name . '"',
+                            $index->name,
                             $field->field,
                         );
                     }
@@ -1451,9 +1533,9 @@ final class JsonDataProvider
                 $tableSchema = $this->schema->getTable($tableName);
 
                 if ($indexName === IndexSchema::PK_NAME) {
-                    throw StorageException::pkContractViolated(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::PkIndexNotDroppable,
                         $tableName,
-                        'the PK index cannot be dropped',
                     );
                 }
 
@@ -1468,21 +1550,25 @@ final class JsonDataProvider
                 }
 
                 if ($found === null) {
-                    throw StorageException::indexNotFound(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::IndexNotFound,
                         $tableName,
                         $indexName,
                     );
                 }
 
                 if ($found->isPrimary) {
-                    throw StorageException::pkContractViolated(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::PkIndexNotDroppable,
                         $tableName,
-                        'the PK index cannot be dropped',
                     );
                 }
 
                 if ($found->isService) {
-                    throw StorageException::reservedIndexName($indexName);
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::ReservedIndexName,
+                        $indexName,
+                    );
                 }
 
                 $replacement = $this->backingReplacementFor(
@@ -1507,7 +1593,8 @@ final class JsonDataProvider
                         $replacement,
                     ): array {
                         $table = $tables[$tableName]
-                            ?? throw StorageException::tableNotFound(
+                            ?? throw new JsonProviderTableException(
+                                JsonProviderErrorEn::TableNotFound,
                                 $tableName,
                             );
                         $indexes = array_values(array_filter(
@@ -1590,7 +1677,8 @@ final class JsonDataProvider
 
                 foreach ($tableSchema->uniqueConstraints as $existing) {
                     if ($existing->name === $constraint->name) {
-                        throw StorageException::uniqueConstraintAlreadyExists(
+                        throw new JsonProviderSchemaException(
+                            JsonProviderErrorEn::UniqueConstraintAlreadyExists,
                             $tableName,
                             $constraint->name,
                         );
@@ -1599,9 +1687,12 @@ final class JsonDataProvider
 
                 foreach ($constraint->fields as $field) {
                     if (!isset($tableSchema->columns[$field])) {
-                        throw StorageException::migrateFieldUnknownColumn(
+                        throw new JsonProviderSchemaException(
+                            // phpcs:disable Generic.Files.LineLength
+                            JsonProviderErrorEn::MigrateFieldUnknownColumnUnique,
+                            // phpcs:enable
                             $tableName,
-                            'unique constraint "' . $constraint->name . '"',
+                            $constraint->name,
                             $field,
                         );
                     }
@@ -1624,7 +1715,8 @@ final class JsonDataProvider
                             $constraint->fields,
                         );
 
-                        throw StorageException::uniqueViolation(
+                        throw new JsonProviderDataException(
+                            JsonProviderErrorEn::UniqueViolation,
                             $tableName,
                             implode(', ', $constraint->fields),
                             implode(', ', $fieldValues),
@@ -1685,7 +1777,8 @@ final class JsonDataProvider
                 }
 
                 if ($found === null) {
-                    throw StorageException::uniqueConstraintNotFound(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::UniqueConstraintNotFound,
                         $tableName,
                         $name,
                     );
@@ -1815,7 +1908,8 @@ final class JsonDataProvider
         ));
 
         if ($childCandidates === []) {
-            throw StorageException::relationNotFound(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::RelationNotFound,
                 $fromTable,
                 $foreignKey,
                 $toTable,
@@ -2055,11 +2149,19 @@ final class JsonDataProvider
         $tableSchema = $this->schema->getTable($tableName);
 
         if ($limit !== null && $limit < 0) {
-            throw StorageException::invalidLimit($tableName, $limit);
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidLimit,
+                $tableName,
+                $limit,
+            );
         }
 
         if ($offset < 0) {
-            throw StorageException::invalidOffset($tableName, $offset);
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidOffset,
+                $tableName,
+                $offset,
+            );
         }
 
         $this->assertKnownColumns($tableSchema, $ordering, $distinctFields);
@@ -2298,12 +2400,12 @@ final class JsonDataProvider
                     && $relation->parentColumn() === $column;
 
                 if ($isChildSide || $isParentSide) {
-                    throw StorageException::migrateFieldUnknownColumn(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::MigrateFieldUnknownColumnRelation,
                         $tableName,
-                        'relation ' . $relation->fromTable . '('
-                            . $relation->foreignKey . ') -> '
-                            . $relation->toTable
-                            . ' (drop the relation first)',
+                        $relation->fromTable,
+                        $relation->foreignKey,
+                        $relation->toTable,
                         $column,
                     );
                 }
@@ -2346,7 +2448,8 @@ final class JsonDataProvider
                 $relation->parentTable() === $tableSchema->name
                 && $relation->parentColumn() === $column
             ) {
-                throw StorageException::relationReferencesNotUnique(
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::RelationReferencesNotUnique,
                     $tableSchema->name,
                     $column,
                 );
@@ -2404,9 +2507,9 @@ final class JsonDataProvider
             }
 
             if (++$attempts >= 5) {
-                throw StorageException::lockOrderViolation(
-                    'mutation lock plan for table "' . $tableName
-                        . '" kept going stale (concurrent relation DDL)',
+                throw new JsonProviderLockException(
+                    JsonProviderErrorEn::LockPlanStale,
+                    $tableName,
                 );
             }
         }
@@ -2796,7 +2899,7 @@ final class JsonDataProvider
             $this->dtoRegistry->register(
                 DtoMap::compile($map->class, $tableSchema),
             );
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             $this->dtoRegistry->unregister($tableName);
         }
     }
@@ -2814,7 +2917,8 @@ final class JsonDataProvider
             $currentType = $current->columns[$column] ?? null;
 
             if ($currentType !== null && $currentType !== $type) {
-                throw StorageException::migrateColumnTypeChange(
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::MigrateColumnTypeChange,
                     $desired->name,
                     $column,
                     $currentType,
@@ -2835,9 +2939,10 @@ final class JsonDataProvider
         foreach ($desired->uniqueConstraints as $constraint) {
             foreach ($constraint->fields as $field) {
                 if (!isset($desired->columns[$field])) {
-                    throw StorageException::migrateFieldUnknownColumn(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::MigrateFieldUnknownColumnUnique,
                         $desired->name,
-                        'unique constraint "' . $constraint->name . '"',
+                        $constraint->name,
                         $field,
                     );
                 }
@@ -2847,9 +2952,10 @@ final class JsonDataProvider
         foreach ($desired->indexes as $index) {
             foreach ($index->fields as $field) {
                 if (!isset($desired->columns[$field->field])) {
-                    throw StorageException::migrateFieldUnknownColumn(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::MigrateFieldUnknownColumnIndex,
                         $desired->name,
-                        'index "' . $index->name . '"',
+                        $index->name,
                         $field->field,
                     );
                 }
@@ -2872,7 +2978,8 @@ final class JsonDataProvider
             $type = $desired->columns[$column];
 
             if (!ColumnDefaults::hasSafeDefault($type)) {
-                throw StorageException::migrateColumnNoDefault(
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::MigrateColumnNoDefault,
                     $desired->name,
                     $column,
                     $type,
@@ -3056,7 +3163,8 @@ final class JsonDataProvider
                 && ($pending['from'] === $tableSchema->name
                     || $pending['to'] === $tableSchema->name)
             ) {
-                throw StorageException::renameIncomplete(
+                throw new JsonProviderTableException(
+                    JsonProviderErrorEn::RenameIncomplete,
                     $pending['from'],
                     $pending['to'],
                 );
@@ -3074,7 +3182,7 @@ final class JsonDataProvider
 
         try {
             $expected = $this->meta->getByteSize($tableSchema->name);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             /*
              * Both a missing and a corrupt entry self-heal the same way:
              * the counters are fully derivable from the data, so the
@@ -3082,9 +3190,12 @@ final class JsonDataProvider
              * the true lineCount/byteSize (with the id watermark
              * restored first).
              */
-            if ($e->getErrorKey() === 'META_ENTRY_CORRUPT') {
+            $corrupt = $e->error === JsonProviderErrorEn::MetaEntryNotObject
+                || $e->error === JsonProviderErrorEn::MetaCounterNotInt;
+
+            if ($corrupt) {
                 $this->meta->dropEntry($tableSchema->name);
-            } elseif ($e->getErrorKey() !== 'META_ENTRY_MISSING') {
+            } elseif ($e->error !== JsonProviderErrorEn::MetaEntryMissing) {
                 throw $e;
             }
 
@@ -3160,7 +3271,11 @@ final class JsonDataProvider
         array $records,
     ): void {
         if (!$this->locks->isHeld($tableName, 'ex')) {
-            throw StorageException::writeLockRequired('writeAll', $tableName);
+            throw new JsonProviderLockException(
+                JsonProviderErrorEn::WriteLockRequired,
+                __METHOD__,
+                $tableName,
+            );
         }
 
         $records = $this->values->widenFloats($tableSchema, array_values(
@@ -3207,7 +3322,7 @@ final class JsonDataProvider
                 $tableName,
                 $tableName . '.ndjson',
             );
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             return;
         }
 
@@ -3247,27 +3362,19 @@ final class JsonDataProvider
         int | null $limit = null,
         int $offset = 0,
     ): array | null {
-        try {
-            return $this->selectViaIndexTrusted(
-                $index,
-                $tableSchema,
-                $conditions,
-                $ordering,
-                $limit,
-                $offset,
-            );
-        } catch (StorageException $e) {
-            if ($e->getErrorKey() === 'INDEX_UNRELIABLE') {
-                $this->logger?->error($e->getMessage());
-            }
-
-            throw $e;
-        }
+        return $this->selectViaIndexTrusted(
+            $index,
+            $tableSchema,
+            $conditions,
+            $ordering,
+            $limit,
+            $offset,
+        );
     }
 
     /**
-     * The trusted-index read pipeline behind selectViaIndex; every
-     * INDEX_UNRELIABLE it raises is logged at error level by the wrapper.
+     * The trusted-index read pipeline behind selectViaIndex; a structurally
+     * corrupt index raises loudly instead of degrading to a full scan.
      *
      * @param array<int,FilterCondition> $conditions
      * @param array<int,OrderBy>         $ordering
@@ -3319,10 +3426,10 @@ final class JsonDataProvider
                 );
 
                 if (\count($records) !== \count($lineNumbers)) {
-                    throw StorageException::indexUnreliable(
-                        $tableSchema->name,
+                    throw new JsonProviderServiceException(
+                        JsonProviderErrorEn::IndexLinesMissing,
                         $index->name,
-                        'indexed lines are missing from the data file',
+                        $tableSchema->name,
                     );
                 }
 
@@ -3433,7 +3540,7 @@ final class JsonDataProvider
         try {
             $byteSize = $this->meta->getByteSize($tableSchema->name);
             $format = $this->meta->getIndexFormat($tableSchema->name);
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             return false;
         }
 
@@ -3560,20 +3667,22 @@ final class JsonDataProvider
     ): void {
         foreach ($ordering as $order) {
             if (!\array_key_exists($order->field, $tableSchema->columns)) {
-                throw StorageException::queryUnknownColumn(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::QueryUnknownColumn,
                     $tableSchema->name,
                     $order->field,
-                    'orderBy',
+                    self::CONTEXT_ORDER_BY,
                 );
             }
         }
 
         foreach ($distinctFields as $field) {
             if (!\array_key_exists($field, $tableSchema->columns)) {
-                throw StorageException::queryUnknownColumn(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::QueryUnknownColumn,
                     $tableSchema->name,
                     $field,
-                    'distinct',
+                    self::CONTEXT_DISTINCT,
                 );
             }
         }
@@ -3816,7 +3925,8 @@ final class JsonDataProvider
                     $constraint->fields,
                 );
 
-                throw StorageException::uniqueViolation(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::UniqueViolation,
                     $tableSchema->name,
                     implode(', ', $constraint->fields),
                     implode(', ', $fieldValues),
@@ -3840,14 +3950,16 @@ final class JsonDataProvider
 
         foreach ($newOrder as $field) {
             if (!isset($tableSchema->columns[$field])) {
-                throw StorageException::reorderColumnsUnknown(
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::ReorderColumnsUnknown,
                     $tableSchema->name,
                     $field,
                 );
             }
 
             if (isset($seen[$field])) {
-                throw StorageException::reorderColumnsDuplicate(
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::ReorderColumnsDuplicate,
                     $tableSchema->name,
                     $field,
                 );
@@ -3914,10 +4026,11 @@ final class JsonDataProvider
             }
 
             if (!ColumnDefaults::hasSafeDefault($type)) {
-                throw StorageException::invalidRecord(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::RecordColumnNoDefault,
                     $tableSchema->name,
-                    'column "' . $column . '" of type ' . $type
-                        . ' is missing and has no safe default',
+                    $column,
+                    $type,
                 );
             }
 
@@ -3987,7 +4100,7 @@ final class JsonDataProvider
     {
         try {
             $lineCount = (string)$this->meta->getLineCount($tableName);
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             $lineCount = 'nometa';
         }
 
@@ -3997,7 +4110,7 @@ final class JsonDataProvider
                 $tableName . '.ndjson',
             );
             $fileState = $stat['size'] . '-' . $stat['ino'];
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             $fileState = 'nofile';
         }
 

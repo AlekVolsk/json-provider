@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Storage;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderIoException;
+use AV\JsonProvider\Exception\JsonProviderLockException;
+use AV\JsonProvider\Exception\JsonProviderTableException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Storage for single JSON files at the DB root.
@@ -44,11 +47,17 @@ final class JsonStorage
     public static function createRoot(string $dbPath): self
     {
         if (file_exists($dbPath)) {
-            throw StorageException::databaseAlreadyExists($dbPath);
+            throw new JsonProviderTableException(
+                JsonProviderErrorEn::DatabaseAlreadyExists,
+                $dbPath,
+            );
         }
 
         if (!mkdir($dbPath, 0755, true) && !is_dir($dbPath)) {
-            throw StorageException::fileNotWritable($dbPath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $dbPath,
+            );
         }
 
         return new self($dbPath);
@@ -68,7 +77,10 @@ final class JsonStorage
         $raw = file_get_contents($path);
 
         if ($raw === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         if ($raw === '') {
@@ -78,7 +90,10 @@ final class JsonStorage
         $data = json_decode($raw, true);
 
         if (!\is_array($data)) {
-            throw StorageException::invalidJson($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::InvalidJson,
+                $path,
+            );
         }
 
         return $data;
@@ -99,7 +114,10 @@ final class JsonStorage
         $json = json_encode($data, JSON_PRETTY_PRINT);
 
         if ($json === false) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
 
         $this->locks()->withServiceFile(
@@ -133,8 +151,9 @@ final class JsonStorage
         $path = $this->resolvePath($fileName);
 
         if (isset($this->inTransaction[$fileName])) {
-            throw StorageException::lockOrderViolation(
-                'nested transaction on "' . $fileName . '"',
+            throw new JsonProviderLockException(
+                JsonProviderErrorEn::LockNestedTransaction,
+                $fileName,
             );
         }
 
@@ -165,13 +184,19 @@ final class JsonStorage
         $path = $this->resolvePath($fileName);
 
         if (file_exists($path)) {
-            throw StorageException::tableFileExists($path);
+            throw new JsonProviderTableException(
+                JsonProviderErrorEn::TableFileExists,
+                $path,
+            );
         }
 
         $json = json_encode($initialData, JSON_PRETTY_PRINT);
 
         if ($json === false) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
 
         AtomicFileWriter::write($path, $json);
@@ -191,7 +216,10 @@ final class JsonStorage
         $path = $this->resolvePath($fileName);
 
         if (file_exists($path)) {
-            throw StorageException::tableFileExists($path);
+            throw new JsonProviderTableException(
+                JsonProviderErrorEn::TableFileExists,
+                $path,
+            );
         }
 
         AtomicFileWriter::write($path, "{}\n");
@@ -223,7 +251,10 @@ final class JsonStorage
         $stat = @stat($path);
 
         if ($stat === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         return [
@@ -291,7 +322,10 @@ final class JsonStorage
         }
 
         if (!unlink($path)) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
     }
 
@@ -311,7 +345,10 @@ final class JsonStorage
         $raw = file_get_contents($path);
 
         if ($raw === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         if ($raw === '') {
@@ -320,7 +357,10 @@ final class JsonStorage
             $decoded = json_decode($raw, true);
 
             if (!\is_array($decoded)) {
-                throw StorageException::invalidJson($path);
+                throw new JsonProviderIoException(
+                    JsonProviderErrorEn::InvalidJson,
+                    $path,
+                );
             }
 
             $data = $decoded;
@@ -333,7 +373,10 @@ final class JsonStorage
             $json = json_encode($tx->pendingData(), JSON_PRETTY_PRINT);
 
             if ($json === false) {
-                throw StorageException::fileNotWritable($path);
+                throw new JsonProviderIoException(
+                    JsonProviderErrorEn::FileNotWritable,
+                    $path,
+                );
             }
 
             AtomicFileWriter::write($path, $json);
@@ -358,7 +401,10 @@ final class JsonStorage
             || strpbrk($fileName, '/\\') !== false
             || basename($fileName) !== $fileName
         ) {
-            throw StorageException::invalidFileName($fileName);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::InvalidFileName,
+                $fileName,
+            );
         }
 
         return $this->dbPath . '/' . $fileName;
@@ -367,7 +413,10 @@ final class JsonStorage
     private function ensureDbDir(): void
     {
         if (!is_dir($this->dbPath)) {
-            throw StorageException::fileNotWritable($this->dbPath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $this->dbPath,
+            );
         }
     }
 
@@ -386,7 +435,10 @@ final class JsonStorage
     private function ensureFileExists(string $path): void
     {
         if (!file_exists($path)) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
     }
 }

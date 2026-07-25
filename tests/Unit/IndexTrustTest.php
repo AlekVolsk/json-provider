@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
@@ -93,8 +93,8 @@ final class IndexTrustTest
             $this->db->table(self::TABLE)
                 ->where('grp', '=', 1)->selectAllByArray();
             Assert::fail('structural corruption must be loud');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_UNRELIABLE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexCountMismatch');
             Assert::string($e->getMessage())->contains('idx_grp');
         }
     }
@@ -119,8 +119,8 @@ final class IndexTrustTest
             $this->db->table(self::TABLE)
                 ->where('grp', '=', 1)->selectAllByArray();
             Assert::fail('permutation break must be loud');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_UNRELIABLE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexBrokenPermutation');
             Assert::string($e->getMessage())->contains('permutation');
         }
     }
@@ -143,8 +143,8 @@ final class IndexTrustTest
             $this->db->table(self::TABLE)
                 ->where('grp', '=', 1)->selectAllByArray();
             Assert::fail('malformed key must be loud');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_UNRELIABLE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexKeyMalformed');
             Assert::string($e->getMessage())->contains('malformed');
         }
     }
@@ -173,8 +173,8 @@ final class IndexTrustTest
             $this->db->table(self::TABLE)
                 ->where('grp', 'BETWEEN', [null, 2])->selectAllByArray();
             Assert::fail('a null BETWEEN bound must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'CONDITION_MALFORMED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ConditionBetweenShape');
         }
     }
 
@@ -195,8 +195,8 @@ final class IndexTrustTest
                 $this->db->table(self::TABLE)
                     ->where('grp', '=', $value)->selectAllByArray();
                 Assert::fail('a non-finite condition must be rejected');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'CONDITION_TYPE_MISMATCH');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'ConditionExpectsType');
             }
         }
     }
@@ -208,8 +208,8 @@ final class IndexTrustTest
             $this->db->table(self::TABLE)
                 ->where('grp', 'BETWEEN', [1])->selectAllByArray();
             Assert::fail('a one-element BETWEEN must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'CONDITION_MALFORMED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ConditionBetweenShape');
         }
     }
 

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -19,7 +19,7 @@ use Testo\Test;
  * information_schema.json.
  *
  * Read path is strict: any deviation from the PK contract (missing id, wrong
- * id type, id not at position 0, missing PK index) — StorageException.
+ * id type, id not at position 0, missing PK index) — JsonProviderException.
  *
  * Tests use an isolated DB path, separate from the main integration fixture.
  */
@@ -57,8 +57,8 @@ final class SchemaRegistryPkTest
 
         $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('mandatory PK column');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('mandatory primary key column');
 
         $registry->getTables();
     }
@@ -79,7 +79,7 @@ final class SchemaRegistryPkTest
 
         $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('must have type "int"');
 
         $registry->getTables();
@@ -101,8 +101,8 @@ final class SchemaRegistryPkTest
 
         $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('must be first in columns');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('must come first in the column list');
 
         $registry->getTables();
     }
@@ -156,8 +156,8 @@ final class SchemaRegistryPkTest
 
         $registry = new SchemaRegistry(new JsonStorage(self::dbPathRoot()));
 
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('mandatory PK index');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('mandatory primary key index');
 
         $registry->getTables();
     }

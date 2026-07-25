@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Storage;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderIoException;
+use AV\JsonProvider\Exception\JsonProviderLockException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
+use AV\JsonProvider\Exception\Locale\LocaleInterface;
 
 /**
  * Single owner of inter-process locks for one database directory.
@@ -75,7 +78,8 @@ final class TableLockManager
     public function __construct(
         private readonly string $dbPath,
         private readonly float $timeoutSeconds = 30.0,
-    ) {}
+    ) {
+    }
 
     public function __destruct()
     {
@@ -106,9 +110,8 @@ final class TableLockManager
         callable $fn,
     ): mixed {
         if ($this->serviceDepth > 0) {
-            throw StorageException::lockOrderViolation(
-                'table/database locks cannot be acquired while a service-file '
-                    . 'lock is held',
+            throw new JsonProviderLockException(
+                JsonProviderErrorEn::LockOrderAfterServiceFile,
             );
         }
 
@@ -144,8 +147,8 @@ final class TableLockManager
                         $dbMode === self::MODE_EX
                         && $this->dbMode === self::MODE_SH
                     ) {
-                        throw StorageException::lockOrderViolation(
-                            'database lock upgrade sh -> ex',
+                        throw new JsonProviderLockException(
+                            JsonProviderErrorEn::LockOrderDatabaseUpgrade,
                         );
                     }
 
@@ -153,16 +156,18 @@ final class TableLockManager
                     $dbReentered = true;
                 } else {
                     if ($this->heldTables !== []) {
-                        throw StorageException::lockOrderViolation(
-                            'database lock requested while table locks '
-                                . 'are held',
+                        throw new JsonProviderLockException(
+                            JsonProviderErrorEn::LockOrderDatabaseAfterTables,
                         );
                     }
 
                     $this->acquire(
                         self::DB_LOCK_FILE,
                         $dbMode,
-                        'database',
+                        $dbMode === self::MODE_EX
+                            ? JsonProviderErrorEn::LockTimeoutExclusiveDatabase
+                            : JsonProviderErrorEn::LockTimeoutSharedDatabase,
+                        null,
                         $deadline,
                     );
                     $this->dbMode = $dbMode;
@@ -181,8 +186,9 @@ final class TableLockManager
                         $mode === self::MODE_EX
                         && $held['mode'] === self::MODE_SH
                     ) {
-                        throw StorageException::lockOrderViolation(
-                            'table "' . $name . '" lock upgrade sh -> ex',
+                        throw new JsonProviderLockException(
+                            JsonProviderErrorEn::LockOrderTableUpgrade,
+                            $name,
                         );
                     }
 
@@ -190,8 +196,9 @@ final class TableLockManager
                 }
 
                 if ($this->heldTables !== []) {
-                    throw StorageException::lockOrderViolation(
-                        'table "' . $name . '" is outside the held lock set',
+                    throw new JsonProviderLockException(
+                        JsonProviderErrorEn::LockOrderTableOutsideHeldSet,
+                        $name,
                     );
                 }
 
@@ -211,7 +218,10 @@ final class TableLockManager
                 $this->acquire(
                     self::tableLockFile($name),
                     $tables[$name],
-                    'table "' . $name . '"',
+                    $tables[$name] === self::MODE_EX
+                        ? JsonProviderErrorEn::LockTimeoutExclusiveTable
+                        : JsonProviderErrorEn::LockTimeoutSharedTable,
+                    $name,
                     $deadline,
                 );
                 $this->heldTables[$name] = [
@@ -276,9 +286,10 @@ final class TableLockManager
 
         if ($this->heldServiceFile !== null) {
             if ($this->heldServiceFile !== $fileName) {
-                throw StorageException::lockOrderViolation(
-                    'service-file lock "' . $fileName . '" requested while "'
-                        . $this->heldServiceFile . '" is held',
+                throw new JsonProviderLockException(
+                    JsonProviderErrorEn::LockOrderServiceFileNested,
+                    $fileName,
+                    $this->heldServiceFile,
                 );
             }
 
@@ -294,7 +305,8 @@ final class TableLockManager
         $this->acquire(
             self::serviceLockFile($fileName),
             self::MODE_EX,
-            'service file "' . $fileName . '"',
+            JsonProviderErrorEn::LockTimeoutExclusiveServiceFile,
+            $fileName,
             $this->frameDeadline(),
         );
         $this->heldServiceFile = $fileName;
@@ -360,13 +372,13 @@ final class TableLockManager
         self::assertName($tableName);
 
         if (!$this->isHeld($tableName, self::MODE_EX)) {
-            throw StorageException::lockOrderViolation(
-                'deleteTableLock("' . $tableName
-                    . '") requires the table EX lock',
+            throw new JsonProviderLockException(
+                JsonProviderErrorEn::LockOrderDeleteRequiresExclusive,
+                $tableName,
             );
         }
 
-        $path = $this->locksDir() . '/' . self::tableLockFile($tableName);
+        $path = $this->lockPath(self::tableLockFile($tableName));
 
         if (file_exists($path)) {
             unlink($path);
@@ -404,7 +416,10 @@ final class TableLockManager
             || $name === '..'
             || basename($name) !== $name
         ) {
-            throw StorageException::invalidFileName($name);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::InvalidFileName,
+                $name,
+            );
         }
     }
 
@@ -440,7 +455,9 @@ final class TableLockManager
 
         if ($dbAcquired) {
             if ($this->dbDepth !== 1) {
-                throw StorageException::lockDepthDesync();
+                throw new JsonProviderLockException(
+                    JsonProviderErrorEn::LockDepthDesync,
+                );
             }
 
             $this->dbMode = null;
@@ -459,7 +476,8 @@ final class TableLockManager
     private function acquire(
         string $lockFile,
         string $mode,
-        string $subject,
+        LocaleInterface $timeout,
+        string | null $subject,
         int $deadline,
     ): void {
         $operation = ($mode === self::MODE_EX ? LOCK_EX : LOCK_SH) | LOCK_NB;
@@ -476,17 +494,17 @@ final class TableLockManager
                 flock($handle, LOCK_UN);
                 $this->evictHandle($lockFile);
             } elseif ($wouldBlock !== 1) {
-                throw StorageException::lockFailed(
-                    $this->locksDir() . '/' . $lockFile,
+                throw new JsonProviderLockException(
+                    JsonProviderErrorEn::LockFailed,
+                    $this->lockPath($lockFile),
                 );
             }
 
             if (hrtime(true) >= $deadline) {
-                throw StorageException::lockTimeout(
-                    $mode,
-                    $subject,
-                    self::formatSeconds($this->timeoutSeconds),
-                );
+                $params = $subject === null ? [] : [$subject];
+                $params[] = self::formatSeconds($this->timeoutSeconds);
+
+                throw new JsonProviderLockException($timeout, ...$params);
             }
 
             usleep(self::RETRY_INTERVAL_MICROSECONDS);
@@ -527,7 +545,7 @@ final class TableLockManager
             return false;
         }
 
-        $path = $this->locksDir() . '/' . $lockFile;
+        $path = $this->lockPath($lockFile);
         clearstatcache(true, $path);
         $pathStat = @stat($path);
 
@@ -551,14 +569,20 @@ final class TableLockManager
         $dir = $this->locksDir();
 
         if (!is_dir($dir) && !@mkdir($dir, 0755) && !is_dir($dir)) {
-            throw StorageException::fileNotWritable($dir);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $dir,
+            );
         }
 
         $path = $dir . '/' . $lockFile;
         $handle = fopen($path, 'c');
 
         if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
 
         $this->handles[$lockFile] = $handle;
@@ -569,6 +593,11 @@ final class TableLockManager
     private function frameDeadline(): int
     {
         return hrtime(true) + (int)($this->timeoutSeconds * 1_000_000_000);
+    }
+
+    private function lockPath(string $lockFile): string
+    {
+        return $this->locksDir() . '/' . $lockFile;
     }
 
     private function locksDir(): string

@@ -27,5 +27,6 @@ final class EventDto
         public \DateTimeImmutable | null $endsAt,
         public \DateTimeImmutable $onDate,
         public int $year,
-    ) {}
+    ) {
+    }
 }

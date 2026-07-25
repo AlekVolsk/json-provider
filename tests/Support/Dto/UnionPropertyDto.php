@@ -16,5 +16,6 @@ final class UnionPropertyDto
     public function __construct(
         public int $id,
         public int | string $x,
-    ) {}
+    ) {
+    }
 }

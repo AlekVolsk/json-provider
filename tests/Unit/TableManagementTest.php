@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Cache\InMemoryCache;
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Mapping\DtoRegistry;
 use AV\JsonProvider\Query\OrderBy;
@@ -304,7 +304,7 @@ final class TableManagementTest
             ),
         ));
 
-        Assert::same($key, 'MIGRATE_COLUMN_TYPE_CHANGE');
+        Assert::same($key, 'MigrateColumnTypeChange');
         Assert::same($db->readAll('t')[0]['a'], 42);
         Assert::same($db->columnNames('t'), ['id', 'a']);
     }
@@ -326,7 +326,7 @@ final class TableManagementTest
                     columns: ['id' => 'int', 'title' => 'string', 'f' => $type],
                 ),
             ));
-            Assert::same($key, 'MIGRATE_COLUMN_NO_DEFAULT', $type);
+            Assert::same($key, 'MigrateColumnNoDefault', $type);
         }
 
         $db->migrateColumns(TableSchema::create(
@@ -379,7 +379,7 @@ final class TableManagementTest
             ),
         ));
 
-        Assert::same($key, 'MIGRATE_FIELD_UNKNOWN_COLUMN');
+        Assert::same($key, 'MigrateFieldUnknownColumnUnique');
         Assert::true(\in_array('email', $db->columnNames('u'), true));
         Assert::count($db->readAll('u'), 1);
     }
@@ -405,7 +405,7 @@ final class TableManagementTest
             ),
         ));
 
-        Assert::same($key, 'MIGRATE_FIELD_UNKNOWN_COLUMN');
+        Assert::same($key, 'MigrateFieldUnknownColumnIndex');
         Assert::true(\in_array('b', $db->columnNames('p'), true));
     }
 
@@ -484,7 +484,7 @@ final class TableManagementTest
             ),
         ));
 
-        Assert::same($key, 'TABLE_NOT_FOUND');
+        Assert::same($key, 'TableNotFound');
     }
 
     private function makeDb(): JsonDataProvider
@@ -551,7 +551,7 @@ final class TableManagementTest
     {
         try {
             $fn();
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             return $e->getErrorKey();
         }
 

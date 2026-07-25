@@ -15,7 +15,8 @@ class InheritedPrivateBase
     public function __construct(
         public int $id,
         private string | null $secret = null,
-    ) {}
+    ) {
+    }
 
     public function secret(): string | null
     {

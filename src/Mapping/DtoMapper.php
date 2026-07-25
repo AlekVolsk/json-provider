@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Mapping;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderMappingException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Validation\TemporalCodec;
 use AV\JsonProvider\Validation\TemporalKind;
 use AV\JsonProvider\Validation\TemporalParseException;
@@ -23,7 +24,8 @@ final class DtoMapper
 {
     public function __construct(
         private readonly TemporalCodec $codec = new TemporalCodec(),
-    ) {}
+    ) {
+    }
 
     /**
      * Builds a DTO from a decoded row.
@@ -78,10 +80,10 @@ final class DtoMapper
                 return null;
             }
 
-            throw StorageException::dtoHydrationFailed(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::HydrateNullNonNullable,
                 $map->table,
                 $field->column,
-                'stored null for a non-nullable property',
             );
         }
 
@@ -117,20 +119,23 @@ final class DtoMapper
         bool | float | int | string $raw,
     ): \DateTimeImmutable {
         if (!\is_string($raw)) {
-            throw StorageException::dtoHydrationFailed(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::HydrateNotTemporal,
                 $map->table,
                 $column,
-                'stored ' . get_debug_type($raw) . ' for a date/time property',
+                get_debug_type($raw),
             );
         }
 
         try {
             return $this->codec->localStringToDateTime($kind, $raw);
         } catch (TemporalParseException) {
-            throw StorageException::dtoHydrationFailed(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::HydrateBadTemporal,
                 $map->table,
                 $column,
-                'stored value "' . $raw . '" is not a valid ' . $kind->value,
+                $raw,
+                $kind->value,
             );
         }
     }
@@ -145,7 +150,8 @@ final class DtoMapper
         bool | float | int | string $raw,
     ): \BackedEnum {
         if (!\is_int($raw) && !\is_string($raw)) {
-            throw StorageException::invalidEnumValue(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::InvalidEnumValue,
                 $map->table,
                 $column,
                 get_debug_type($raw),
@@ -156,7 +162,8 @@ final class DtoMapper
         $case = $enumClass::tryFrom($raw);
 
         if ($case === null) {
-            throw StorageException::invalidEnumValue(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::InvalidEnumValue,
                 $map->table,
                 $column,
                 (string)$raw,
@@ -198,10 +205,11 @@ final class DtoMapper
             return $value;
         }
 
-        throw StorageException::dtoSchemaMismatch(
+        throw new JsonProviderMappingException(
+            JsonProviderErrorEn::DtoPropertyTypeMismatch,
             $map->class,
             $map->table,
-            'property "' . $field->property . '" is not its declared type',
+            $field->property,
         );
     }
 }

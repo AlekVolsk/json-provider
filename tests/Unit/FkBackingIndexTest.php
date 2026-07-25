@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
@@ -210,8 +210,8 @@ final class FkBackingIndexTest
         try {
             $this->db->table('users')->deleteById($userId);
             Assert::fail('restrict must block through the new backing');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FOREIGN_KEY_RESTRICT');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ForeignKeyRestrict');
         }
     }
 
@@ -223,8 +223,8 @@ final class FkBackingIndexTest
         try {
             $this->db->dropIndex('posts', '_fk_userId');
             Assert::fail('service index lifecycle belongs to relation DDL');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RESERVED_INDEX_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ReservedIndexName');
         }
 
         try {
@@ -235,8 +235,8 @@ final class FkBackingIndexTest
                 ],
             ));
             Assert::fail('the _fk_ namespace is reserved');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RESERVED_INDEX_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ReservedIndexName');
         }
     }
 
@@ -283,8 +283,8 @@ final class FkBackingIndexTest
                 'a restrict probe without a backing index must be a loud '
                     . 'configuration error, never a silent scan',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FK_BACKING_INDEX_MISSING');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'FkBackingIndexMissing');
         }
     }
 
@@ -323,8 +323,8 @@ final class FkBackingIndexTest
         try {
             $this->db->table('users')->deleteById($userId);
             Assert::fail('restrict must block after the repair');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FOREIGN_KEY_RESTRICT');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ForeignKeyRestrict');
         }
     }
 
@@ -347,8 +347,8 @@ final class FkBackingIndexTest
                 'a structurally corrupt backing must fail loudly, not '
                     . 'return "no references"',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_UNRELIABLE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexKeyMalformed');
         }
 
         Assert::same($this->db->table('users')->count(), 1);
@@ -371,8 +371,8 @@ final class FkBackingIndexTest
         try {
             $this->db->table('users')->deleteById($userId);
             Assert::fail('the scan fallback must see the foreign row');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'FOREIGN_KEY_RESTRICT');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ForeignKeyRestrict');
         }
     }
 

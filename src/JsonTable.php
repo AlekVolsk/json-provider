@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderMappingException;
+use AV\JsonProvider\Exception\JsonProviderQueryException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
 use AV\JsonProvider\Query\FilterCondition;
@@ -34,6 +36,9 @@ use AV\JsonProvider\Schema\TableSchema;
  */
 final class JsonTable
 {
+    private const string CONTEXT_SELECT_COLUMN = 'selectColumn';
+    private const string CONTEXT_ORDER_BY = 'orderBy';
+
     /** @var array<int,FilterCondition> */
     private array $conditions = [];
 
@@ -57,12 +62,13 @@ final class JsonTable
         private readonly TableSchema $tableSchema,
         private readonly DtoMap | null $dtoMap,
         private readonly DtoMapper $mapper,
-    ) {}
+    ) {
+    }
 
     /**
      * Adds a filter condition (AND). An unknown operator string is
-     * rejected with a localized INVALID_OPERATOR instead of a raw
-     * ValueError.
+     * rejected with the localized INVALID_OPERATOR, which names the table
+     * the condition was built against.
      */
     public function where(
         string $field,
@@ -73,7 +79,8 @@ final class JsonTable
         $op = FilterOperatorEnum::tryFrom($operator);
 
         if ($op === null) {
-            throw StorageException::invalidOperator(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidOperator,
                 $this->tableSchema->name,
                 $operator,
             );
@@ -122,7 +129,8 @@ final class JsonTable
         $dir = SortDirectionEnum::tryFrom(strtolower($direction));
 
         if ($dir === null) {
-            throw StorageException::invalidSortDirection(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidSortDirection,
                 $this->tableSchema->name,
                 $direction,
             );
@@ -140,7 +148,8 @@ final class JsonTable
     public function limit(int $n): self
     {
         if ($n < 0) {
-            throw StorageException::invalidLimit(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidLimit,
                 $this->tableSchema->name,
                 $n,
             );
@@ -158,7 +167,8 @@ final class JsonTable
     public function offset(int $n): self
     {
         if ($n < 0) {
-            throw StorageException::invalidOffset(
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidOffset,
                 $this->tableSchema->name,
                 $n,
             );
@@ -171,7 +181,9 @@ final class JsonTable
 
     /**
      * Enables deduplication by the given fields.
-     * Applied after filtering, before sorting and pagination.
+     * Applied after filtering and sorting, before pagination: every group
+     * of duplicates keeps its first row in result order, so the ordering
+     * decides which one survives.
      */
     public function isDistinct(string ...$fields): self
     {
@@ -258,10 +270,11 @@ final class JsonTable
     {
         try {
             if (!\array_key_exists($field, $this->tableSchema->columns)) {
-                throw StorageException::queryUnknownColumn(
+                throw new JsonProviderQueryException(
+                    JsonProviderErrorEn::QueryUnknownColumn,
                     $this->tableSchema->name,
                     $field,
-                    'selectColumn',
+                    self::CONTEXT_SELECT_COLUMN,
                 );
             }
 
@@ -298,10 +311,11 @@ final class JsonTable
                         $this->tableSchema->columns,
                     )
                 ) {
-                    throw StorageException::queryUnknownColumn(
+                    throw new JsonProviderQueryException(
+                        JsonProviderErrorEn::QueryUnknownColumn,
                         $this->tableSchema->name,
                         $order->field,
-                        'orderBy',
+                        self::CONTEXT_ORDER_BY,
                     );
                 }
             }
@@ -385,10 +399,9 @@ final class JsonTable
             $id = $record['id'] ?? null;
 
             if (!\is_int($id)) {
-                throw StorageException::dtoHydrationFailed(
+                throw new JsonProviderMappingException(
+                    JsonProviderErrorEn::DtoIdMustBeInt,
                     $this->tableSchema->name,
-                    'id',
-                    'update(object) requires an int id on the DTO',
                 );
             }
 
@@ -588,7 +601,10 @@ final class JsonTable
     private function requireDtoMap(): DtoMap
     {
         if ($this->dtoMap === null) {
-            throw StorageException::dtoNotRegistered($this->tableSchema->name);
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::DtoNotRegistered,
+                $this->tableSchema->name,
+            );
         }
 
         return $this->dtoMap;

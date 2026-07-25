@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -57,7 +57,7 @@ final class NonFiniteFloatTest
     #[Test]
     public function insertInfRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('NAN and INF');
 
         $this->db->insert(self::TABLE, ['f' => INF]);
@@ -66,7 +66,7 @@ final class NonFiniteFloatTest
     #[Test]
     public function insertNegativeInfRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('NAN and INF');
 
         $this->db->insert(self::TABLE, ['f' => -INF]);
@@ -75,7 +75,7 @@ final class NonFiniteFloatTest
     #[Test]
     public function insertNanRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('NAN and INF');
 
         $this->db->insert(self::TABLE, ['f' => NAN]);
@@ -84,7 +84,7 @@ final class NonFiniteFloatTest
     #[Test]
     public function nonFiniteRejectedOnNullableColumnToo(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('NAN and INF');
 
         $this->db->insert(self::TABLE, ['f' => 1.0, 'opt' => INF]);
@@ -95,9 +95,9 @@ final class NonFiniteFloatTest
     {
         try {
             $this->db->insert(self::TABLE, ['f' => NAN]);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'NON_FINITE_FLOAT');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'NonFiniteFloat');
             Assert::string($e->getMessage())->contains(self::TABLE);
             Assert::string($e->getMessage())->contains('"f"');
         }
@@ -113,9 +113,9 @@ final class NonFiniteFloatTest
             $this->db->table(self::TABLE)
                 ->where('id', '=', $id)
                 ->updateByArray(['f' => INF]);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'NON_FINITE_FLOAT');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'NonFiniteFloat');
         }
 
         $after = md5((string)file_get_contents($this->dataPath()));

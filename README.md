@@ -13,13 +13,14 @@ Designed for compact, low-traffic workloads where a real RDBMS would be overkill
 - Schema-driven NDJSON storage with per-table subdirectories
 - Auto-incrementing integer primary key (`id`) — invariant, not optional
 - Lookup and ordering indexes (including a mandatory PK index)
-- Schema evolution — add / drop / reorder columns and drop tables (`migrateColumns`, `reorderColumns`, `dropTable`)
+- Schema evolution — add / drop / reorder / rename columns, rename and drop tables (`migrateColumns`, `reorderColumns`, `renameColumn`, `renameTable`, `dropTable`)
 - Query builder with `WHERE`, `LIKE`, `BETWEEN`, `IN`, `ORDER BY`, pagination, distinct
 - Foreign keys with `cascade` / `setNull` / `restrict` / `noAction`
-- Pluggable cache layer (APCu / Memcached / Redis / file / your own)
+- Pluggable cache layer (APCu / Memcached / Redis / in-memory / your own)
 - Built-in integrity validator and repairer
 - Built-in backup / restore as `.tar.gz` archives, no shell required
-- Localized error messages (English / Russian, extensible to any locale)
+- A typed exception hierarchy: nine domain classes over a single vocabulary of situations, matched on rather than string-compared
+- Localized error messages (English / Russian, extensible to any locale), with every exception logged through PSR-3 when a logger is attached
 
 ## Documentation
 
@@ -32,7 +33,8 @@ Designed for compact, low-traffic workloads where a real RDBMS would be overkill
 
 - PHP 8.4+
 - Bundled PHP extensions: `ext-json`, `ext-phar`, `ext-zlib`
-- Optional cache extensions: `ext-apcu`, `ext-memcached`, `ext-redis`
+- One Composer runtime dependency: `psr/log` (^3) — the optional logger interface
+- Optional extensions: `ext-apcu`, `ext-memcached`, `ext-redis` (cache adapters), `ext-intl` (`ComparisonMode::Locale`)
 
 ## Quick taste
 

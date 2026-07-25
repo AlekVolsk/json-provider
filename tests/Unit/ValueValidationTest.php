@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -32,7 +32,7 @@ final class ValueValidationTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('expected type int');
 
         $db->table(self::TABLE)->insertByArray(self::row(['n' => '42']));
@@ -43,7 +43,7 @@ final class ValueValidationTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('expected type string');
 
         $db->table(self::TABLE)->insertByArray(self::row(['s' => 5]));
@@ -54,7 +54,7 @@ final class ValueValidationTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('expected type bool');
 
         $db->table(self::TABLE)->insertByArray(self::row(['b' => 1]));
@@ -65,7 +65,7 @@ final class ValueValidationTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('expected type float');
 
         $db->table(self::TABLE)->insertByArray(self::row(['f' => '1.5']));
@@ -108,8 +108,8 @@ final class ValueValidationTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('not nullable');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('does not accept null');
 
         $db->table(self::TABLE)->insertByArray(self::row(['s' => null]));
     }
@@ -142,7 +142,7 @@ final class ValueValidationTest
         $id = $db->table(self::TABLE)->insertByArray(self::row());
 
         try {
-            Expect::exception(StorageException::class)
+            Expect::exception(JsonProviderException::class)
                 ->withMessageContaining('expected type int');
 
             $db->table(self::TABLE)

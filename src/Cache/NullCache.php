@@ -18,9 +18,15 @@ final class NullCache implements CacheInterface
     /**
      * @param array<int,array<string,null|scalar>> $_records
      */
-    public function set(string $_key, array $_records): void {}
+    public function set(string $_key, array $_records): void
+    {
+    }
 
-    public function invalidate(string $_key): void {}
+    public function invalidate(string $_key): void
+    {
+    }
 
-    public function flushDb(string $_keyPrefix): void {}
+    public function flushDb(string $_keyPrefix): void
+    {
+    }
 }

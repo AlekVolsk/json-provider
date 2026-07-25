@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
@@ -316,8 +316,8 @@ final class SeverityScaleTest
             $this->db->table('childs')
                 ->where('label', '=', 'aa')->selectAllByArray();
             Assert::fail('a structurally corrupt index must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INDEX_UNRELIABLE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'IndexBrokenPermutation');
         }
 
         $errorRecords = array_filter(

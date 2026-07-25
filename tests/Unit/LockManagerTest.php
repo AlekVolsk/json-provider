@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Storage\TableLockManager;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -259,8 +259,8 @@ final class LockManagerTest
                 ),
             );
             Assert::fail('upgrade must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderTableUpgrade');
             Assert::string($e->getMessage())->contains('upgrade');
         }
 
@@ -283,8 +283,8 @@ final class LockManagerTest
                 ),
             );
             Assert::fail('fresh table on top of held set must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderTableOutsideHeldSet');
             Assert::string($e->getMessage())
                 ->contains('outside the held lock set');
         }
@@ -309,8 +309,8 @@ final class LockManagerTest
                 ),
             );
             Assert::fail('db lock after tables must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderDatabaseAfterTables');
         }
 
         Assert::false($manager->isHeld('users', 'sh'));
@@ -330,8 +330,8 @@ final class LockManagerTest
                 ),
             );
             Assert::fail('db upgrade must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderDatabaseUpgrade');
         }
 
         Assert::false($manager->isDatabaseHeld('sh'));
@@ -355,8 +355,8 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('must time out');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveTable');
             }
 
             Assert::false($manager->isDatabaseHeld('sh'));
@@ -381,8 +381,8 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('must time out');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveTable');
             }
 
             Assert::false($manager->isHeld('aaa', 'sh'));
@@ -470,16 +470,16 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('name "' . $bad . '" must be rejected');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'INVALID_FILE_NAME');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'InvalidFileName');
             }
         }
 
         try {
             $manager->withServiceFile('../db', static fn (): int => 1);
             Assert::fail('service name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_FILE_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidFileName');
         }
 
         Assert::false(file_exists(self::tmpDirRoot() . '/escape.table.lock'));
@@ -568,8 +568,8 @@ final class LockManagerTest
                 ),
             );
             Assert::fail('cross-leaf nesting must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderServiceFileNested');
         }
 
         Assert::true($this->probeFree(
@@ -593,8 +593,8 @@ final class LockManagerTest
                 ),
             );
             Assert::fail('level 1-2 on top of a leaf lock must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderAfterServiceFile');
         }
     }
 
@@ -634,8 +634,8 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('contended lock must time out');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveTable');
                 Assert::string($e->getMessage())->contains('0.15');
                 Assert::string($e->getMessage())->contains('users');
             }
@@ -666,8 +666,8 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('EX vs EX must block');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveTable');
             }
 
             try {
@@ -677,8 +677,8 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('EX vs SH must block');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutSharedTable');
             }
         } finally {
             $this->releaseHolder($holder);
@@ -710,8 +710,8 @@ final class LockManagerTest
                     static fn (): int => 1,
                 );
                 Assert::fail('SH vs EX must block');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveTable');
             }
         } finally {
             $this->releaseHolder($holder);
@@ -736,8 +736,8 @@ final class LockManagerTest
             try {
                 $manager->withDatabase(static fn (): int => 1);
                 Assert::fail('db SH vs db EX must block');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveDatabase');
             }
         } finally {
             $this->releaseHolder($holder);
@@ -836,8 +836,11 @@ final class LockManagerTest
             try {
                 $manager->withServiceFile('meta.json', static fn (): int => 1);
                 Assert::fail('service-file lock must exclude');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same(
+                    $e->getErrorKey(),
+                    'LockTimeoutExclusiveServiceFile',
+                );
             }
         } finally {
             $this->releaseHolder($holder);
@@ -876,8 +879,8 @@ final class LockManagerTest
         try {
             $manager->deleteTableLock('users');
             Assert::fail('deleteTableLock without EX must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LockOrderDeleteRequiresExclusive');
         }
 
         $manager->withLocks(
@@ -887,8 +890,11 @@ final class LockManagerTest
                 try {
                     $manager->deleteTableLock('users');
                     Assert::fail('deleteTableLock under SH must throw');
-                } catch (StorageException $e) {
-                    Assert::same($e->getErrorKey(), 'LOCK_ORDER_VIOLATION');
+                } catch (JsonProviderException $e) {
+                    Assert::same(
+                        $e->getErrorKey(),
+                        'LockOrderDeleteRequiresExclusive',
+                    );
                 }
             },
         );
@@ -975,8 +981,8 @@ final class LockManagerTest
                 Assert::fail(
                     'stale cached handle must not bypass the new lock file',
                 );
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'LOCK_TIMEOUT');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'LockTimeoutExclusiveTable');
             }
         } finally {
             $this->releaseHolder($holder);

@@ -20,7 +20,8 @@ final class VisibilityDto
         public int $id,
         private string $note,
         private string $tag,
-    ) {}
+    ) {
+    }
 
     public function note(): string
     {

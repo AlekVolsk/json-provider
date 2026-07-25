@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\TableSchema;
@@ -76,12 +76,12 @@ final class DdlAtomicityTest
 
         try {
             $this->db->createTable($this->userSchema());
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $caught = $e;
         }
 
         Assert::notNull($caught);
-        Assert::same($caught->getErrorKey(), 'TABLE_ALREADY_EXISTS');
+        Assert::same($caught->getErrorKey(), 'TableAlreadyExists');
     }
 
     #[Test]

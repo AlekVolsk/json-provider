@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -63,7 +63,7 @@ final class RelationsLoadStrictTest
                 'onDelete'   => $action,
             ]]);
 
-            $this->expectLoadKey('RELATION_ACTION_INVALID', $action);
+            $this->expectLoadKey('RelationActionInvalid', $action);
         }
     }
 
@@ -78,7 +78,7 @@ final class RelationsLoadStrictTest
             'type'       => 'belongsTo',
         ]]);
 
-        $this->expectLoadKey('RELATION_ENTRY_INVALID', 'form typo');
+        $this->expectLoadKey('RelationEntryKey', 'form typo');
     }
 
     #[Test]
@@ -92,7 +92,7 @@ final class RelationsLoadStrictTest
             'type'       => 'ownedBy',
         ]]);
 
-        $this->expectLoadKey('RELATION_ENTRY_INVALID', 'unknown type');
+        $this->expectLoadKey('RelationEntryType', 'unknown type');
     }
 
     #[Test]
@@ -129,7 +129,7 @@ final class RelationsLoadStrictTest
             return $data;
         });
 
-        $this->expectLoadKey('INVALID_SCHEMA', 'DESC direction');
+        $this->expectLoadKey('SchemaIndexDirection', 'DESC direction');
     }
 
     #[Test]
@@ -146,7 +146,7 @@ final class RelationsLoadStrictTest
             return $data;
         });
 
-        $this->expectLoadKey('INVALID_SCHEMA', 'unique without fields');
+        $this->expectLoadKey('SchemaUniqueFields', 'unique without fields');
     }
 
     #[Test]
@@ -159,7 +159,7 @@ final class RelationsLoadStrictTest
             return $data;
         });
 
-        $this->expectLoadKey('INVALID_SCHEMA', 'table def not object');
+        $this->expectLoadKey('SchemaTableNotObject', 'table def not object');
     }
 
     #[Test]
@@ -176,7 +176,10 @@ final class RelationsLoadStrictTest
             return $data;
         });
 
-        $this->expectLoadKey('INVALID_SCHEMA', 'non-string column type');
+        $this->expectLoadKey(
+            'SchemaColumnTypeNotString',
+            'non-string column type',
+        );
     }
 
     #[Test]
@@ -188,7 +191,7 @@ final class RelationsLoadStrictTest
             return $data;
         });
 
-        $this->expectLoadKey('INVALID_SCHEMA', 'missing tables key');
+        $this->expectLoadKey('SchemaTablesMissing', 'missing tables key');
     }
 
     #[Test]
@@ -259,7 +262,7 @@ final class RelationsLoadStrictTest
         try {
             $this->db->tableNames();
             Assert::fail('schema load must fail: ' . $case);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             Assert::same($e->getErrorKey(), $key, $case);
         }
     }

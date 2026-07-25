@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -23,7 +23,7 @@ use Testo\Test;
  *  - rebuildIndex restores a named index file to its canonical state derived
  *    from current table data, even if the file was tampered with;
  *  - rebuildAllIndexes does the same for every index, including PK;
- *  - unknown index name — StorageException::indexNotFound;
+ *  - unknown index name — JsonProviderException::indexNotFound;
  *  - JsonTable::rebuildIndex / rebuildAllIndexes are meta-operations:
  *    they do not consume or reset accumulated query state.
  */
@@ -70,7 +70,7 @@ final class RebuildIndexTest
     #[Test]
     public function rebuildIndexThrowsOnUnknownIndexName(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('no index named "ghost"');
 
         Fixture::db()->table('products')->rebuildIndex('ghost');

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -58,7 +58,7 @@ final class Utf8ValidationTest
     #[Test]
     public function insertBrokenUtf8Rejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('not valid UTF-8');
 
         $this->db->insert(self::TABLE, ['s' => "\xB1\x31"]);
@@ -67,7 +67,7 @@ final class Utf8ValidationTest
     #[Test]
     public function insertTruncatedMultibyteRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('not valid UTF-8');
 
         $this->db->insert(self::TABLE, ['s' => substr('Привет', 0, 3)]);
@@ -76,7 +76,7 @@ final class Utf8ValidationTest
     #[Test]
     public function insertOverlongEncodingRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('not valid UTF-8');
 
         $this->db->insert(self::TABLE, ['s' => "\xC0\xAF"]);
@@ -85,7 +85,7 @@ final class Utf8ValidationTest
     #[Test]
     public function insertLoneSurrogateRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('not valid UTF-8');
 
         $this->db->insert(self::TABLE, ['s' => "\xED\xA0\x80"]);
@@ -94,7 +94,7 @@ final class Utf8ValidationTest
     #[Test]
     public function brokenUtf8OnNullableColumnRejected(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('not valid UTF-8');
 
         $this->db->insert(
@@ -108,9 +108,9 @@ final class Utf8ValidationTest
     {
         try {
             $this->db->insert(self::TABLE, ['s' => "\xB1\x31"]);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_UTF8');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidUtf8');
             Assert::string($e->getMessage())->contains(self::TABLE);
             Assert::string($e->getMessage())->contains('"s"');
         }
@@ -126,9 +126,9 @@ final class Utf8ValidationTest
             $this->db->table(self::TABLE)
                 ->where('id', '=', $id)
                 ->updateByArray(['s' => "\xB1\x31"]);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_UTF8');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidUtf8');
         }
 
         $after = md5((string)file_get_contents($this->dataPath()));

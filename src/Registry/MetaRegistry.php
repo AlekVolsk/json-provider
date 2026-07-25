@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Registry;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderServiceException;
+use AV\JsonProvider\Exception\JsonProviderTableException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\JsonStorageTxHandle;
 
@@ -36,7 +38,7 @@ use AV\JsonProvider\Storage\JsonStorageTxHandle;
  * Contract: a meta entry must exist for every registered table. It is created
  * by initTable() (called from JsonDataProvider::createTable). Any operation
  * (allocateId / commit* / get*) for a missing table —
- * StorageException::metaEntryMissing.
+ * MetaEntryMissing.
  *
  * Atomicity is provided by JsonStorage::transaction (sidecar lock).
  * The registry knows the format only; physical I/O is delegated.
@@ -54,7 +56,8 @@ final class MetaRegistry
 
     public function __construct(
         private readonly JsonStorage $storage,
-    ) {}
+    ) {
+    }
 
     /**
      * Atomically increments lastInsertedId for the table and returns the new
@@ -72,7 +75,10 @@ final class MetaRegistry
             ) use ($tableName): int {
                 /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
-                    throw StorageException::metaEntryMissing($tableName);
+                    throw new JsonProviderServiceException(
+                        JsonProviderErrorEn::MetaEntryMissing,
+                        $tableName,
+                    );
                 }
 
                 $id = $data[$tableName]['lastInsertedId'] + 1;
@@ -125,7 +131,10 @@ final class MetaRegistry
             ) use ($tableName): void {
                 /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int, indexFormat?: int}> $data */
                 if (isset($data[$tableName])) {
-                    throw StorageException::tableAlreadyExists($tableName);
+                    throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableAlreadyExists,
+                        $tableName,
+                    );
                 }
 
                 $data[$tableName] = [
@@ -209,7 +218,10 @@ final class MetaRegistry
             ): void {
                 /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int, indexFormat?: int}> $data */
                 if (!isset($data[$tableName])) {
-                    throw StorageException::metaEntryMissing($tableName);
+                    throw new JsonProviderServiceException(
+                        JsonProviderErrorEn::MetaEntryMissing,
+                        $tableName,
+                    );
                 }
 
                 $data[$tableName]['indexFormat'] = $format;
@@ -371,7 +383,10 @@ final class MetaRegistry
             ): void {
                 /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
-                    throw StorageException::metaEntryMissing($tableName);
+                    throw new JsonProviderServiceException(
+                        JsonProviderErrorEn::MetaEntryMissing,
+                        $tableName,
+                    );
                 }
 
                 $data[$tableName]['lastInsertedId'] = $value;
@@ -425,7 +440,10 @@ final class MetaRegistry
             ): void {
                 /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
-                    throw StorageException::metaEntryMissing($tableName);
+                    throw new JsonProviderServiceException(
+                        JsonProviderErrorEn::MetaEntryMissing,
+                        $tableName,
+                    );
                 }
 
                 $data[$tableName]['lineCount'] = $lineCount;
@@ -455,15 +473,18 @@ final class MetaRegistry
         $data = $this->storage->read(self::META_FILE);
 
         if (!isset($data[$tableName])) {
-            throw StorageException::metaEntryMissing($tableName);
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::MetaEntryMissing,
+                $tableName,
+            );
         }
 
         $entry = $data[$tableName];
 
         if (!\is_array($entry)) {
-            throw StorageException::metaEntryCorrupt(
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::MetaEntryNotObject,
                 $tableName,
-                'the entry is not an object',
             );
         }
 
@@ -478,9 +499,9 @@ final class MetaRegistry
             || ($byteSize !== null && !\is_int($byteSize))
             || !\is_int($indexFormat)
         ) {
-            throw StorageException::metaEntryCorrupt(
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::MetaCounterNotInt,
                 $tableName,
-                'a counter field is missing or not an integer',
             );
         }
 

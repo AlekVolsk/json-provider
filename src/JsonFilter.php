@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider;
 
+use AV\JsonProvider\Exception\JsonProviderQueryException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 
@@ -35,10 +37,14 @@ final class JsonFilter
      */
     public function __construct(
         private readonly array $conditions = [],
-    ) {}
+    ) {
+    }
 
     /**
      * Adds a condition built from raw arguments. Returns a new filter.
+     * An unknown operator string is rejected with the localized
+     * INVALID_FILTER_OPERATOR (the table-less twin of the builder's
+     * INVALID_OPERATOR — a filter is built before any table is chosen).
      */
     public function where(
         string $field,
@@ -46,14 +52,18 @@ final class JsonFilter
         mixed $value,
         bool $not = false,
     ): self {
+        $op = FilterOperatorEnum::tryFrom($operator);
+
+        if ($op === null) {
+            throw new JsonProviderQueryException(
+                JsonProviderErrorEn::InvalidFilterOperator,
+                $operator,
+            );
+        }
+
         return new self([
             ...$this->conditions,
-            new FilterCondition(
-                $field,
-                FilterOperatorEnum::from($operator),
-                $value,
-                $not,
-            ),
+            new FilterCondition($field, $op, $value, $not),
         ]);
     }
 

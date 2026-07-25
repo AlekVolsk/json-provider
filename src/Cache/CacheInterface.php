@@ -6,9 +6,9 @@ namespace AV\JsonProvider\Cache;
 
 /**
  * Cache interface for the data provider.
- * Default implementation is NullCache (no caching).
- * Custom adapters (APCu, Redis, file) can be injected without
- * modifying the provider.
+ * Default implementation is NullCache (no caching); the bundled adapters
+ * are ApcuCache, MemcachedCache, RedisCache and InMemoryCache. A custom
+ * adapter can be injected without modifying the provider.
  *
  * Degradation policy — a contract EVERY adapter (including custom ones)
  * must honor: a cache backend failure never fails the database operation

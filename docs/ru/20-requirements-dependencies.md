@@ -5,33 +5,36 @@
 - PHP 8.4 или новее.
 - POSIX-совместимая ОС (Linux, macOS, BSD). Модель блокировок построена на `flock`, поэтому **Windows и сетевые ФС (NFS, SMB) не поддерживаются** — каталог БД должен лежать на локальной файловой системе.
 - Обязательные встроенные расширения (входят в стандартную сборку PHP):
-  - ext-json — кодирование и декодирование NDJSON-записей;
-  - ext-phar — чтение и запись резервных .tar-архивов;
-  - ext-zlib — gzip-сжатие бэкапов (.tar.gz).
+  - `ext-json` — кодирование и декодирование NDJSON-записей;
+  - `ext-phar` — чтение и запись резервных `.tar`-архивов;
+  - `ext-zlib` — gzip-сжатие бэкапов (`.tar.gz`).
+
 Эти расширения поставляются практически с любым дистрибутивом PHP, поэтому обычно ничего доустанавливать не нужно.
 
-## Опциональные расширения кеша
+## Опциональные расширения
 
-Слой кеширования подключаемый. Файловому и in-memory адаптерам ничего дополнительно не требуется; перечисленные ниже адаптеры требуют своего PHP-расширения и потому опциональны:
+Composer объявляет их в секции `suggest` — ни одно не обязательно:
 
-- ext-apcu — для ApcuCache;
-- ext-memcached — для MemcachedCache;
-- ext-redis — для RedisCache.
+- `ext-apcu` — адаптер кеша `ApcuCache`;
+- `ext-memcached` — адаптер кеша `MemcachedCache`;
+- `ext-redis` — адаптер кеша `RedisCache`;
+- `ext-intl` — режим сравнения строк `ComparisonMode::Locale` (коллатор); без расширения режим тихо работает как `Binary`, см. [Билдер запросов](08-query-builder.md).
 
-Если расширение адаптера отсутствует, конструирование этого адаптера бросает ошибку EXTENSION_REQUIRED; выберите другой адаптер (InMemoryCache, NullCache или свой собственный).
+Кеш-слой подключаемый: встроенным `NullCache` и `InMemoryCache` (как и вашему собственному адаптеру) ничего дополнительного не нужно. Отсутствие расширения проявляется по-разному: `ApcuCache` проверяет его явно и бросает `ExtensionRequired`, а `RedisCache`/`MemcachedCache` требуют клиента `\Redis`/`\Memcached` в конструкторе и без расширения падают `TypeError` ещё до входа в него — см. [Кеширование](16-caching.md).
 
 ## Установка
 
 `composer require alekvolsk/json-provider`
-Кроме PHP и перечисленных выше встроенных расширений, у библиотеки нет runtime-зависимостей Composer.
+
+Единственная runtime-зависимость Composer — `psr/log` (^3): интерфейс логгера, который провайдер и кеш-адаптеры принимают опционально. Всё остальное — PHP и перечисленные выше встроенные расширения.
 
 ## Зависимости для разработки
 
-Для контрибьюторов установка с dev-зависимостями (composer install) дополнительно подтягивает инструментарий, подключённый в Makefile:
+Для контрибьюторов установка с dev-зависимостями (`composer install`) дополнительно подтягивает инструментарий, подключённый в `Makefile`:
 
-- testo/testo — раннер тестов и фреймворк бенчмарков (tests/Unit, tests/Bench);
-- friendsofphp/php-cs-fixer — фиксер код-стайла (.php-cs-fixer.php);
-- squizlabs/php_codesniffer вместе со slevomat/coding-standard — сниффер кода (phpcs.xml);
-- phpstan/phpstan вместе с phpstan/phpstan-strict-rules и spaze/phpstan-disallowed-calls — статический анализ (phpstan.neon).
+- `testo/testo` — раннер тестов и фреймворк бенчмарков (`tests/Unit`, `tests/Bench`);
+- `friendsofphp/php-cs-fixer` — фиксер код-стайла (`.php-cs-fixer.php`);
+- `squizlabs/php_codesniffer` вместе с `slevomat/coding-standard` — сниффер кода (`phpcs.xml`);
+- `phpstan/phpstan` вместе с `phpstan/phpstan-strict-rules` и `spaze/phpstan-disallowed-calls` — статический анализ (`phpstan.neon`).
 
-Запускайте весь набор через make test или соответствующие composer-скрипты.
+Запускайте весь набор через `make test` или соответствующие composer-скрипты.

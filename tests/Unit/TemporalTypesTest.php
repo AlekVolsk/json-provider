@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -150,7 +150,7 @@ final class TemporalTypesTest
                 $db->table(self::TABLE)->insertByArray(
                     self::event(['on_date' => $value]),
                 );
-            } catch (StorageException) {
+            } catch (JsonProviderException) {
                 $rejected++;
             }
         }
@@ -163,7 +163,7 @@ final class TemporalTypesTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('zero dates');
 
         $db->table(self::TABLE)->insertByArray(
@@ -176,7 +176,7 @@ final class TemporalTypesTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('invalid datetime');
 
         $db->table(self::TABLE)->insertByArray(
@@ -203,7 +203,7 @@ final class TemporalTypesTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('out of range');
 
         $db->table(self::TABLE)->insertByArray(self::event(['mo' => 13]));
@@ -214,7 +214,7 @@ final class TemporalTypesTest
     {
         $db = self::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('out of range');
 
         $db->table(self::TABLE)->insertByArray(self::event(['dy' => 32]));

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Tests\Support\Fixture;
 use Testo\Assert;
@@ -89,7 +89,7 @@ final class ReorderColumnsTest
     #[Test]
     public function reorderThrowsOnUnknownColumn(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('unknown column "ghost"');
 
         Fixture::db()
@@ -100,7 +100,7 @@ final class ReorderColumnsTest
     #[Test]
     public function reorderThrowsOnDuplicateColumn(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('duplicate column "name"');
 
         Fixture::db()
@@ -111,7 +111,7 @@ final class ReorderColumnsTest
     #[Test]
     public function reorderThrowsOnIncompleteList(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('missing column(s)');
 
         Fixture::db()->table('categories')->reorderColumns(['sort']);

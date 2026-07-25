@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\Fixture;
 use Testo\Assert;
@@ -105,7 +105,7 @@ final class RecordOrderTest
     {
         $db = Fixture::db();
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('required column "sort"');
 
         $db->table('categories')->insertByArray([

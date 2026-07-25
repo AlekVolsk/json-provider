@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Index;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\JsonProviderServiceException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
+use AV\JsonProvider\Exception\Locale\LocaleInterface;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\SortDirectionEnum;
@@ -35,7 +38,8 @@ final class IndexManager
 {
     public function __construct(
         private readonly NdjsonStorage $storage,
-    ) {}
+    ) {
+    }
 
     /**
      * Rebuilds all indexes for the table after a write.
@@ -52,7 +56,7 @@ final class IndexManager
 
     /**
      * Looks up an index in the table schema by name.
-     * Throws StorageException::indexNotFound if no index matches.
+     * Throws IndexNotFound if no index matches.
      */
     public function findIndex(
         TableSchema $tableSchema,
@@ -64,7 +68,11 @@ final class IndexManager
             }
         }
 
-        throw StorageException::indexNotFound($tableSchema->name, $indexName);
+        throw new JsonProviderSchemaException(
+            JsonProviderErrorEn::IndexNotFound,
+            $tableSchema->name,
+            $indexName,
+        );
     }
 
     /**
@@ -142,16 +150,20 @@ final class IndexManager
         int $expectedLineCount,
         bool $strict,
     ): array | null {
-        $fail = static function (string $reason) use (
+        $fail = static function (
+            LocaleInterface $reason,
+            string ...$details,
+        ) use (
             $tableName,
             $index,
-            $strict,
+            $strict
         ): null {
             if ($strict) {
-                throw StorageException::indexUnreliable(
-                    $tableName,
-                    $index->name,
+                throw new JsonProviderServiceException(
                     $reason,
+                    $index->name,
+                    $tableName,
+                    ...$details,
                 );
             }
 
@@ -159,17 +171,17 @@ final class IndexManager
         };
 
         if (!$this->storage->exists($tableName, $index->getFileName())) {
-            return $fail('index file is missing');
+            return $fail(JsonProviderErrorEn::IndexFileMissing);
         }
 
         $rows = $this->storage->read($tableName, $index->getFileName());
 
         if (\count($rows) !== $expectedLineCount) {
-            return $fail(\sprintf(
-                'entry count %d != lineCount %d',
-                \count($rows),
-                $expectedLineCount,
-            ));
+            return $fail(
+                JsonProviderErrorEn::IndexCountMismatch,
+                (string)\count($rows),
+                (string)$expectedLineCount,
+            );
         }
 
         $entries = [];
@@ -182,21 +194,21 @@ final class IndexManager
             $line = $row['line'] ?? null;
 
             if (!\is_string($key) || !\is_int($line)) {
-                return $fail('malformed index entry');
+                return $fail(JsonProviderErrorEn::IndexEntryMalformed);
             }
 
             if ($line < 0 || $line >= $expectedLineCount) {
-                return $fail('broken line permutation');
+                return $fail(JsonProviderErrorEn::IndexBrokenPermutation);
             }
 
             if ($covered[$line] === true) {
-                return $fail('broken line permutation');
+                return $fail(JsonProviderErrorEn::IndexBrokenPermutation);
             }
 
             $covered[$line] = true;
 
             if (!$this->keyWellFormed($key, $index)) {
-                return $fail('truncated/malformed key');
+                return $fail(JsonProviderErrorEn::IndexKeyMalformed);
             }
 
             if ($prevKey !== null && strcmp($prevKey, $key) > 0) {

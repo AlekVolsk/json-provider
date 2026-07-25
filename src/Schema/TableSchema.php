@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Schema;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Single-table schema descriptor.
@@ -20,7 +21,7 @@ use AV\JsonProvider\Exception\StorageException;
  * not user input: `<table-name>.ndjson`, placed in the table's subdirectory.
  *
  * The constructor **validates** the PK contract and throws
- * StorageException::pkContractViolated on any violation. This prevents silent
+ * the primary key contract cases on any violation. This prevents silent
  * acceptance of a corrupted schema (e.g. tampered information_schema.json).
  *
  * For convenient assembly from a "human" description (without `id`, without
@@ -35,10 +36,9 @@ final class TableSchema
      * @param array<int,UniqueConstraint> $uniqueConstraints unique constraints
      *                                                       (PK is not included
      *                                                       here)
-     * @param array<string,string>        $columns           name => type
-     *                                                       (string | int |
-     *                                                       float | bool |
-     *                                                       null)
+     * @param array<string,string>        $columns           name => type,
+     *                                                       one of the closed
+     *                                                       ColumnTypes list
      * @param array<int,IndexSchema>      $indexes           indexes; PK index
      *                                                       must be present at
      *                                                       position 0
@@ -260,31 +260,31 @@ final class TableSchema
         array $columns,
     ): void {
         if (!isset($columns[PrimaryKey::FIELD])) {
-            throw StorageException::pkContractViolated(
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::PkColumnMissing,
                 $tableName,
-                'mandatory PK column "' . PrimaryKey::FIELD . '" is missing',
+                PrimaryKey::FIELD,
             );
         }
 
         if ($columns[PrimaryKey::FIELD] !== PrimaryKey::TYPE) {
-            throw StorageException::pkContractViolated(
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::PkColumnType,
                 $tableName,
-                'column "' . PrimaryKey::FIELD
-                    . '" must have type "' . PrimaryKey::TYPE
-                    . '", actual type: "'
-                    . $columns[PrimaryKey::FIELD] . '"',
+                PrimaryKey::FIELD,
+                PrimaryKey::TYPE,
+                $columns[PrimaryKey::FIELD],
             );
         }
 
         $firstField = array_key_first($columns);
 
         if ($firstField !== PrimaryKey::FIELD) {
-            throw StorageException::pkContractViolated(
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::PkColumnNotFirst,
                 $tableName,
-                'column "' . PrimaryKey::FIELD
-                    . '" must be first in columns, '
-                    . 'actual first column: "'
-                    . $firstField . '"',
+                PrimaryKey::FIELD,
+                $firstField,
             );
         }
     }
@@ -305,7 +305,8 @@ final class TableSchema
     ): void {
         foreach ($columns as $column => $type) {
             if (!ColumnTypes::isValid($type)) {
-                throw StorageException::invalidColumnType(
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::InvalidColumnType,
                     $tableName,
                     $column,
                     $type,
@@ -332,18 +333,18 @@ final class TableSchema
 
         foreach ($indexes as $position => $index) {
             if ($index->name === IndexSchema::PK_NAME && !$index->isPrimary) {
-                throw StorageException::pkContractViolated(
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::PkIndexNameReserved,
                     $tableName,
-                    'index name "' . IndexSchema::PK_NAME
-                        . '" is reserved for the PK index',
+                    IndexSchema::PK_NAME,
                 );
             }
 
             if ($index->isPrimary) {
                 if ($pkSeenAt !== null) {
-                    throw StorageException::pkContractViolated(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::PkIndexDuplicate,
                         $tableName,
-                        'exactly one PK index is allowed',
                     );
                 }
                 $pkSeenAt = $position;
@@ -351,17 +352,17 @@ final class TableSchema
         }
 
         if ($pkSeenAt === null) {
-            throw StorageException::pkContractViolated(
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::PkIndexMissing,
                 $tableName,
-                'mandatory PK index (isPrimary=true) is missing',
             );
         }
 
         if ($pkSeenAt !== 0) {
-            throw StorageException::pkContractViolated(
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::PkIndexPosition,
                 $tableName,
-                'PK index must be at position 0 in indexes, '
-                    . 'actual position: ' . $pkSeenAt,
+                (string)$pkSeenAt,
             );
         }
     }

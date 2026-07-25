@@ -16,7 +16,7 @@ PrimaryKey::FIELD;  // 'id'
 PrimaryKey::TYPE;   // 'int'
 ```
 
-Violations of this contract — when reading a tampered schema, when constructing `new TableSchema(...)` directly, or when registering a malformed schema — raise `StorageException` with the `PK_CONTRACT_VIOLATED` key.
+Violations of this contract — when reading a tampered schema, when constructing `new TableSchema(...)` directly, or when registering a malformed schema — raise `JsonProviderSchemaException` with one of the `Pk*` cases.
 
 The factory `TableSchema::create(...)` papers over user-side mistakes: prepends a missing `id`, moves a misplaced `id`, prepends a missing PK index. It does not paper over a wrong **type** for `id` — that is a semantic error and always throws.
 

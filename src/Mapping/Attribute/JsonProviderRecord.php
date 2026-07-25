@@ -23,5 +23,6 @@ final class JsonProviderRecord
 {
     public function __construct(
         public readonly string $table,
-    ) {}
+    ) {
+    }
 }

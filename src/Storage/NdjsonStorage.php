@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Storage;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\JsonProviderIoException;
+use AV\JsonProvider\Exception\JsonProviderLockException;
+use AV\JsonProvider\Exception\JsonProviderTableException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Storage for NDJSON files — the single point of physical I/O for table and
@@ -24,7 +28,8 @@ final class NdjsonStorage
     public function __construct(
         private readonly string $dbPath,
         private readonly TableLockManager | null $locks = null,
-    ) {}
+    ) {
+    }
 
     /**
      * Reads the whole NDJSON file and returns all records.
@@ -273,7 +278,10 @@ final class NdjsonStorage
         $handle = fopen($path, 'r');
 
         if ($handle === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         try {
@@ -298,7 +306,10 @@ final class NdjsonStorage
                 $piece = fread($handle, $length);
 
                 if ($piece === false) {
-                    throw StorageException::fileNotReadable($path);
+                    throw new JsonProviderIoException(
+                        JsonProviderErrorEn::FileNotReadable,
+                        $path,
+                    );
                 }
 
                 $buffer = $piece . $buffer;
@@ -363,7 +374,8 @@ final class NdjsonStorage
             $line = json_encode($record, JSON_PRESERVE_ZERO_FRACTION);
 
             if ($line === false) {
-                throw StorageException::invalidRecord(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::RecordJsonEncodeFailed,
                     $tableName,
                     json_last_error_msg(),
                 );
@@ -391,7 +403,7 @@ final class NdjsonStorage
     ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
-        $this->requireTableExLock($tableName, 'write');
+        $this->requireTableExLock($tableName, __METHOD__);
 
         $bytes = $this->encodeRecords($tableName, $records);
 
@@ -416,7 +428,7 @@ final class NdjsonStorage
     ): PreparedRewrite {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
-        $this->requireTableExLock($tableName, 'prepareRewrite');
+        $this->requireTableExLock($tableName, __METHOD__);
 
         $bytes = $this->encodeRecords($tableName, $records);
 
@@ -469,7 +481,8 @@ final class NdjsonStorage
         $line = json_encode($record, JSON_PRESERVE_ZERO_FRACTION);
 
         if ($line === false) {
-            throw StorageException::invalidRecord(
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::RecordJsonEncodeFailed,
                 $tableName,
                 json_last_error_msg(),
             );
@@ -478,18 +491,27 @@ final class NdjsonStorage
         $handle = fopen($path, 'c+');
 
         if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
 
         try {
             if (!flock($handle, LOCK_EX)) {
-                throw StorageException::lockFailed($path);
+                throw new JsonProviderLockException(
+                    JsonProviderErrorEn::LockFailed,
+                    $path,
+                );
             }
 
             $before = fstat($handle);
 
             if ($before === false) {
-                throw StorageException::fileNotWritable($path);
+                throw new JsonProviderIoException(
+                    JsonProviderErrorEn::FileNotWritable,
+                    $path,
+                );
             }
 
             $preSize = max(0, $before['size']);
@@ -498,10 +520,9 @@ final class NdjsonStorage
                 fseek($handle, -1, SEEK_END);
 
                 if (fgetc($handle) !== "\n") {
-                    throw StorageException::invalidRecord(
+                    throw new JsonProviderDataException(
+                        JsonProviderErrorEn::RecordTailNotTerminated,
                         $tableName,
-                        'data file tail is not newline-terminated; '
-                            . 'repair the table first',
                     );
                 }
             }
@@ -537,7 +558,10 @@ final class NdjsonStorage
                 fflush($handle);
                 fsync($handle);
 
-                throw StorageException::fileNotWritable($path);
+                throw new JsonProviderIoException(
+                    JsonProviderErrorEn::FileNotWritable,
+                    $path,
+                );
             }
 
             $size = $preSize + $length;
@@ -561,7 +585,10 @@ final class NdjsonStorage
         $path = $this->resolvePath($tableName, $fileName);
 
         if (file_exists($path)) {
-            throw StorageException::tableFileExists($path);
+            throw new JsonProviderTableException(
+                JsonProviderErrorEn::TableFileExists,
+                $path,
+            );
         }
 
         AtomicFileWriter::write($path, '');
@@ -608,7 +635,10 @@ final class NdjsonStorage
         $size = filesize($path);
 
         if ($size === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         return $size;
@@ -631,7 +661,10 @@ final class NdjsonStorage
         $stat = @stat($path);
 
         if ($stat === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         return ['size' => $stat['size'], 'ino' => $stat['ino']];
@@ -665,18 +698,27 @@ final class NdjsonStorage
         $handle = fopen($path, 'c+');
 
         if ($handle === false) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
 
         try {
             if (!flock($handle, LOCK_EX)) {
-                throw StorageException::lockFailed($path);
+                throw new JsonProviderLockException(
+                    JsonProviderErrorEn::LockFailed,
+                    $path,
+                );
             }
 
             $contents = stream_get_contents($handle);
 
             if ($contents === false) {
-                throw StorageException::fileNotReadable($path);
+                throw new JsonProviderIoException(
+                    JsonProviderErrorEn::FileNotReadable,
+                    $path,
+                );
             }
 
             $lastNewline = strrpos($contents, "\n");
@@ -699,7 +741,10 @@ final class NdjsonStorage
                     && fsync($handle);
 
                 if (!$ok) {
-                    throw StorageException::fileNotWritable($path);
+                    throw new JsonProviderIoException(
+                        JsonProviderErrorEn::FileNotWritable,
+                        $path,
+                    );
                 }
 
                 $action = 'newline-added';
@@ -711,7 +756,10 @@ final class NdjsonStorage
                     && fsync($handle);
 
                 if (!$ok) {
-                    throw StorageException::fileNotWritable($path);
+                    throw new JsonProviderIoException(
+                        JsonProviderErrorEn::FileNotWritable,
+                        $path,
+                    );
                 }
 
                 $action = 'partial-truncated';
@@ -741,7 +789,10 @@ final class NdjsonStorage
         $contents = file_get_contents($path);
 
         if ($contents === false) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
 
         return $contents;
@@ -759,7 +810,7 @@ final class NdjsonStorage
     ): int {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
-        $this->requireTableExLock($tableName, 'writeRaw');
+        $this->requireTableExLock($tableName, __METHOD__);
 
         return AtomicFileWriter::write($path, $contents);
     }
@@ -827,7 +878,10 @@ final class NdjsonStorage
         }
 
         if (!unlink($path)) {
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
     }
 
@@ -864,15 +918,24 @@ final class NdjsonStorage
                 return;
             }
 
-            throw StorageException::fileNotReadable($src);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $src,
+            );
         }
 
         if (is_dir($dst)) {
-            throw StorageException::tableFileExists($dst);
+            throw new JsonProviderTableException(
+                JsonProviderErrorEn::TableFileExists,
+                $dst,
+            );
         }
 
         if (!rename($src, $dst)) {
-            throw StorageException::fileNotWritable($dst);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $dst,
+            );
         }
 
         self::fsyncDir($this->dbPath);
@@ -897,15 +960,24 @@ final class NdjsonStorage
                 return;
             }
 
-            throw StorageException::fileNotReadable($src);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $src,
+            );
         }
 
         if (file_exists($dst)) {
-            throw StorageException::tableFileExists($dst);
+            throw new JsonProviderTableException(
+                JsonProviderErrorEn::TableFileExists,
+                $dst,
+            );
         }
 
         if (!rename($src, $dst)) {
-            throw StorageException::fileNotWritable($dst);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $dst,
+            );
         }
 
         self::fsyncDir($this->dbPath . '/' . $tableName);
@@ -925,7 +997,10 @@ final class NdjsonStorage
         }
 
         if (!rmdir($dir)) {
-            throw StorageException::fileNotWritable($dir);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $dir,
+            );
         }
     }
 
@@ -977,14 +1052,20 @@ final class NdjsonStorage
             || strpbrk($name, '/\\') !== false
             || basename($name) !== $name
         ) {
-            throw StorageException::invalidFileName($name);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::InvalidFileName,
+                $name,
+            );
         }
     }
 
     private function ensureDbDir(): void
     {
         if (!is_dir($this->dbPath)) {
-            throw StorageException::fileNotWritable($this->dbPath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $this->dbPath,
+            );
         }
     }
 
@@ -1003,14 +1084,20 @@ final class NdjsonStorage
         }
 
         if (!mkdir($dir, 0755, false) && !is_dir($dir)) {
-            throw StorageException::fileNotWritable($dir);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $dir,
+            );
         }
     }
 
     private function ensureFileExists(string $path): void
     {
         if (!file_exists($path)) {
-            throw StorageException::fileNotReadable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
         }
     }
 
@@ -1026,8 +1113,9 @@ final class NdjsonStorage
         string $operation,
     ): void {
         if ($this->locks !== null && !$this->locks->isHeld($tableName, 'ex')) {
-            throw StorageException::writeLockRequired(
-                'NdjsonStorage::' . $operation,
+            throw new JsonProviderLockException(
+                JsonProviderErrorEn::WriteLockRequired,
+                $operation,
                 $tableName,
             );
         }

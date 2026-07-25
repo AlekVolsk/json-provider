@@ -16,7 +16,8 @@ final class RecordingCache implements CacheInterface
 
     public function __construct(
         private readonly CacheInterface $inner,
-    ) {}
+    ) {
+    }
 
     public function get(string $key): array | null
     {

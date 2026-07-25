@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategory;
@@ -224,8 +224,8 @@ final class PresentNullDefaultsTest
                 'a missing non-nullable temporal has no safe default '
                     . 'and must fail loudly',
             );
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_RECORD');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RecordColumnNoDefault');
             Assert::string($e->getMessage())->contains('no safe default');
         }
     }
@@ -267,6 +267,87 @@ final class PresentNullDefaultsTest
         Assert::null($row['o']);
     }
 
+    /**
+     * The same-size foreign edit keeps the byteSize gate green, so the
+     * table is NOT canonically rewritten before the write: the record
+     * reaches the FK engine's own normalization, which must back-fill the
+     * type default exactly like the provider's — not a blind null that
+     * would surface as a fresh present_null finding.
+     */
+    #[Test]
+    public function updateBackfillsMissingColumnWithoutSelfHeal(): void
+    {
+        $this->insertRow(1);
+        $padded = $this->rewriteLineKeepingSize(
+            '{"id":1,"s":"%s","b":true,"f":1.5,"o":null}',
+        );
+
+        $this->db->table(self::TABLE)
+            ->where('id', '=', 1)->updateByArray(['o' => 7]);
+
+        $row = $this->db->table(self::TABLE)
+            ->where('id', '=', 1)->selectOneByArray();
+        \assert(\is_array($row));
+
+        Assert::same($row['n'], 0, 'missing int must become 0, not null');
+        Assert::same($row['s'], $padded);
+        Assert::same($row['b'], true);
+        Assert::same($row['f'], 1.5);
+        Assert::same($row['o'], 7);
+
+        $report = $this->db->validateTable(self::TABLE);
+        Assert::count(
+            $report->issuesByCategory(IssueCategory::PRESENT_NULL),
+            0,
+            'the write must not plant a null the validator then reports: '
+                . $report->format(),
+        );
+    }
+
+    /**
+     * Same window, but the missing column has no zero value to invent: the
+     * refusal happens in the plan phase, with the data file untouched.
+     */
+    #[Test]
+    public function updateRefusesMissingTemporalWithoutSelfHeal(): void
+    {
+        $this->db->createTable(TableSchema::create(
+            name: 'events',
+            columns: ['id' => 'int', 'at' => 'datetime', 'v' => 'string'],
+        ));
+        $this->db->insert('events', [
+            'at' => '2026-01-01 10:00:00',
+            'v'  => 'x',
+        ]);
+
+        $path = $this->dbDir . '/events/events.ndjson';
+        $original = trim((string)file_get_contents($path));
+        $template = '{"id":1,"v":"%s"}';
+        $pad = \strlen($original) - \strlen(\sprintf($template, ''));
+        Assert::true($pad > 0, 'the template must be paddable');
+
+        $crafted = \sprintf($template, str_repeat('x', $pad));
+        file_put_contents($path, $crafted . "\n");
+
+        try {
+            $this->db->table('events')
+                ->where('id', '=', 1)->updateByArray(['v' => 'y']);
+            Assert::fail(
+                'a missing non-nullable temporal has no safe default '
+                    . 'and must fail loudly',
+            );
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RecordColumnNoDefault');
+            Assert::string($e->getMessage())->contains('no safe default');
+        }
+
+        Assert::same(
+            trim((string)file_get_contents($path)),
+            $crafted,
+            'the plan phase must leave the data file untouched',
+        );
+    }
+
     #[Test]
     public function ghostKeysDoNotLeakIntoReads(): void
     {
@@ -300,6 +381,34 @@ final class PresentNullDefaultsTest
             'f' => 1.5,
             'o' => null,
         ]);
+    }
+
+    /**
+     * Replaces the single stored line with a hand-crafted object built
+     * from a "%s"-padded template, so the file KEEPS ITS BYTE SIZE and the
+     * committed byteSize gate stays green — the only window in which a
+     * record missing a column reaches a write path unhealed. Returns the
+     * padding that was spliced in.
+     */
+    private function rewriteLineKeepingSize(string $template): string
+    {
+        $path = $this->dbDir . '/' . self::TABLE . '/' . self::TABLE
+            . '.ndjson';
+        $original = trim((string)file_get_contents($path));
+        $pad = \strlen($original) - \strlen(\sprintf($template, ''));
+
+        Assert::true($pad > 0, 'the template must be paddable');
+
+        $padding = str_repeat('x', $pad);
+        file_put_contents($path, \sprintf($template, $padding) . "\n");
+
+        Assert::same(
+            \strlen(trim((string)file_get_contents($path))),
+            \strlen($original),
+            'the crafted line must keep the byteSize gate green',
+        );
+
+        return $padding;
     }
 
     /**

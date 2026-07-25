@@ -32,7 +32,8 @@ final class InMemoryCache implements CacheInterface
     public function __construct(
         private readonly int $ttl = 0,
         private readonly int $maxEntries = 1000,
-    ) {}
+    ) {
+    }
 
     public function get(string $key): array | null
     {

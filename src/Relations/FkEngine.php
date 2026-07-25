@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Relations;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\JsonProviderException;
+use AV\JsonProvider\Exception\JsonProviderRelationException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Schema\ColumnDefaults;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\RelationSchema;
@@ -112,7 +116,8 @@ final class FkEngine
         private readonly \Closure $readForWrite,
         private readonly \Closure $cacheInvalidate,
         private readonly \Closure $cacheStore,
-    ) {}
+    ) {
+    }
 
     /**
      * Lock plan for an update/delete of the given table: the table EX,
@@ -536,7 +541,8 @@ final class FkEngine
             ] as [$column, $holder, $holderSchema]
         ) {
             if (!\array_key_exists($column, $holderSchema->columns)) {
-                throw StorageException::relationColumnNotFound(
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::RelationColumnNotFound,
                     $relation->fromTable,
                     $relation->foreignKey,
                     $relation->toTable,
@@ -555,7 +561,8 @@ final class FkEngine
         );
 
         if ($childInfo->base !== $parentInfo->base) {
-            throw StorageException::relationTypeMismatch(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::RelationTypeMismatch,
                 $childTable,
                 $relation->childColumn(),
                 $childSchema->columns[$relation->childColumn()],
@@ -569,7 +576,8 @@ final class FkEngine
             $action === ForeignKeyActionEnum::SET_NULL
             && !$childInfo->nullable
         ) {
-            throw StorageException::foreignKeySetNullNotNullable(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::ForeignKeySetNullNotNullable,
                 $childTable,
                 $relation->childColumn(),
             );
@@ -597,7 +605,8 @@ final class FkEngine
             if (
                 $this->indexManager->eqExists($index, $indexEntries, $value)
             ) {
-                throw StorageException::foreignKeyRestrict(
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::ForeignKeyRestrict,
                     $relation->childTable(),
                     $relation->childColumn(),
                     $parentTable,
@@ -617,7 +626,8 @@ final class FkEngine
                 $value,
             ) !== []
         ) {
-            throw StorageException::foreignKeyRestrict(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::ForeignKeyRestrict,
                 $child,
                 $relation->childColumn(),
                 $parentTable,
@@ -680,7 +690,8 @@ final class FkEngine
 
         if (!$covering) {
             if ($required) {
-                throw StorageException::fkBackingIndexMissing(
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::FkBackingIndexMissing,
                     $child,
                     $relation->childColumn(),
                 );
@@ -729,7 +740,7 @@ final class FkEngine
         try {
             $byteSize = $this->meta->getByteSize($tableSchema->name);
             $format = $this->meta->getIndexFormat($tableSchema->name);
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             return false;
         }
 
@@ -948,7 +959,8 @@ final class FkEngine
 
         if ($info->temporalKind() !== null) {
             if ($value === null && !$info->nullable) {
-                throw StorageException::nullNotAllowed(
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::NullNotAllowed,
                     $childSchema->name,
                     $column,
                 );
@@ -1033,7 +1045,8 @@ final class FkEngine
                         $constraint->fields,
                     );
 
-                    throw StorageException::uniqueViolation(
+                    throw new JsonProviderDataException(
+                        JsonProviderErrorEn::UniqueViolation,
                         $table,
                         implode(', ', $constraint->fields),
                         implode(', ', $fieldValues),
@@ -1098,8 +1111,15 @@ final class FkEngine
     }
 
     /**
-     * Schema projection identical to the provider's normalizeRecord: only
-     * declared columns, in declaration order, absent ones as null.
+     * Schema projection of a record about to be rewritten, identical to
+     * the provider's normalizeRecord: only declared columns, in
+     * declaration order; a PRESENT key keeps its value verbatim
+     * (including a present null the validator must keep seeing); an
+     * ABSENT column is back-filled with null for a nullable column and
+     * with the shared ColumnDefaults value for a non-nullable one. A
+     * missing non-nullable column with no safe default (temporal) cannot
+     * be invented — the throw lands in the plan phase, with every data
+     * file still untouched.
      *
      * @param array<string,null|scalar> $record
      *
@@ -1111,8 +1131,31 @@ final class FkEngine
     ): array {
         $normalized = [];
 
-        foreach (array_keys($tableSchema->columns) as $column) {
-            $normalized[$column] = $record[$column] ?? null;
+        foreach ($tableSchema->columns as $column => $type) {
+            if (\array_key_exists($column, $record)) {
+                $normalized[$column] = $record[$column];
+
+                continue;
+            }
+
+            $info = ColumnTypeInfo::parse($type);
+
+            if ($info->nullable) {
+                $normalized[$column] = null;
+
+                continue;
+            }
+
+            if (!ColumnDefaults::hasSafeDefault($type)) {
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::RecordColumnNoDefault,
+                    $tableSchema->name,
+                    $column,
+                    $type,
+                );
+            }
+
+            $normalized[$column] = ColumnDefaults::forType($type);
         }
 
         return $normalized;

@@ -21,5 +21,6 @@ final class LoadRowDto
         public int $val,
         public float $price,
         public bool $flag,
-    ) {}
+    ) {
+    }
 }

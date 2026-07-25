@@ -92,18 +92,19 @@ foreach ((new InitialMigration())->tables() as $schema) {
 }
 ```
 
-**Skip the failing step and log it** is the right choice when steps are independent: there is no reason to sink the other tables because of one. Catch the error, log it, and carry on; `TABLE_ALREADY_EXISTS` also makes a repeated run idempotent.
+**Skip the failing step and log it** is the right choice when steps are independent: there is no reason to sink the other tables because of one. Catch the error, log it, and carry on; `TableAlreadyExists` also makes a repeated run idempotent.
 
 ```php
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 $db = Db::provider();
 
 foreach ((new InitialMigration())->tables() as $schema) {
     try {
         $db->createTable($schema);
-    } catch (StorageException $e) {
-        if ($e->getErrorKey() === 'TABLE_ALREADY_EXISTS') {
+    } catch (JsonProviderException $e) {
+        if ($e->error === JsonProviderErrorEn::TableAlreadyExists) {
             continue;   // already applied — a repeated run is safe
         }
 

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -123,8 +123,8 @@ final class TruncateRenameColumnTest
         try {
             $this->db->truncate('missing');
             Assert::fail('truncate of an unknown table must throw');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'TABLE_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'TableNotFound');
         }
     }
 
@@ -166,8 +166,8 @@ final class TruncateRenameColumnTest
                 ['title' => 'x', 'amount' => 3],
             );
             Assert::fail('the renamed constraint must still enforce');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
 
         $ordered = $this->db->table('rn_items')
@@ -218,8 +218,8 @@ final class TruncateRenameColumnTest
         try {
             $this->db->table('rn_items')->where('id', '=', 1)->selectOne();
             Assert::fail('the stale DTO binding must be dropped');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'DTO_NOT_REGISTERED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'DtoNotRegistered');
         }
     }
 
@@ -229,29 +229,29 @@ final class TruncateRenameColumnTest
         try {
             $this->db->renameColumn('rn_items', 'id', 'ident');
             Assert::fail('the PK column must not be renameable');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'PK_CONTRACT_VIOLATED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'PkColumnNotRenamable');
         }
 
         try {
             $this->db->renameColumn('rn_items', 'qty', 'title');
             Assert::fail('a taken target name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'COLUMN_ALREADY_EXISTS');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ColumnAlreadyExists');
         }
 
         try {
             $this->db->renameColumn('rn_items', 'ghost', 'x');
             Assert::fail('an unknown source column must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'COLUMN_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ColumnNotFound');
         }
 
         try {
             $this->db->renameColumn('rn_items', 'qty', 'плохое имя');
             Assert::fail('an invalid target name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_COLUMN_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidColumnName');
         }
 
         Assert::same(

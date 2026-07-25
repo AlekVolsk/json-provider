@@ -33,7 +33,8 @@ final class IntegrityIssue
         public readonly array $context = [],
         public readonly bool $repaired = false,
         public readonly string | null $repairError = null,
-    ) {}
+    ) {
+    }
 
     /**
      * Returns a copy of this issue marked as repaired.

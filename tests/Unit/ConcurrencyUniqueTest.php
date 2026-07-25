@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Cache\InMemoryCache;
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
@@ -68,7 +68,7 @@ final class ConcurrencyUniqueTest
                 $db = \AV\JsonProvider\JsonDataProvider::getInstance($argv[2]);
                 $id = $db->insert($argv[3], ['code' => $argv[4]]);
                 echo "OK:{$id}\n";
-            } catch (\AV\JsonProvider\Exception\StorageException $e) {
+            } catch (\AV\JsonProvider\Exception\JsonProviderException $e) {
                 echo 'ERR:' . $e->getErrorKey() . "\n";
             }
             PHP;
@@ -92,7 +92,7 @@ final class ConcurrencyUniqueTest
 
             if (str_starts_with($out, 'OK:')) {
                 $wins++;
-            } elseif (str_starts_with($out, 'ERR:UNIQUE_VIOLATION')) {
+            } elseif (str_starts_with($out, 'ERR:UniqueViolation')) {
                 $violations++;
             }
         }
@@ -118,9 +118,9 @@ final class ConcurrencyUniqueTest
 
         try {
             $this->db->insert(self::TABLE, ['code' => 'dup']);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
 
         Assert::count($this->linesWithCode('dup'), 1);
@@ -140,9 +140,9 @@ final class ConcurrencyUniqueTest
 
         try {
             $this->db->insert(self::TABLE, ['code' => 'dup']);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
         }
 
         Assert::count($this->linesWithCode('dup'), 1);

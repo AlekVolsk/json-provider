@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Schema;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Naming rules for logical identifiers: table, column and index names.
@@ -46,25 +47,37 @@ final class IdentifierRules
             preg_match(self::PATTERN, $name) !== 1
             || $name === self::RESERVED_TABLE_NAME
         ) {
-            throw StorageException::invalidTableName($name);
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::InvalidTableName,
+                $name,
+            );
         }
     }
 
     public static function assertColumnName(string $name): void
     {
         if (preg_match(self::PATTERN, $name) !== 1) {
-            throw StorageException::invalidColumnName($name);
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::InvalidColumnName,
+                $name,
+            );
         }
     }
 
     public static function assertIndexName(string $name): void
     {
         if (preg_match(self::PATTERN, $name) !== 1) {
-            throw StorageException::invalidIndexName($name);
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::InvalidIndexName,
+                $name,
+            );
         }
 
         if (str_starts_with($name, self::SERVICE_INDEX_PREFIX)) {
-            throw StorageException::reservedIndexName($name);
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::ReservedIndexName,
+                $name,
+            );
         }
     }
 
@@ -83,7 +96,10 @@ final class IdentifierRules
                 substr($name, \strlen(self::SERVICE_INDEX_PREFIX)),
             ) !== 1
         ) {
-            throw StorageException::invalidIndexName($name);
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::InvalidIndexName,
+                $name,
+            );
         }
     }
 

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Mapping;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
+use AV\JsonProvider\Exception\JsonProviderMappingException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
+use AV\JsonProvider\Exception\Locale\LocaleInterface;
 use AV\JsonProvider\Mapping\Attribute\JsonProviderColumn;
 use AV\JsonProvider\Mapping\Attribute\JsonProviderRecord;
 use AV\JsonProvider\Schema\ColumnTypes;
@@ -19,7 +22,7 @@ use AV\JsonProvider\Validation\TemporalKind;
  * binding, walks the promoted constructor, and validates every parameter
  * against the matching schema column (name, PHP type ↔ column type,
  * nullability, enum backing). Any mismatch fails fast with a clear
- * StorageException, so a DTO can never silently disagree with its table.
+ * JsonProviderException, so a DTO can never silently disagree with its table.
  *
  * Only the DTO's constructor parameters are mapped; columns the DTO omits keep
  * the array-core rules (missing nullable → null, missing non-nullable → error
@@ -27,6 +30,8 @@ use AV\JsonProvider\Validation\TemporalKind;
  */
 final class DtoMap
 {
+    private const string UNBOUND_TABLE = '(unbound)';
+
     /**
      * @param class-string                          $class
      * @param array<int,FieldDescriptor>            $fields
@@ -37,14 +42,15 @@ final class DtoMap
         public readonly string $table,
         public readonly array $fields,
         public readonly \Closure $reader,
-    ) {}
+    ) {
+    }
 
     /**
      * Compiles and validates a DTO class against a table schema.
      *
      * @param class-string $class
      *
-     * @throws StorageException on any DTO/schema mismatch
+     * @throws JsonProviderException on any DTO/schema mismatch
      */
     public static function compile(string $class, TableSchema $schema): self
     {
@@ -53,10 +59,10 @@ final class DtoMap
         $constructor = $reflection->getConstructor();
 
         if ($constructor === null) {
-            throw StorageException::dtoSchemaMismatch(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::DtoNoConstructor,
                 $class,
                 $schema->name,
-                'a mapped DTO must declare a constructor',
             );
         }
 
@@ -75,7 +81,7 @@ final class DtoMap
      *
      * @param class-string $class
      *
-     * @throws StorageException if the attribute is absent
+     * @throws JsonProviderException if the attribute is absent
      */
     public static function tableName(string $class): string
     {
@@ -83,10 +89,10 @@ final class DtoMap
             ->getAttributes(JsonProviderRecord::class);
 
         if ($attributes === []) {
-            throw StorageException::dtoSchemaMismatch(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::DtoMissingAttribute,
                 $class,
-                '(unbound)',
-                'missing #[JsonProviderRecord] attribute',
+                self::UNBOUND_TABLE,
             );
         }
 
@@ -126,20 +132,21 @@ final class DtoMap
         $attributes = $reflection->getAttributes(JsonProviderRecord::class);
 
         if ($attributes === []) {
-            throw StorageException::dtoSchemaMismatch(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::DtoMissingAttribute,
                 $reflection->getName(),
                 $expected,
-                'missing #[JsonProviderRecord] attribute',
             );
         }
 
         $table = $attributes[0]->newInstance()->table;
 
         if ($table !== $expected) {
-            throw StorageException::dtoSchemaMismatch(
+            throw new JsonProviderMappingException(
+                JsonProviderErrorEn::DtoBoundToOtherTable,
                 $reflection->getName(),
                 $expected,
-                'bound to table "' . $table . '"',
+                $table,
             );
         }
 
@@ -159,8 +166,7 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                'property has no type declaration; a mapped property must '
-                    . 'be typed',
+                JsonProviderErrorEn::DtoPropertyUntyped,
             );
         }
 
@@ -169,7 +175,7 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                'union types are not supported',
+                JsonProviderErrorEn::DtoPropertyUnionType,
             );
         }
 
@@ -178,7 +184,7 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                'intersection types are not supported',
+                JsonProviderErrorEn::DtoPropertyIntersectionType,
             );
         }
 
@@ -187,7 +193,7 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                'unsupported type declaration',
+                JsonProviderErrorEn::DtoPropertyUnsupportedType,
             );
         }
 
@@ -196,7 +202,7 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                "'mixed' is not supported; declare a concrete type",
+                JsonProviderErrorEn::DtoPropertyMixedType,
             );
         }
 
@@ -211,10 +217,9 @@ final class DtoMap
                 $schema,
                 $property,
                 $derived
-                    ? 'no column "' . $column . '" (derived from property "'
-                        . $property . '"); add #[JsonProviderColumn("...")] '
-                        . 'to override the name'
-                    : 'no column "' . $column . '" in the table',
+                    ? JsonProviderErrorEn::DtoPropertyColumnDerivedMiss
+                    : JsonProviderErrorEn::DtoPropertyColumnMiss,
+                $column,
             );
         }
 
@@ -250,8 +255,8 @@ final class DtoMap
                     $class,
                     $schema,
                     $property,
-                    'DateTimeImmutable maps only to a temporal column, '
-                        . 'got "' . $info->base . '"',
+                    JsonProviderErrorEn::DtoPropertyTemporalOnly,
+                    $info->base,
                 );
             }
 
@@ -321,8 +326,9 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                'PHP type "' . $phpType . '" is not compatible with column '
-                    . 'type "' . $info->base . '"',
+                JsonProviderErrorEn::DtoPropertyScalarIncompatible,
+                $phpType,
+                $info->base,
             );
         }
 
@@ -355,14 +361,24 @@ final class DtoMap
             default             => null,
         };
 
+        if ($backingName === null) {
+            throw self::mismatch(
+                $class,
+                $schema,
+                $property,
+                JsonProviderErrorEn::DtoPropertyEnumUnbacked,
+            );
+        }
+
         if ($expected === null || $backingName !== $expected) {
             throw self::mismatch(
                 $class,
                 $schema,
                 $property,
-                'enum ' . $enumClass . ' (backed by '
-                    . ($backingName ?? 'nothing') . ') is not compatible with '
-                    . 'column type "' . $info->base . '"',
+                JsonProviderErrorEn::DtoPropertyEnumBacking,
+                $enumClass,
+                $backingName,
+                $info->base,
             );
         }
     }
@@ -400,9 +416,8 @@ final class DtoMap
             $class,
             $schema,
             $parameter->getName(),
-            'a private property inherited from ' . $declaringClass->getName()
-                . ' is not readable by the mapper; declare it on the DTO class '
-                . 'itself or make it protected',
+            JsonProviderErrorEn::DtoPropertyInheritedPrivate,
+            $declaringClass->getName(),
         );
     }
 
@@ -418,9 +433,9 @@ final class DtoMap
                 $class,
                 $schema,
                 $property,
-                'nullability differs from the column ('
-                    . ($info->nullable ? 'column is nullable' : 'column is not '
-                        . 'nullable') . ')',
+                $info->nullable
+                    ? JsonProviderErrorEn::DtoPropertyColumnIsNullable
+                    : JsonProviderErrorEn::DtoPropertyColumnIsNotNullable,
             );
         }
     }
@@ -441,12 +456,15 @@ final class DtoMap
         string $class,
         TableSchema $schema,
         string $property,
-        string $reason,
-    ): StorageException {
-        return StorageException::dtoSchemaMismatch(
+        LocaleInterface $reason,
+        string ...$details,
+    ): JsonProviderMappingException {
+        return new JsonProviderMappingException(
+            $reason,
             $class,
             $schema->name,
-            'property "' . $property . '": ' . $reason,
+            $property,
+            ...$details,
         );
     }
 }

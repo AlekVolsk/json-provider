@@ -18,5 +18,6 @@ final class PreparedRewrite
         public readonly string $tmpPath,
         public readonly string $targetPath,
         public readonly int $byteSize,
-    ) {}
+    ) {
+    }
 }

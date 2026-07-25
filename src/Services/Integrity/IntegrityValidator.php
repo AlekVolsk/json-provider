@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Services\Integrity;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
@@ -71,7 +71,8 @@ final class IntegrityValidator
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
         private readonly LoggerInterface | null $logger = null,
-    ) {}
+    ) {
+    }
 
     /**
      * Validates a single table and returns the report.
@@ -680,7 +681,7 @@ final class IntegrityValidator
                 foreach ($records as $line => $record) {
                     $expectedKeys[$line] = IndexKey::build($record, $index);
                 }
-            } catch (StorageException $e) {
+            } catch (JsonProviderException $e) {
                 $issues[] = new IntegrityIssue(
                     IssueSeverity::ERROR,
                     IssueCategory::INDEX_DRIFT,
@@ -768,7 +769,7 @@ final class IntegrityValidator
     {
         try {
             return $this->meta->getIndexFormat($tableName) >= 2;
-        } catch (StorageException) {
+        } catch (JsonProviderException) {
             return false;
         }
     }
@@ -829,7 +830,7 @@ final class IntegrityValidator
 
         try {
             $declaredCount = $this->meta->getLineCount($tableSchema->name);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             return [new IntegrityIssue(
                 IssueSeverity::CRITICAL,
                 IssueCategory::META_ENTRY_CORRUPT,

@@ -11,7 +11,7 @@ $db->table('products')->rebuildAllIndexes();   // including PK
 
 Both are atomic at the file level (each index file is replaced under an exclusive lock). Use them when you know an index is suspect — for example, after manual file tampering, or as a periodic maintenance task.
 
-`rebuildIndex()` raises `INDEX_NOT_FOUND` if the named index does not exist in the table schema.
+`rebuildIndex()` raises `IndexNotFound` if the named index does not exist in the table schema.
 
 Both operations stamp the current `indexFormat` in meta; `rebuildIndex()` on a table with the old format escalates to rebuilding all of its indexes (see [Indexes](06-indexes.md)).
 

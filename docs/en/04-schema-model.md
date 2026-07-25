@@ -43,15 +43,15 @@ $db->createTable(TableSchema::create(
 
 ## Table, column and index names
 
-A name is a whitelisted identifier: it starts with a letter, digit or underscore, continues with letters, digits, underscores or hyphens, is at most 64 characters long, and contains no dots or path separators. The rules live in `Schema\IdentifierRules` and are enforced at the schema boundary (the `TableSchema`/`IndexSchema` constructors), so they cover both the DDL API and loading `information_schema.json`. A violation raises `INVALID_TABLE_NAME` / `INVALID_COLUMN_NAME` / `INVALID_INDEX_NAME`.
+A name is a whitelisted identifier: it starts with a letter, digit or underscore, continues with letters, digits, underscores or hyphens, is at most 64 characters long, and contains no dots or path separators. The rules live in `Schema\IdentifierRules` and are enforced at the schema boundary (the `TableSchema`/`IndexSchema` constructors), so they cover both the DDL API and loading `information_schema.json`. A violation raises `InvalidTableName` / `InvalidColumnName` / `InvalidIndexName`.
 
-Reserved: the `_fk_` prefix for index names (engine-managed FK backing indexes) → `RESERVED_INDEX_NAME`; the table name `_pendingRename` (the `renameTable` crash-marker key in `meta.json`) → `INVALID_TABLE_NAME`.
+Reserved: the `_fk_` prefix for index names (engine-managed FK backing indexes) → `ReservedIndexName`; the table name `_pendingRename` (the `renameTable` crash-marker key in `meta.json`) → `InvalidTableName`.
 
-By construction a valid name can never escape the database directory when used as a path segment; the storage layers additionally carry an explicit anti-traversal guard (`.`, `..`, slashes). `dropTable` with an invalid name now throws (previously a no-op).
+By construction a valid name can never escape the database directory when used as a path segment; the storage layers additionally carry an explicit anti-traversal guard (`.`, `..`, slashes). `dropTable` with an invalid name raises `InvalidTableName` instead of silently doing nothing.
 
 ## Allowed column types
 
-A column type is a string value in the `columns` map. The list is **closed**: 12 base types and their `|null` variants — exactly the 24 strings enumerated by `ColumnTypes::all()`. Any other string (`'integer'`, `'datetime|nullable'`, a typo in a hand-edited schema file) is rejected by the `TableSchema` constructor with `INVALID_COLUMN_TYPE` — in the DDL API and on schema load alike. Each base type has a `|null` variant (which additionally permits `null`):
+A column type is a string value in the `columns` map. The list is **closed**: 12 base types and their `|null` variants — exactly the 24 strings enumerated by `ColumnTypes::all()`. Any other string (`'integer'`, `'datetime|nullable'`, a typo in a hand-edited schema file) is rejected by the `TableSchema` constructor with `InvalidColumnType` — in the DDL API and on schema load alike. Each base type has a `|null` variant (which additionally permits `null`):
 
 - **Primitives** — `string`, `int`, `float`, `bool`.
 - **Temporal** — `date`, `time`, `timez`, `datetime`, `datetimez`. An absolute moment (`datetime`/`datetimez`) is stored in UTC and presented in the current PHP timezone; wall-clock with no moment (`date`/`time`/`timez`) is stored verbatim; see [Temporal types and timezones](#temporal-types-and-timezones).
@@ -102,14 +102,14 @@ Records hold scalars and `null`; nested arrays are not supported.
 Types are enforced on every write (`insert`, `update`, and `where` values), not just documented. The contract is **strict**:
 
 - a value must match the declared PHP type exactly; the only widening allowed is `int` into a `float` column (`10 → 10.0`);
-- `NAN`, `INF` and `-INF` are never written into a `float` column — `NON_FINITE_FLOAT` (JSON cannot represent them); the guard fires on `insert`/`update`, before the disk is touched;
-- a written string must be valid UTF-8, otherwise `INVALID_UTF8` — likewise on `insert`/`update`, before the disk is touched;
+- `NAN`, `INF` and `-INF` are never written into a `float` column — `NonFiniteFloat` (JSON cannot represent them); the guard fires on `insert`/`update`, before the disk is touched;
+- a written string must be valid UTF-8, otherwise `InvalidUtf8` — likewise on `insert`/`update`, before the disk is touched;
 - `null` is accepted only on a `<type>|null` column;
 - on `insert`, a missing non-nullable column is an error (a missing nullable column becomes `null`); `update` is a patch — it validates only the keys it is given and leaves the rest untouched;
 - keys not present in the schema are dropped;
-- unknown/custom type strings cannot exist: the schema boundary rejects them (`INVALID_COLUMN_TYPE`), so every column is always validated against one of the 24 known types.
+- unknown/custom type strings cannot exist: the schema boundary rejects them (`InvalidColumnType`), so every column is always validated against one of the 24 known types.
 
-Violations raise `StorageException` with a specific key — `TYPE_MISMATCH`, `NULL_NOT_ALLOWED`, `REQUIRED_COLUMN_MISSING`, `NON_FINITE_FLOAT`, `INVALID_UTF8`, `INVALID_TEMPORAL_VALUE`, `ZERO_DATE`, `NUMERIC_PART_OUT_OF_RANGE` — see [Exceptions & localization](17-exceptions-localization.md).
+Violations raise `JsonProviderDataException` with a specific case — `TypeMismatch`, `NullNotAllowed`, `RequiredColumnMissing`, `NonFiniteFloat`, `InvalidUtf8`, `InvalidTemporalValue`, `ZeroDate`, `NumericPartOutOfRange` — see [Exceptions & localization](17-exceptions-localization.md).
 
 ### `where` value typing policy
 
@@ -119,11 +119,11 @@ Condition values are checked by the same contract as writes — the first violat
 | - | - |
 | `=` | scalar or `null` (`null` is allowed regardless of nullability and simply matches `null` cells) |
 | `>` `>=` `<` `<=` | non-`null` scalar of the column's exact type |
-| `BETWEEN` | array of exactly two non-`null` scalars following the range rule; otherwise `CONDITION_MALFORMED` |
-| `IN` | array whose elements follow the `=` rule; an empty array is valid and matches nothing; a non-array → `CONDITION_MALFORMED` |
-| `LIKE` | a string pattern; string and `date`/`time`/`timez` columns (matched against the stored=local form); `datetime`/`datetimez` → `LIKE_ON_INSTANT_UNSUPPORTED` |
+| `BETWEEN` | array of exactly two non-`null` scalars following the range rule; otherwise `JsonProviderQueryException` |
+| `IN` | array whose elements follow the `=` rule; an empty array is valid and matches nothing; a non-array → `JsonProviderQueryException` |
+| `LIKE` | a string pattern; string and `date`/`time`/`timez` columns (matched against the stored=local form); `datetime`/`datetimez` → `LikeOnInstantUnsupported` |
 
-The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `CONDITION_TYPE_MISMATCH`. `NAN`/`INF` against a `float` column → `NON_FINITE_FLOAT` (the same guard as on write). `datetime`/`datetimez` conditions are encoded to the stored UTC form; `date`/`time`/`timez` conditions match the stored (verbatim=local) form. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QUERY_UNKNOWN_COLUMN`.
+The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `JsonProviderQueryException`. `NAN`/`INF` against a `float` column → `NonFiniteFloat` (the same guard as on write). `datetime`/`datetimez` conditions are encoded to the stored UTC form; `date`/`time`/`timez` conditions match the stored (verbatim=local) form. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QueryUnknownColumn`.
 
 ## Float format on disk
 
@@ -157,14 +157,12 @@ Temporal columns exist so that a moment written by a process in one timezone rea
 | `datetimez` | `Y-m-d H:i:s.v` (UTC) | yes | full instant with milliseconds |
 | `year` / `month` / `day` | integer | no | range-validated parts |
 
-**Sub-second precision.** The second-resolution kinds (`time`, `datetime`) reject any fraction; the millisecond kinds (`timez`, `datetimez`) accept 1–3 digits and reject more — never silently truncating (`TEMPORAL_FRACTION_UNSUPPORTED`). For `datetime`/`datetimez` a TZ offset beyond ±14:00 (`+25:00`, `+00:99`) raises `INVALID_TEMPORAL_VALUE`.
+**Sub-second precision.** The second-resolution kinds (`time`, `datetime`) reject any fraction; the millisecond kinds (`timez`, `datetimez`) accept 1–3 digits and reject more — never silently truncating (`TemporalFractionUnsupported`). For `datetime`/`datetimez` a TZ offset beyond ±14:00 (`+25:00`, `+00:99`) raises `InvalidTemporalValue`.
 
 Input is accepted **only** in the correct system format — no dots, slashes, or reversed order, and no zero dates (`0000-00-00` throws):
 
 ```php
-date_default_timezone_set('Europe/Moscow'); // UTC+3
-
-$db->table('events')->insertByArray([
+date_default_timezone_set('Europe/Moscow'); $db->table('events')->insertByArray([
     'happensAt' => '2026-07-05 12:30:00',    // stored as 2026-07-05 09:30:00 (UTC)
     'onDate'    => '2026-07-05',              // stored verbatim
     'atTime'    => '23:30:00',               // stored verbatim (wall-clock)
@@ -227,34 +225,34 @@ Which side is the **child** (physically holds the FK column) depends on the rela
 
 `foreignKey` is always a column of the **child**, `references` a column of the **parent**. Both notations describe the same canonical edge; the engine (cascades, restrict, lock plans) works only with the canonical resolution, so both notations enforce identically.
 
-> **Upgrade warning.** Previously the engine treated the from table as the child for ANY relation type. Legacy `hasMany`/`hasOne` declarations face two outcomes: (a) those declared "engine-style" (from = child) now fail with a loud `RELATION_COLUMN_NOT_FOUND` — the FK column does not exist in the canonical child table; (b) those declared "intuitively" (the FK column really lives in the to table) were a no-op for years and now **SILENTLY ACTIVATE** — including cascade deletion of children. Audit every `hasMany`/`hasOne` in your schemas before upgrading.
+> **Upgrade warning.** Previously the engine treated the from table as the child for ANY relation type. Legacy `hasMany`/`hasOne` declarations face two outcomes: (a) those declared "engine-style" (from = child) now fail with a loud `RelationColumnNotFound` — the FK column does not exist in the canonical child table; (b) those declared "intuitively" (the FK column really lives in the to table) were a no-op for years and now **SILENTLY ACTIVATE** — including cascade deletion of children. Audit every `hasMany`/`hasOne` in your schemas before upgrading.
 
 ### What the actions mean
 
 - `onDelete` fires when a parent row is deleted: `cascade` deletes the referencing children (transitively), `setNull` nulls their FK, `restrict` refuses the delete while at least one reference exists (MySQL-immediate semantics: a reference counts even when the referencing child is deleted by the same statement — a self-referential restrict table cannot be emptied by one delete-all; delete leaves before roots).
-- `onUpdate` fires when the referenced column value of the parent changes. It cannot be declared on the primary key `id` (`RELATION_ON_UPDATE_ON_PK`): `id` is immutable, so the action could never fire. It works only for relations referencing a non-PK unique column — there `cascade` really rewrites the children's FK values.
+- `onUpdate` fires when the referenced column value of the parent changes. It cannot be declared on the primary key `id` (`RelationOnUpdateOnPk`): `id` is immutable, so the action could never fire. It works only for relations referencing a non-PK unique column — there `cascade` really rewrites the children's FK values.
 
 ### Declaring relations — API only
 
 Relations are declared and removed via `addRelation()` / `dropRelation()` (see [DDL operations](12-schema-mutations.md)); hand-editing `information_schema.json` is unsupported. `addRelation` validates the declaration:
 
-1. both tables exist → otherwise `TABLE_NOT_FOUND`;
-2. the FK column exists in the child and the referenced column in the parent → `RELATION_COLUMN_NOT_FOUND` (with a hint on which table holds the FK for the declared type);
-3. the base column types match, the `|null` suffix is ignored (`int|null` → `int` is legal) → `RELATION_TYPE_MISMATCH`;
-4. the referenced column is `id` or is covered by a single-column unique constraint → `RELATION_REFERENCES_NOT_UNIQUE`;
-5. `onUpdate` is not declared on the PK → `RELATION_ON_UPDATE_ON_PK`;
-6. `setNull` requires a nullable FK column → `FOREIGN_KEY_SET_NULL_NOT_NULLABLE`;
-7. no edge with the same canonical quadruple (child.column → parent.column) is declared yet — in either notation → `RELATION_ALREADY_EXISTS`.
+1. both tables exist → otherwise `TableNotFound`;
+2. the FK column exists in the child and the referenced column in the parent → `RelationColumnNotFound` (with a hint on which table holds the FK for the declared type);
+3. the base column types match, the `|null` suffix is ignored (`int|null` → `int` is legal) → `RelationTypeMismatch`;
+4. the referenced column is `id` or is covered by a single-column unique constraint → `RelationReferencesNotUnique`;
+5. `onUpdate` is not declared on the PK → `RelationOnUpdateOnPk`;
+6. `setNull` requires a nullable FK column → `ForeignKeySetNullNotNullable`;
+7. no edge with the same canonical quadruple (child.column → parent.column) is declared yet — in either notation → `RelationAlreadyExists`.
 
-Legacy edges loaded from the schema are not re-validated on load (loading is strict structurally only). The FK engine re-checks their semantics in the plan phase — but **only for executable edges** (action ≠ `noAction` for the current event): a dead edge with mismatched types does not block working deletes/updates, while an executable one fails with the same `RELATION_COLUMN_NOT_FOUND`/`RELATION_TYPE_MISMATCH` before anything is written.
+Legacy edges loaded from the schema are not re-validated on load (loading is strict structurally only). The FK engine re-checks their semantics in the plan phase — but **only for executable edges** (action ≠ `noAction` for the current event): a dead edge with mismatched types does not block working deletes/updates, while an executable one fails with the same `RelationColumnNotFound`/`RelationTypeMismatch` before anything is written.
 
 ### Strict schema loading
 
 `information_schema.json` is parsed strictly: a structurally broken entry is not silently skipped — it fails the load with the exact address of the problem. A silently dropped relation would mean a cascade or restrict the author believed was enforced simply stopped executing.
 
-- a relation entry that is not an object, or lacks string `from`/`foreignKey`/`to`/`references` keys (catches typos like `form`), or has an unknown `type`, or carries a non-string `backingIndex` → `RELATION_ENTRY_INVALID`; table/column names inside relations pass the same identifier whitelist the tables themselves do;
-- a **present** `onDelete`/`onUpdate` outside `noAction`/`cascade`/`setNull`/`restrict` (e.g. `CASCADE` or `set_null`) → `RELATION_ACTION_INVALID`; an absent key is the legal `noAction` default;
-- a broken index entry (missing name, empty `fields`, a direction outside case-sensitive `asc`/`desc`), unique constraint (missing name or fields) or table definition (non-object definition, non-string column type, missing `tables` key) → `INVALID_SCHEMA` with details; an empty `tables` collection stays valid.
+- a relation entry that is not an object, or lacks string `from`/`foreignKey`/`to`/`references` keys (catches typos like `form`), or has an unknown `type`, or carries a non-string `backingIndex` → `JsonProviderRelationException`; table/column names inside relations pass the same identifier whitelist the tables themselves do;
+- a **present** `onDelete`/`onUpdate` outside `noAction`/`cascade`/`setNull`/`restrict` (e.g. `CASCADE` or `set_null`) → `RelationActionInvalid`; an absent key is the legal `noAction` default;
+- a broken index entry (missing name, empty `fields`, a direction outside case-sensitive `asc`/`desc`), unique constraint (missing name or fields) or table definition (non-object definition, non-string column type, missing `tables` key) → `JsonProviderSchemaException` with details; an empty `tables` collection stays valid.
 
 Relation semantics (table/column existence, type compatibility) are not validated on load — that belongs to the relation API and the FK engine at execution time.
 
@@ -299,28 +297,22 @@ Manipulate them independently of the structure — these are schema-only meta-op
 
 ```php
 $db->setTableComment('respondents', 'Form respondents');
-$db->setTableComment('respondents', null);                       // clear
-
-$db->setColumnComment('respondents', 'formId', 'Parent form id');
-$db->setColumnComment('respondents', 'formId', null);            // clear one column
-
-$db->setColumnComments('respondents', [                          // replace the whole map
+$db->setTableComment('respondents', null);                       $db->setColumnComment('respondents', 'formId', 'Parent form id');
+$db->setColumnComment('respondents', 'formId', null);            $db->setColumnComments('respondents', [                          // replace the whole map
     'formId'    => 'Parent form id',
     'dedupHash' => 'Anti-duplicate hash',
 ]);
 $db->setColumnComments('respondents', ['formId' => '...'], merge: true);   // merge on top
 ```
 
-`setColumnComment` / `setColumnComments` throw `StorageException` with key `COLUMN_NOT_FOUND` if a name is not a declared column.
+`setColumnComment` / `setColumnComments` throw `JsonProviderSchemaException` with case `ColumnNotFound` if a name is not a declared column.
 
 Read them back:
 
 ```php
 $db->getTableComment('respondents');            // string|null
 $db->getColumnComment('respondents', 'formId'); // string|null
-$db->getColumnComments('respondents');          // array<string,string>
-
-$db->describeTable('respondents');
+$db->getColumnComments('respondents');          $db->describeTable('respondents');
 // [
 //   'name' => 'respondents',
 //   'comment' => 'Form respondents',

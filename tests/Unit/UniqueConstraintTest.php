@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
@@ -99,9 +99,9 @@ final class UniqueConstraintTest
 
         try {
             $this->db->insert('u_code', ['code' => '']);
-            Assert::fail('a StorageException was expected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'UNIQUE_VIOLATION');
+            Assert::fail('a JsonProviderException was expected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
             Assert::string($e->getMessage())->contains('[code]');
         }
     }
@@ -111,7 +111,7 @@ final class UniqueConstraintTest
     {
         $this->db->insert('u_code', ['code' => 'x']);
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[code]');
 
         $this->db->insert('u_code', ['code' => 'x']);
@@ -159,7 +159,7 @@ final class UniqueConstraintTest
     {
         $this->db->insert('u_float', ['price' => 1.5]);
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[price]');
 
         $this->db->insert('u_float', ['price' => 1.5]);
@@ -170,7 +170,7 @@ final class UniqueConstraintTest
     {
         $this->db->insert('u_float', ['price' => 1.0]);
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[price]');
 
         $this->db->insert('u_float', ['price' => 1]);
@@ -188,7 +188,7 @@ final class UniqueConstraintTest
         file_put_contents($path, $patched);
         $this->db->invalidateCache('u_float');
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[price]');
 
         $this->db->insert('u_float', ['price' => 7.0]);
@@ -210,7 +210,7 @@ final class UniqueConstraintTest
         $this->db->insert('u_pair', ['a' => 1, 'b' => 2]);
         $this->db->insert('u_pair', ['a' => 1, 'b' => 3]);
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[a, b]');
 
         $this->db->insert('u_pair', ['a' => 1, 'b' => 2]);
@@ -222,7 +222,7 @@ final class UniqueConstraintTest
         $this->db->insert('u_code', ['code' => 'a']);
         $idB = $this->db->insert('u_code', ['code' => 'b']);
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[code]');
 
         $this->db->table('u_code')->updateByIdByArray($idB, ['code' => 'a']);
@@ -324,7 +324,7 @@ final class UniqueConstraintTest
     {
         $this->db->insert('u_float', ['price' => 0.0]);
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('[price]');
 
         $this->db->insert('u_float', ['price' => -0.0]);

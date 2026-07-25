@@ -119,8 +119,8 @@ final class FkCascadeConditionsTest
                 'a type-skewed EXECUTABLE edge must fail loudly in the '
                     . 'plan phase instead of silently matching nothing',
             );
-        } catch (\AV\JsonProvider\Exception\StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RELATION_TYPE_MISMATCH');
+        } catch (\AV\JsonProvider\Exception\JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RelationTypeMismatch');
         }
 
         Assert::same(

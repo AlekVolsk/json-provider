@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\JsonStorageTxHandle;
 use AV\JsonProvider\Storage\NdjsonStorage;
@@ -90,12 +90,12 @@ final class StorageAtomicityTest
                 ['id' => 2, 'name' => "\xC3\x28"],
                 ['id' => 3, 'name' => 'never-written'],
             ]);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $caught = $e;
         }
 
         Assert::notNull($caught);
-        Assert::same($caught->getErrorKey(), 'INVALID_RECORD');
+        Assert::same($caught->getErrorKey(), 'RecordJsonEncodeFailed');
         Assert::same(file_get_contents($this->dataPath()), $before);
     }
 
@@ -136,12 +136,12 @@ final class StorageAtomicityTest
 
         try {
             $storage->write(self::TABLE, 'absent.ndjson', [['id' => 1]]);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $caught = $e;
         }
 
         Assert::notNull($caught);
-        Assert::same($caught->getErrorKey(), 'FILE_NOT_READABLE');
+        Assert::same($caught->getErrorKey(), 'FileNotReadable');
         Assert::false(
             file_exists(
                 self::tmpDirRoot() . '/' . self::TABLE . '/absent.ndjson',
@@ -318,12 +318,12 @@ final class StorageAtomicityTest
                 'id'   => 2,
                 'name' => "\xC3\x28",
             ]);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $caught = $e;
         }
 
         Assert::notNull($caught);
-        Assert::same($caught->getErrorKey(), 'INVALID_RECORD');
+        Assert::same($caught->getErrorKey(), 'RecordJsonEncodeFailed');
         Assert::same(file_get_contents($this->dataPath()), $before);
     }
 
@@ -353,7 +353,7 @@ final class StorageAtomicityTest
     {
         $storage = new NdjsonStorage(self::tmpDirRoot());
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('Invalid record');
 
         $storage->encodeRecords(self::TABLE, [['name' => "\xC3\x28"]]);
@@ -550,12 +550,12 @@ final class StorageAtomicityTest
             $db->table('goods')
                 ->where('id', '=', 2)
                 ->updateByArray(['price' => 9.9]);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $caught = $e;
         }
 
         Assert::notNull($caught);
-        Assert::same($caught->getErrorKey(), 'INVALID_RECORD');
+        Assert::same($caught->getErrorKey(), 'RecordJsonEncodeFailed');
         Assert::same(file_get_contents($dataPath), $tampered);
         Assert::same(file_get_contents($metaPath), $metaBefore);
 
@@ -568,12 +568,12 @@ final class StorageAtomicityTest
 
         try {
             $db->insert('goods', ['price' => 3.5]);
-        } catch (StorageException $e) {
+        } catch (JsonProviderException $e) {
             $caughtInsert = $e;
         }
 
         Assert::notNull($caughtInsert);
-        Assert::same($caughtInsert->getErrorKey(), 'INVALID_RECORD');
+        Assert::same($caughtInsert->getErrorKey(), 'RecordJsonEncodeFailed');
     }
 
     private function dataPath(): string

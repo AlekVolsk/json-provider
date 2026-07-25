@@ -7,7 +7,8 @@ namespace AV\JsonProvider\Validation;
 /**
  * Internal signal raised by TemporalCodec::encode() when a value cannot be
  * accepted. Carries just enough to let ValueValidator raise a localized,
- * table/column-aware StorageException — this type never escapes the package.
+ * table/column-aware JsonProviderException — this type never escapes
+ * the package.
  *
  * `zeroDate` distinguishes the explicit "0000-00-00" family (a dedicated error)
  * from a general format/overflow rejection. `fractionUnsupported` flags a

@@ -16,5 +16,6 @@ final class IntersectionPropertyDto
     public function __construct(
         public int $id,
         public \Countable & \Stringable $x,
-    ) {}
+    ) {
+    }
 }

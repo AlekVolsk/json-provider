@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Storage;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderIoException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 /**
  * Atomic full-file replacement: the payload is written to a writer-unique
@@ -53,7 +54,10 @@ final class AtomicFileWriter
         $handle = fopen($tmp, 'x');
 
         if ($handle === false) {
-            throw StorageException::fileNotWritable($tmp);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $tmp,
+            );
         }
 
         $length = \strlen($bytes);
@@ -84,7 +88,10 @@ final class AtomicFileWriter
         if (!$ok) {
             @unlink($tmp);
 
-            throw StorageException::fileNotWritable($tmp);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $tmp,
+            );
         }
 
         return $tmp;
@@ -98,7 +105,10 @@ final class AtomicFileWriter
         if (!@rename($tmp, $path)) {
             @unlink($tmp);
 
-            throw StorageException::fileNotWritable($path);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $path,
+            );
         }
     }
 

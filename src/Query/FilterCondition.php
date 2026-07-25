@@ -21,7 +21,8 @@ final class FilterCondition
         public readonly FilterOperatorEnum $operator,
         public readonly mixed $value,
         public readonly bool $not = false,
-    ) {}
+    ) {
+    }
 
     /**
      * Returns whether the given record satisfies this condition.

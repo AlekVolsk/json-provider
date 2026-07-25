@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -242,8 +242,8 @@ final class IndexKeyV2Test
             try {
                 $this->key($value, SortDirectionEnum::ASC);
                 Assert::fail('non-finite float must not be indexable');
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'INDEX_KEY_NON_FINITE');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'IndexKeyNonFinite');
             }
         }
     }

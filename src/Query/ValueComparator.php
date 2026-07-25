@@ -18,7 +18,9 @@ final class ValueComparator
 
     private static string | null $collatorLocale = null;
 
-    private function __construct() {}
+    private function __construct()
+    {
+    }
 
     public static function compare(
         bool | float | int | string | null $a,

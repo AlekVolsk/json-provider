@@ -10,7 +10,7 @@ use AV\JsonProvider\JsonDataProvider;
 $db = JsonDataProvider::getInstance('/var/data/myapp');
 ```
 
-The path must contain `information_schema.json`. The cache argument is honoured only on the first call for that path; later calls return the same instance.
+The storage must already exist at that path (the directory holds `information_schema.json`); `getInstance()` itself verifies nothing — a missing storage surfaces as an exception on the first operation. The cache argument is honoured only on the first call for that path; later calls return the same instance.
 
 ## Create a new storage
 
@@ -18,7 +18,7 @@ The path must contain `information_schema.json`. The cache argument is honoured 
 $db = JsonDataProvider::createDatabase('/var/data/myapp');
 ```
 
-Creates the directory, an empty `information_schema.json` and an empty `meta.json`. Throws `StorageException` if the path already exists.
+Creates the directory, an empty `information_schema.json` and an empty `meta.json`. Throws `JsonProviderTableException` if the path already exists.
 
 ## Probe for existence
 

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Services\Backup;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
+use AV\JsonProvider\Exception\JsonProviderIoException;
+use AV\JsonProvider\Exception\JsonProviderServiceException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Storage\JsonStorage;
@@ -52,7 +55,8 @@ final class Backup
         private readonly NdjsonStorage $ndjson,
         private readonly MetaRegistry $meta,
         private readonly TableLockManager $locks,
-    ) {}
+    ) {
+    }
 
     /**
      * Writes a backup archive at $destination. Returns the absolute path of
@@ -73,13 +77,19 @@ final class Backup
         $this->guardOutsideDbPath($archivePath);
 
         if (file_exists($archivePath)) {
-            throw StorageException::backupArchiveExists($archivePath);
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::BackupArchiveExists,
+                $archivePath,
+            );
         }
 
         $tarPath = substr($archivePath, 0, -3);
 
         if (file_exists($tarPath)) {
-            throw StorageException::backupArchiveExists($tarPath);
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::BackupArchiveExists,
+                $tarPath,
+            );
         }
 
         return $this->locks->withDatabase(
@@ -105,7 +115,10 @@ final class Backup
         );
 
         if ($schemaJson === false) {
-            throw StorageException::fileNotWritable($archivePath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $archivePath,
+            );
         }
 
         $tableContents = [];
@@ -132,7 +145,7 @@ final class Backup
             try {
                 $counters[$tableName] = $this->meta
                     ->getLastInsertedId($tableName);
-            } catch (StorageException) {
+            } catch (JsonProviderException) {
                 continue;
             }
         }
@@ -147,7 +160,10 @@ final class Backup
         $manifestJson = json_encode($manifest->toArray(), JSON_PRETTY_PRINT);
 
         if ($manifestJson === false) {
-            throw StorageException::fileNotWritable($archivePath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $archivePath,
+            );
         }
 
         $tar = new \PharData($tarPath, 0, null, \Phar::TAR);
@@ -162,11 +178,17 @@ final class Backup
         unset($tar);
 
         if (!file_exists($archivePath)) {
-            throw StorageException::fileNotWritable($archivePath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $archivePath,
+            );
         }
 
         if (file_exists($tarPath) && !unlink($tarPath)) {
-            throw StorageException::fileNotWritable($tarPath);
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotWritable,
+                $tarPath,
+            );
         }
 
         return $archivePath;
@@ -219,7 +241,10 @@ final class Backup
             $parentReal === $dbReal
             || str_starts_with($parentReal . '/', $dbReal . '/')
         ) {
-            throw StorageException::backupDestinationInsideDb($path);
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::BackupDestinationInsideDb,
+                $path,
+            );
         }
     }
 }

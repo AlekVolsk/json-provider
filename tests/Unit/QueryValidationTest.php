@@ -4,8 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
+use AV\JsonProvider\JsonFilter;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -95,7 +96,7 @@ final class QueryValidationTest
     #[Test]
     public function numericStringOnIntColumnRejected(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsType', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', '=', '2')->selectAllByArray();
         });
@@ -104,7 +105,7 @@ final class QueryValidationTest
     #[Test]
     public function numericStringRangeOnIntColumnRejected(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsType', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', '>', '0')->selectAllByArray();
         });
@@ -142,7 +143,7 @@ final class QueryValidationTest
     #[Test]
     public function numericStringOnFloatColumnRejected(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsFloatOrInt', function (): void {
             $this->db->table(self::TABLE)
                 ->where('price', '=', '9.5')->selectAllByArray();
         });
@@ -151,7 +152,7 @@ final class QueryValidationTest
     #[Test]
     public function intOnBoolColumnRejected(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsType', function (): void {
             $this->db->table(self::TABLE)
                 ->where('b', '=', 1)->selectAllByArray();
         });
@@ -187,7 +188,7 @@ final class QueryValidationTest
     #[Test]
     public function nullRangeBoundRejected(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsNonNullScalar', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', '>', null)->selectAllByArray();
         });
@@ -196,11 +197,11 @@ final class QueryValidationTest
     #[Test]
     public function nonFiniteFloatConditionRejected(): void
     {
-        $this->expectKey('NON_FINITE_FLOAT', function (): void {
+        $this->expectKey('NonFiniteFloat', function (): void {
             $this->db->table(self::TABLE)
                 ->where('price', '=', NAN)->selectAllByArray();
         });
-        $this->expectKey('NON_FINITE_FLOAT', function (): void {
+        $this->expectKey('NonFiniteFloat', function (): void {
             $this->db->table(self::TABLE)
                 ->where('price', '<', INF)->selectAllByArray();
         });
@@ -209,7 +210,7 @@ final class QueryValidationTest
     #[Test]
     public function temporalConditionRequiresString(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsTemporalString', function (): void {
             $this->db->table(self::TABLE)
                 ->where('created', '=', 12345)->selectAllByArray();
         });
@@ -228,7 +229,7 @@ final class QueryValidationTest
     #[Test]
     public function invalidTemporalStringStillRejected(): void
     {
-        $this->expectKey('INVALID_TEMPORAL_VALUE', function (): void {
+        $this->expectKey('InvalidTemporalValue', function (): void {
             $this->db->table(self::TABLE)
                 ->where('created', '=', 'not-a-date')->selectAllByArray();
         });
@@ -237,7 +238,7 @@ final class QueryValidationTest
     #[Test]
     public function likeOnNonStringColumnRejected(): void
     {
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('LikeOnNonStringColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', 'LIKE', '%1%')->selectAllByArray();
         });
@@ -248,7 +249,7 @@ final class QueryValidationTest
     {
         $before = md5((string)file_get_contents($this->dataPath()));
 
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsType', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', '=', '1')
                 ->updateByArray(['name' => 'boom']);
@@ -265,7 +266,7 @@ final class QueryValidationTest
     {
         $before = md5((string)file_get_contents($this->dataPath()));
 
-        $this->expectKey('CONDITION_TYPE_MISMATCH', function (): void {
+        $this->expectKey('ConditionExpectsType', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', '=', '1')
                 ->delete();
@@ -282,7 +283,7 @@ final class QueryValidationTest
     {
         foreach ([[1], [], [1, 2, 3], 'str', [null, 2], [1, null]] as $bad) {
             $this->expectKey(
-                'CONDITION_MALFORMED',
+                'ConditionBetweenShape',
                 function () use ($bad): void {
                     $this->db->table(self::TABLE)
                         ->where('n', 'BETWEEN', $bad)->selectAllByArray();
@@ -294,7 +295,7 @@ final class QueryValidationTest
     #[Test]
     public function malformedInRejected(): void
     {
-        $this->expectKey('CONDITION_MALFORMED', function (): void {
+        $this->expectKey('ConditionInShape', function (): void {
             $this->db->table(self::TABLE)
                 ->where('n', 'IN', 5)->selectAllByArray();
         });
@@ -345,19 +346,19 @@ final class QueryValidationTest
     #[Test]
     public function unknownColumnInWhereRejectedOnEveryVerb(): void
     {
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->where('typo', '=', 1)->selectAllByArray();
         });
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->where('typo', '=', 1)->count();
         });
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->where('typo', '=', 1)->updateByArray(['name' => 'x']);
         });
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->where('typo', '=', 1)->delete();
         });
@@ -368,7 +369,7 @@ final class QueryValidationTest
     {
         $before = md5((string)file_get_contents($this->dataPath()));
 
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->where('typo', '=', 1, not: true)
                 ->delete();
@@ -384,15 +385,15 @@ final class QueryValidationTest
     #[Test]
     public function unknownColumnInOrderByDistinctAndSelectColumn(): void
     {
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->orderBy('typo')->selectAllByArray();
         });
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
                 ->isDistinct('typo')->selectAllByArray();
         });
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)->selectColumn('typo');
         });
     }
@@ -422,10 +423,10 @@ final class QueryValidationTest
     #[Test]
     public function negativeLimitAndOffsetRejectedInBuilder(): void
     {
-        $this->expectKey('INVALID_LIMIT', function (): void {
+        $this->expectKey('InvalidLimit', function (): void {
             $this->db->table(self::TABLE)->limit(-1);
         });
-        $this->expectKey('INVALID_OFFSET', function (): void {
+        $this->expectKey('InvalidOffset', function (): void {
             $this->db->table(self::TABLE)->offset(-5);
         });
     }
@@ -433,10 +434,10 @@ final class QueryValidationTest
     #[Test]
     public function negativeLimitAndOffsetRejectedInProviderSelect(): void
     {
-        $this->expectKey('INVALID_LIMIT', function (): void {
+        $this->expectKey('InvalidLimit', function (): void {
             $this->db->select(self::TABLE, limit: -1);
         });
-        $this->expectKey('INVALID_OFFSET', function (): void {
+        $this->expectKey('InvalidOffset', function (): void {
             $this->db->select(self::TABLE, offset: -1);
         });
     }
@@ -495,7 +496,7 @@ final class QueryValidationTest
     {
         foreach (['descending', '', 'down'] as $direction) {
             $this->expectKey(
-                'INVALID_SORT_DIRECTION',
+                'InvalidSortDirection',
                 function () use ($direction): void {
                     $this->db->table(self::TABLE)
                         ->orderBy('price', $direction);
@@ -507,10 +508,10 @@ final class QueryValidationTest
     #[Test]
     public function unknownOrderByColumnRejectedOnCountAndExists(): void
     {
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)->orderBy('typo')->count();
         });
-        $this->expectKey('QUERY_UNKNOWN_COLUMN', function (): void {
+        $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)->orderBy('typo')->exists();
         });
     }
@@ -529,7 +530,7 @@ final class QueryValidationTest
     #[Test]
     public function brokenUtf8ConditionRejected(): void
     {
-        $this->expectKey('INVALID_UTF8', function (): void {
+        $this->expectKey('InvalidUtf8', function (): void {
             $this->db->table(self::TABLE)
                 ->where('name', '=', "\xFF\xFE")->selectAllByArray();
         });
@@ -545,7 +546,7 @@ final class QueryValidationTest
             indexes: [],
         ));
 
-        $this->expectKey('NUMERIC_PART_OUT_OF_RANGE', function (): void {
+        $this->expectKey('NumericPartOutOfRange', function (): void {
             $this->db->table('months')
                 ->where('m', '=', 13)->selectAllByArray();
         });
@@ -554,17 +555,37 @@ final class QueryValidationTest
     #[Test]
     public function unknownOperatorRejectedWithLocalizedKey(): void
     {
-        $this->expectKey('INVALID_OPERATOR', function (): void {
+        $this->expectKey('InvalidOperator', function (): void {
             $this->db->table(self::TABLE)->where('n', '=<', 5);
         });
+    }
+
+    /**
+     * A reusable filter is built before any table is chosen, so it carries
+     * its own table-less key — but the rejection stays a localized
+     * provider exception, never a raw \ValueError from the operator enum.
+     */
+    #[Test]
+    public function unknownOperatorInFilterRejectedWithLocalizedKey(): void
+    {
+        $this->expectKey('InvalidFilterOperator', static function (): void {
+            (new JsonFilter())->where('n', '=<', 5);
+        });
+
+        try {
+            (new JsonFilter())->where('n', '~', 5);
+            Assert::fail('expected JsonProviderException');
+        } catch (JsonProviderException $e) {
+            Assert::string($e->getMessage())->contains('"~"');
+        }
     }
 
     private function expectKey(string $errorKey, callable $fn): void
     {
         try {
             $fn();
-            Assert::fail("expected StorageException {$errorKey}");
-        } catch (StorageException $e) {
+            Assert::fail("expected JsonProviderException {$errorKey}");
+        } catch (JsonProviderException $e) {
             Assert::same($e->getErrorKey(), $errorKey);
         }
     }

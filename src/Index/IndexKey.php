@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Index;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
@@ -45,7 +46,9 @@ final class IndexKey
 {
     private const int EXACT_INT_BOUND = 2 ** 53;
 
-    private function __construct() {}
+    private function __construct()
+    {
+    }
 
     /**
      * Builds the composite index key for a record.
@@ -96,7 +99,10 @@ final class IndexKey
         IndexFieldSchema $fieldSchema,
     ): string {
         if (\is_float($value) && !is_finite($value)) {
-            throw StorageException::indexKeyNonFinite($fieldSchema->field);
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::IndexKeyNonFinite,
+                $fieldSchema->field,
+            );
         }
 
         $double = (float)$value;
@@ -148,7 +154,10 @@ final class IndexKey
         float | int $value,
     ): string {
         if (\is_float($value) && !is_finite($value)) {
-            throw StorageException::indexKeyNonFinite($field);
+            throw new JsonProviderDataException(
+                JsonProviderErrorEn::IndexKeyNonFinite,
+                $field,
+            );
         }
 
         $double = (float)$value;

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -70,10 +70,10 @@ final class IdentifierRulesTest
                     columns: ['id' => 'int'],
                 ));
                 Assert::fail('name must be rejected: ' . $name);
-            } catch (StorageException $e) {
+            } catch (JsonProviderException $e) {
                 Assert::same(
                     $e->getErrorKey(),
-                    'INVALID_TABLE_NAME',
+                    'InvalidTableName',
                     $name,
                 );
             }
@@ -91,8 +91,8 @@ final class IdentifierRulesTest
             try {
                 $this->db->dropTable($name);
                 Assert::fail('dropTable must reject: ' . $name);
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'INVALID_TABLE_NAME');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'InvalidTableName');
             }
         }
     }
@@ -107,8 +107,8 @@ final class IdentifierRulesTest
                     columns: ['id' => 'int', $column => 'string'],
                 ));
                 Assert::fail('column must be rejected: ' . $column);
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'INVALID_COLUMN_NAME');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'InvalidColumnName');
             }
         }
     }
@@ -123,8 +123,8 @@ final class IdentifierRulesTest
                     [new IndexFieldSchema('id', SortDirectionEnum::ASC)],
                 );
                 Assert::fail('index name must be rejected: ' . $name);
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'INVALID_INDEX_NAME');
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'InvalidIndexName');
             }
         }
     }
@@ -138,8 +138,8 @@ final class IdentifierRulesTest
                 [new IndexFieldSchema('user_id', SortDirectionEnum::ASC)],
             );
             Assert::fail('the _fk_ prefix must be reserved');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RESERVED_INDEX_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'ReservedIndexName');
         }
     }
 
@@ -152,8 +152,8 @@ final class IdentifierRulesTest
                 columns: ['id' => 'int'],
             ));
             Assert::fail('a purely numeric table name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_TABLE_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidTableName');
         }
 
         try {
@@ -162,8 +162,8 @@ final class IdentifierRulesTest
                 [new IndexFieldSchema('id', SortDirectionEnum::ASC)],
             );
             Assert::fail('a purely numeric index name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_INDEX_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidIndexName');
         }
     }
 
@@ -188,8 +188,8 @@ final class IdentifierRulesTest
         try {
             $this->db->tableNames();
             Assert::fail('a numeric column key must fail the schema load');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_COLUMN_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidColumnName');
         }
     }
 
@@ -228,8 +228,8 @@ final class IdentifierRulesTest
         try {
             $this->db->tableNames();
             Assert::fail('a traversal table key must fail the schema load');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_TABLE_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidTableName');
         }
     }
 
@@ -249,8 +249,8 @@ final class IdentifierRulesTest
         try {
             $this->db->table('rows')->selectAllByArray();
             Assert::fail('a tampered stored column key must fail loudly');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_COLUMN_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidColumnName');
         }
     }
 
@@ -275,8 +275,8 @@ final class IdentifierRulesTest
         try {
             $this->db->restore($archive);
             Assert::fail('a foreign archive must not restore');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'BACKUP_SCHEMA_MISMATCH');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RestoreArchiveMissesTables');
         }
     }
 

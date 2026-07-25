@@ -22,7 +22,7 @@ $slugs   = $db->table('products')->selectColumn('slug');     // list<scalar|null
 
 ## `isDistinct`
 
-Enables deduplication by the combination of given fields. Applied after filtering, before sorting and pagination.
+Enables deduplication by the combination of given fields. The pipeline order is: filtering → sorting → deduplication → pagination. Each group of duplicates keeps its **first row in result order**, so `orderBy` decides which one survives: with `orderBy('price', 'asc')` a category keeps its cheapest row, with `desc` its most expensive one.
 
 ```php
 $pairs = $db->table('products')->isDistinct('categoryId', 'active')->selectAllByArray();
@@ -51,11 +51,11 @@ $cats  = $db->table('products')
 
 Multiple `where()` calls are joined with **AND**. The provider does not support `OR` directly — express `OR` by issuing separate queries or by broadening the data shape.
 
-Condition values are validated before the query executes — types mirror the write contract, a column missing from the schema is rejected (`QUERY_UNKNOWN_COLUMN`), a malformed `BETWEEN`/`IN` shape raises `CONDITION_MALFORMED`; the full policy lives in the [Schema model](04-schema-model.md). A ghost row lacking some key is filtered as if that field were `null`.
+Condition values are validated before the query executes — types mirror the write contract, a column missing from the schema is rejected (`QueryUnknownColumn`), a malformed `BETWEEN`/`IN` shape raises `JsonProviderQueryException`; the full policy lives in the [Schema model](04-schema-model.md). A ghost row lacking some key is filtered as if that field were `null`.
 
 ## LIKE semantics
 
-LIKE is **bytewise and case-sensitive**. The only wildcard is an unescaped `%` (any byte run); `\%` is a literal percent, `\\` a literal backslash; `_` is **not** special (it matches a literal underscore). There is no case-insensitive variant (ILIKE) — case folding stays at the application level. The pattern must be a string and the column string or `date`/`time`/`timez` (matched against the stored=local form). LIKE on `datetime`/`datetimez` is **not supported** (the value is stored in UTC, not the local form) → `LIKE_ON_INSTANT_UNSUPPORTED`; use `=`/`BETWEEN` instead.
+LIKE is **bytewise and case-sensitive**. The only wildcard is an unescaped `%` (any byte run); `\%` is a literal percent, `\\` a literal backslash; `_` is **not** special (it matches a literal underscore). There is no case-insensitive variant (ILIKE) — case folding stays at the application level. The pattern must be a string and the column string or `date`/`time`/`timez` (matched against the stored=local form). LIKE on `datetime`/`datetimez` is **not supported** (the value is stored in UTC, not the local form) → `LikeOnInstantUnsupported`; use `=`/`BETWEEN` instead.
 
 ## String comparison mode
 
@@ -89,4 +89,4 @@ $db->table('products')
 
 When an ordering index covers the `orderBy`, pagination is applied at the index layer — only the requested slice is read from the data file.
 
-Negative `limit`/`offset` values are rejected fail-fast (`INVALID_LIMIT`/`INVALID_OFFSET`); `limit(0)` is valid and yields an empty result (cf. SQL `LIMIT 0`). The `orderBy` direction is case-insensitive (`'asc'`/`'DESC'`/`'Desc'`); anything else raises `INVALID_SORT_DIRECTION` instead of silently sorting ascending.
+Negative `limit`/`offset` values are rejected fail-fast (`InvalidLimit`/`InvalidOffset`); `limit(0)` is valid and yields an empty result (cf. SQL `LIMIT 0`). The `orderBy` direction is case-insensitive (`'asc'`/`'DESC'`/`'Desc'`); anything else raises `InvalidSortDirection` instead of silently sorting ascending.

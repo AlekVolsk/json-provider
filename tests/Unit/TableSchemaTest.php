@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
@@ -41,8 +41,8 @@ final class TableSchemaTest
     #[Test]
     public function constructorThrowsWhenIdMissing(): void
     {
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('mandatory PK column');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('mandatory primary key column');
 
         new TableSchema(
             name: 'broken',
@@ -54,7 +54,7 @@ final class TableSchemaTest
     #[Test]
     public function constructorThrowsWhenIdTypeIsNotInt(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('must have type "int"');
 
         new TableSchema(
@@ -67,8 +67,8 @@ final class TableSchemaTest
     #[Test]
     public function constructorThrowsWhenIdIsNotFirst(): void
     {
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('must be first in columns');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('must come first in the column list');
 
         new TableSchema(
             name: 'broken',
@@ -80,8 +80,8 @@ final class TableSchemaTest
     #[Test]
     public function constructorThrowsWhenPkIndexMissing(): void
     {
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('mandatory PK index');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('mandatory primary key index');
 
         new TableSchema(
             name: 'broken',
@@ -98,8 +98,8 @@ final class TableSchemaTest
             fields: [new IndexFieldSchema('title', SortDirectionEnum::ASC)],
         );
 
-        Expect::exception(StorageException::class)
-            ->withMessageContaining('PK index must be at position 0');
+        Expect::exception(JsonProviderException::class)
+            ->withMessageContaining('primary key index must come first');
 
         new TableSchema(
             name: 'broken',
@@ -117,7 +117,7 @@ final class TableSchemaTest
             isPrimary: false,
         );
 
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('reserved');
 
         new TableSchema(
@@ -193,7 +193,7 @@ final class TableSchemaTest
     #[Test]
     public function createStillThrowsWhenIdTypeIsWrong(): void
     {
-        Expect::exception(StorageException::class)
+        Expect::exception(JsonProviderException::class)
             ->withMessageContaining('must have type "int"');
 
         TableSchema::create(

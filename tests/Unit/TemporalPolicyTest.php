@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -139,10 +139,10 @@ final class TemporalPolicyTest
             try {
                 $this->insert($override);
                 Assert::fail('a fraction on a second kind must be rejected');
-            } catch (StorageException $e) {
+            } catch (JsonProviderException $e) {
                 Assert::same(
                     $e->getErrorKey(),
-                    'TEMPORAL_FRACTION_UNSUPPORTED',
+                    'TemporalFractionUnsupported',
                     (string)json_encode($override),
                 );
             }
@@ -164,10 +164,10 @@ final class TemporalPolicyTest
             try {
                 $this->insert($override);
                 Assert::fail('more than millisecond precision is rejected');
-            } catch (StorageException $e) {
+            } catch (JsonProviderException $e) {
                 Assert::same(
                     $e->getErrorKey(),
-                    'TEMPORAL_FRACTION_UNSUPPORTED',
+                    'TemporalFractionUnsupported',
                     (string)json_encode($override),
                 );
             }
@@ -181,10 +181,10 @@ final class TemporalPolicyTest
             try {
                 $this->insert(['dt' => '2026-01-01 10:00:00' . $offset]);
                 Assert::fail('an out-of-range offset must be rejected');
-            } catch (StorageException $e) {
+            } catch (JsonProviderException $e) {
                 Assert::same(
                     $e->getErrorKey(),
-                    'INVALID_TEMPORAL_VALUE',
+                    'InvalidTemporalValue',
                     $offset,
                 );
             }
@@ -215,16 +215,16 @@ final class TemporalPolicyTest
             $this->db->table('t')
                 ->where('dt', 'LIKE', '2026%')->selectAllByArray();
             Assert::fail('LIKE on datetime must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LIKE_ON_INSTANT_UNSUPPORTED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LikeOnInstantUnsupported');
         }
 
         try {
             $this->db->table('t')
                 ->where('dtz', 'LIKE', '2026%')->selectAllByArray();
             Assert::fail('LIKE on datetimez must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'LIKE_ON_INSTANT_UNSUPPORTED');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'LikeOnInstantUnsupported');
         }
     }
 

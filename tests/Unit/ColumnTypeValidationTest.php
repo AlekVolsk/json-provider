@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\TableSchema;
@@ -62,8 +62,8 @@ final class ColumnTypeValidationTest
                     columns: ['id' => 'int', 'x' => $type],
                 ));
                 Assert::fail('type must be rejected: ' . $type);
-            } catch (StorageException $e) {
-                Assert::same($e->getErrorKey(), 'INVALID_COLUMN_TYPE', $type);
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'InvalidColumnType', $type);
             }
         }
 
@@ -110,8 +110,8 @@ final class ColumnTypeValidationTest
         try {
             $this->db->table('goods')->selectAllByArray();
             Assert::fail('a tampered column type must fail the schema load');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_COLUMN_TYPE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidColumnType');
         }
     }
 
@@ -132,8 +132,8 @@ final class ColumnTypeValidationTest
                 columns: ['id' => 'int', 'a' => 'string', 'b' => 'text'],
             ));
             Assert::fail('an invalid new column type must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_COLUMN_TYPE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidColumnType');
         }
 
         Assert::same(

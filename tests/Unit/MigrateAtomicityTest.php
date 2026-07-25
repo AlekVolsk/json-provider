@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Cache\InMemoryCache;
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueSeverity;
@@ -85,8 +85,8 @@ final class MigrateAtomicityTest
                 ],
             ));
             Assert::fail('an unencodable stored value must abort the migrate');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_RECORD');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RecordJsonEncodeFailed');
         }
 
         Assert::same(file_get_contents($dataPath), $tampered);

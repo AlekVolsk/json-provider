@@ -29,5 +29,6 @@ final class FieldDescriptor
         public readonly TemporalKind | null $temporalKind = null,
         public readonly string | null $enumClass = null,
         public readonly bool $floatColumn = false,
-    ) {}
+    ) {
+    }
 }

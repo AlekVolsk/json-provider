@@ -11,20 +11,22 @@
 
 These extensions ship with virtually every PHP distribution, so no extra installation is normally needed.
 
-## Optional cache extensions
+## Optional extensions
 
-The cache layer is pluggable. The file and in-memory adapters need nothing extra; the following adapters each require their PHP extension and are therefore optional:
+Composer lists them under `suggest` — none of them is required:
 
-- `ext-apcu` — for `ApcuCache`;
-- `ext-memcached` — for `MemcachedCache`;
-- `ext-redis` — for `RedisCache`.
+- `ext-apcu` — the `ApcuCache` adapter;
+- `ext-memcached` — the `MemcachedCache` adapter;
+- `ext-redis` — the `RedisCache` adapter;
+- `ext-intl` — the `ComparisonMode::Locale` string ordering (collator); without the extension the mode silently behaves as `Binary`, see [Query builder](08-query-builder.md).
 
-If an adapter's extension is missing, constructing that adapter raises the `EXTENSION_REQUIRED` error; choose another adapter (`InMemoryCache`, `NullCache`, or your own).
+The cache layer is pluggable: the bundled `NullCache` and `InMemoryCache` (and your own adapter) need nothing extra. A missing extension surfaces differently per adapter: `ApcuCache` checks for it explicitly and raises `ExtensionRequired`, while `RedisCache`/`MemcachedCache` take a `\Redis`/`\Memcached` client in their constructor and fail with a `TypeError` before it even runs — see [Caching](16-caching.md).
 
 ## Installation
 
 `composer require alekvolsk/json-provider`
-Beyond PHP and the bundled extensions above, the library has no Composer runtime dependencies.
+
+The single Composer runtime dependency is `psr/log` (^3) — the logger interface the provider and the cache adapters accept optionally. Everything else is PHP plus the bundled extensions above.
 
 ## Development dependencies
 

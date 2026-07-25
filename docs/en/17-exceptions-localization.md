@@ -1,121 +1,108 @@
 # Exceptions and localization
 
-All provider exceptions descend from `AV\JsonProvider\Exception\JsonProviderException`. The concrete class for storage-related errors is `StorageException`.
+Every provider exception descends from `AV\JsonProvider\Exception\JsonProviderException`, an abstract class that is never thrown itself. What gets thrown is one of nine domain classes: you pick how coarsely to catch by picking which one you catch.
+
+| Class | Domain |
+| - | - |
+| `JsonProviderSchemaException` | schema structure, DDL contracts, identifiers, the primary key contract, column migrations |
+| `JsonProviderTableException` | lifecycle of a table and of the database |
+| `JsonProviderQueryException` | building a query or a filter |
+| `JsonProviderDataException` | values and records |
+| `JsonProviderRelationException` | foreign keys, as declared and as enforced |
+| `JsonProviderMappingException` | binding a record object to a table |
+| `JsonProviderServiceException` | backups, integrity, the meta file, cache adapters |
+| `JsonProviderIoException` | files and JSON |
+| `JsonProviderLockException` | locking |
+
+## Handling an error
 
 ```php
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 try {
     $db->table('users')->insertByArray(['email' => $existing]);
-} catch (StorageException $e) {
-    $e->getMessage();           // English (for logs)
-    $e->getLocalizedMessage();  // current locale (for users)
-    $e->getErrorKey();          // e.g. 'UNIQUE_VIOLATION' — for programmatic handling
+} catch (JsonProviderDataException $e) {
+    $e->error;                  // the vocabulary case — match on it, no magic strings
+    $e->getMessage();           // the invariant (English) message, for logs
+    $e->getLocalizedMessage();  // the message in the active locale, for people
+    $e->getErrorKey();          // the case name as a string, for logs and metrics
+
+    match ($e->error) {
+        JsonProviderErrorEn::UniqueViolation => $this->reportDuplicate($e),
+        default => throw $e,
+    };
 }
 ```
+
+The identifier of a situation is a case of `JsonProviderErrorEn`, and it does not depend on the locale in force: a throw site always names the same enum, and the locale only affects the text.
+
+## Messages
+
+`getMessage()` is fixed when the exception is built and stays English — a log line must not depend on the locale the application happened to set. `getLocalizedMessage()` is computed per call and follows the active locale; a case that locale does not know renders in English as a whole sentence.
 
 ## Setting a locale
 
 ```php
-use AV\JsonProvider\Exception\LangRuEnum;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorRu;
 
-$db->setLocale(LangRuEnum);  // any case — only the class matters
+$db->setLocale(JsonProviderErrorRu::TableNotFound);  // any case will do — only the class matters
+$db->resetLocale();                                  // back to English
 ```
 
-The locale applies process-wide. `getMessage()` always stays English (for stable log lines). `getLocalizedMessage()` returns the translated form; unknown keys fall back to English.
+The locale applies process-wide, not per provider instance.
 
 ## Custom locale
 
-```php
-use AV\JsonProvider\Exception\LocaleInterface;
+A locale is one enum per language implementing `LocaleInterface`. Case names match `JsonProviderErrorEn`; the value is the message template with positional `%s`:
 
-enum LangDeEnum: string implements LocaleInterface
+```php
+use AV\JsonProvider\Exception\Locale\LocaleInterface;
+
+enum JsonProviderErrorDe: string implements LocaleInterface
 {
-    case TABLE_NOT_FOUND  = 'Tabelle "%s" nicht im Schema gefunden';
-    case UNIQUE_VIOLATION = 'Eindeutigkeitsverletzung in "%s" auf Feldern [%s]: %s';
-    // missing keys fall back to English
+    case TableNotFound = 'Tabelle "%s" nicht im Schema gefunden';
+    case UniqueViolation = 'Eindeutigkeitsverletzung in "%s" auf Feldern [%s]: %s';
 
     public static function translate(string $key, string ...$params): string
     {
         foreach (self::cases() as $case) {
             if ($case->name === $key) {
-                return $params !== [] ? \sprintf($case->value, ...$params) : $case->value;
+                return $params !== []
+                    ? \sprintf($case->value, ...$params)
+                    : $case->value;
             }
         }
-        return $key;   // fall back to English
+
+        return $key;   // an unknown case — the provider falls back to English
     }
 }
 
-$db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
+$db->setLocale(JsonProviderErrorDe::TableNotFound);
 ```
 
-The custom locale class can live in any namespace.
+The locale class can live in any namespace. Translating the whole vocabulary up front is not required: an untranslated case renders in English as a whole, never blended with translated text inside one sentence.
 
-## Common error keys
+Template text is plain language: no method names, no internal shorthand, so it can be translated by someone who does not know how the package is built. Only these stay verbatim: keys of the JSON files (`"tables"`, `"fields"`), the values the schema accepts (`noAction`, `cascade`, `setNull`, `restrict`, `asc`, `desc`), column type names, attribute names and language literals.
 
-| Key | When |
+## Logging
+
+When the provider is created with a PSR-3 logger, **every** provider exception reports itself at error level the moment it is raised — nothing has to be caught to be logged:
+
+```php
+$db = JsonDataProvider::getInstance($path, $cache, $logger);
+```
+
+The log line carries the invariant message plus context:
+
+| Context key | What it holds |
 | - | - |
-| `TABLE_NOT_FOUND` | unknown table name |
-| `TABLE_ALREADY_EXISTS` | `createTable` for a name already registered |
-| `COLUMN_NOT_FOUND` | comment API called for a non-existent column |
-| `DATABASE_ALREADY_EXISTS` | `createDatabase` for an existing path |
-| `UNIQUE_VIOLATION` | unique constraint violated on insert/update |
-| `FOREIGN_KEY_RESTRICT` | `restrict` action blocked a delete/update |
-| `PK_CONTRACT_VIOLATED` | PK or PK index contract was broken |
-| `META_ENTRY_MISSING` | meta entry missing for a registered table |
-| `META_ENTRY_CORRUPT` | the meta entry is broken (a non-int counter) — `repair()` fixes it |
-| `INDEX_NOT_FOUND` | named index does not exist in the table schema |
-| `REORDER_COLUMNS_UNKNOWN` | reorderColumns: column not in schema |
-| `REORDER_COLUMNS_DUPLICATE` | reorderColumns: duplicate column name |
-| `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: some columns omitted |
-| `MIGRATE_COLUMN_TYPE_CHANGE` | migrateColumns: a retained column changes type |
-| `MIGRATE_COLUMN_NO_DEFAULT` | migrateColumns: not-null column with no default added to a non-empty table |
-| `MIGRATE_FIELD_UNKNOWN_COLUMN` | a constraint/index references a missing column (migrateColumns, addIndex, addUniqueConstraint) |
-| `INVALID_TABLE_NAME` | table name outside the identifier whitelist (or the reserved `_pendingRename`) |
-| `INVALID_COLUMN_NAME` | column name outside the identifier whitelist |
-| `INVALID_INDEX_NAME` | index name outside the identifier whitelist |
-| `RESERVED_INDEX_NAME` | index name starts with the reserved `_fk_` prefix |
-| `INVALID_COLUMN_TYPE` | column type outside the closed set of 24 types |
-| `RELATION_ENTRY_INVALID` | broken relation entry in information_schema.json (keys/type) |
-| `RELATION_ACTION_INVALID` | onDelete/onUpdate outside noAction/cascade/setNull/restrict |
-| `RELATION_COLUMN_NOT_FOUND` | the FK/referenced column does not exist in the canonical relation table |
-| `RELATION_TYPE_MISMATCH` | the base types of the FK and referenced columns differ |
-| `RELATION_ALREADY_EXISTS` | addRelation: the canonical edge is already declared (in either notation) |
-| `RELATION_NOT_FOUND` | dropRelation: no relation by the (from, foreignKey, to) triple |
-| `RELATION_REFERENCES_NOT_UNIQUE` | references is neither the PK nor covered by a single-column unique |
-| `RELATION_ON_UPDATE_ON_PK` | onUpdate declared on the immutable PK `id` |
-| `FOREIGN_KEY_SET_NULL_NOT_NULLABLE` | setNull on a non-nullable FK column (declaration or execution) |
-| `FK_BACKING_INDEX_MISSING` | a restrict probe without a covering backing index — run `repair()` |
-| `INDEX_ALREADY_EXISTS` | addIndex: the index name is taken |
-| `UNIQUE_CONSTRAINT_ALREADY_EXISTS` | addUniqueConstraint: the constraint name is taken |
-| `UNIQUE_CONSTRAINT_NOT_FOUND` | dropUniqueConstraint: no constraint by that name |
-| `COLUMN_ALREADY_EXISTS` | renameColumn: the target column name is taken |
-| `RENAME_INCOMPLETE` | a write/DDL into a table with a live `_pendingRename` marker — run `repair()` first |
-| `BACKUP_ARCHIVE_EXISTS` | backup destination already occupied |
-| `BACKUP_DESTINATION_INSIDE_DB` | backup target lies inside the DB directory |
-| `BACKUP_ARCHIVE_CORRUPT` | restore: archive missing/unreadable/wrong format |
-| `BACKUP_SCHEMA_MISMATCH` | restore: archive table set does not match schema |
-| `BACKUP_CHECKSUM_MISMATCH` | restore: an archive member failed the manifest's sha256 check |
-| `RESTORE_FAILED` | restore failed (rolled back if possible) |
-| `EXTENSION_REQUIRED` | a cache adapter cannot find its PHP extension |
-| `TYPE_MISMATCH` | a value does not match the column's declared type |
-| `NULL_NOT_ALLOWED` | `null` given for a non-nullable column |
-| `REQUIRED_COLUMN_MISSING` | insert omitted a non-nullable column |
-| `NON_FINITE_FLOAT` | `NAN`/`INF` written into a float column — not representable in JSON |
-| `INVALID_UTF8` | string value is not valid UTF-8 |
-| `QUERY_UNKNOWN_COLUMN` | a where/orderBy/distinct/selectColumn column is missing from the schema |
-| `CONDITION_TYPE_MISMATCH` | a where condition value does not fit the column type/operator |
-| `CONDITION_MALFORMED` | malformed BETWEEN/IN shape (not an array, not [min, max]) |
-| `INVALID_SORT_DIRECTION` | orderBy direction is not "asc"/"desc" |
-| `INVALID_LIMIT` | negative limit |
-| `INVALID_OFFSET` | negative offset |
-| `INVALID_TEMPORAL_VALUE` | date/time value not in the accepted system format (incl. a TZ offset beyond ±14:00) |
-| `ZERO_DATE` | a zero date (`0000-00-00`) was supplied |
-| `TEMPORAL_FRACTION_UNSUPPORTED` | sub-second precision the kind does not accept (a fraction on a second kind, or more than 3 digits on a millisecond kind) |
-| `LIKE_ON_INSTANT_UNSUPPORTED` | LIKE on a datetime/datetimez column (stored as UTC) |
-| `NUMERIC_PART_OUT_OF_RANGE` | `month`/`day` value outside its valid range |
-| `DTO_SCHEMA_MISMATCH` | a registered DTO does not match its table schema |
-| `DTO_NOT_REGISTERED` | an object method used on a table with no DTO bound |
-| `DTO_ALREADY_REGISTERED` | a different DTO class is already bound to the table — unregister it first |
-| `INVALID_ENUM_VALUE` | a stored value is not a case of the DTO's enum |
-| `DTO_HYDRATION_FAILED` | a stored value cannot be hydrated into the DTO |
+| `errorKey` | the case name — filter and count errors by it |
+| `origin` | the throw site, `file(line)` |
+| `trace` | the call stack |
+
+Paths in `origin` and `trace` are trimmed: everything before the `/vendor` segment is dropped, so a log line names the place inside the package instead of the machine's layout.
+
+## The vocabulary
+
+177 cases; the case name is the identifier and the English text lives in the case itself (`JsonProviderErrorEn::TableNotFound->value`).

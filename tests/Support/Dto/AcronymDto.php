@@ -18,5 +18,6 @@ final class AcronymDto
         public int $id,
         public int $userID,
         public int $httpStatus,
-    ) {}
+    ) {
+    }
 }

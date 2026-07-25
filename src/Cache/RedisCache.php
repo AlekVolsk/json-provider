@@ -29,7 +29,8 @@ final class RedisCache implements CacheInterface
         private readonly \Redis $client,
         private readonly int $ttl = 0,
         private readonly LoggerInterface | null $logger = null,
-    ) {}
+    ) {
+    }
 
     public function get(string $key): array | null
     {

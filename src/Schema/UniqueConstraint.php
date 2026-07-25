@@ -18,7 +18,8 @@ final class UniqueConstraint
     public function __construct(
         public readonly string $name,
         public readonly array $fields,
-    ) {}
+    ) {
+    }
 
     /**
      * Returns the uniqueness key string for the given record, or null when

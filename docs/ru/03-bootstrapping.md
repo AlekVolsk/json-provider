@@ -10,7 +10,7 @@ use AV\JsonProvider\JsonDataProvider;
 $db = JsonDataProvider::getInstance('/var/data/myapp');
 ```
 
-В пути должен быть `information_schema.json`. Аргумент кеша учитывается только при первом вызове для этого пути; последующие вызовы возвращают тот же экземпляр.
+Хранилище по этому пути должно уже существовать (в каталоге лежит `information_schema.json`); сам `getInstance()` ничего не проверяет — отсутствие хранилища всплывёт исключением на первой же операции. Аргумент кеша учитывается только при первом вызове для этого пути; последующие вызовы возвращают тот же экземпляр.
 
 ## Создать новое хранилище
 
@@ -18,7 +18,7 @@ $db = JsonDataProvider::getInstance('/var/data/myapp');
 $db = JsonDataProvider::createDatabase('/var/data/myapp');
 ```
 
-Создаёт каталог, пустой `information_schema.json` и пустой `meta.json`. Бросает `StorageException`, если путь уже существует.
+Создаёт каталог, пустой `information_schema.json` и пустой `meta.json`. Бросает `JsonProviderTableException`, если путь уже существует.
 
 ## Проверить наличие
 
@@ -44,4 +44,4 @@ $db = JsonDataProvider::getInstance('/var/data/myapp', new ApcuCache(ttl: 60));
 $db = JsonDataProvider::getInstance('/var/data/myapp', $cache, $psrLogger);
 ```
 
-Логгер опционален. Провайдер пишет в него находки валидатора и рантайм-деградации по единой шкале severity — см. [Целостность](14-integrity.md). Оба параметра (`$cache`, `$logger`) применяются только при создании инстанса: живой сингтон сохраняет те, с которыми был создан.
+Логгер опционален. Провайдер пишет в него находки валидатора и рантайм-деградации по единой шкале severity — см. [Целостность](14-integrity.md). Оба параметра (`$cache`, `$logger`) применяются только при создании инстанса: живой синглтон сохраняет те, с которыми был создан.

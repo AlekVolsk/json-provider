@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Registry;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderRelationException;
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\JsonProviderTableException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -56,7 +59,8 @@ final class SchemaRegistry
 
     public function __construct(
         private readonly JsonStorage $storage,
-    ) {}
+    ) {
+    }
 
     /**
      * Returns the table schema by name; throws if it does not exist.
@@ -66,7 +70,10 @@ final class SchemaRegistry
         $this->ensureLoaded();
 
         return $this->tables[$name]
-            ?? throw StorageException::tableNotFound($name);
+            ?? throw new JsonProviderTableException(
+                JsonProviderErrorEn::TableNotFound,
+                $name,
+            );
     }
 
     /**
@@ -160,14 +167,12 @@ final class SchemaRegistry
                     if (
                         $existing->canonicalKey() === $relation->canonicalKey()
                     ) {
-                        throw StorageException::relationAlreadyExists(
+                        throw new JsonProviderRelationException(
+                            JsonProviderErrorEn::RelationAlreadyExists,
                             $relation->fromTable,
                             $relation->foreignKey,
                             $relation->toTable,
-                            $existing->type->value . ' ' . $existing->fromTable
-                                . '(' . $existing->foreignKey . ') -> '
-                                . $existing->toTable
-                                . '(' . $existing->references . ')',
+                            self::declarationOf($existing),
                         );
                     }
                 }
@@ -219,7 +224,8 @@ final class SchemaRegistry
                 }
 
                 if ($removed === []) {
-                    throw StorageException::relationNotFound(
+                    throw new JsonProviderRelationException(
+                        JsonProviderErrorEn::RelationNotFound,
                         $fromTable,
                         $foreignKey,
                         $toTable,
@@ -286,7 +292,10 @@ final class SchemaRegistry
 
         foreach ([$childTable, $parentTable] as $tableName) {
             if (!isset($tables[$tableName])) {
-                throw StorageException::tableNotFound($tableName);
+                throw new JsonProviderTableException(
+                    JsonProviderErrorEn::TableNotFound,
+                    $tableName,
+                );
             }
         }
 
@@ -300,7 +309,8 @@ final class SchemaRegistry
             ] as [$column, $holder, $columns]
         ) {
             if (!\array_key_exists($column, $columns)) {
-                throw StorageException::relationColumnNotFound(
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::RelationColumnNotFound,
                     $relation->fromTable,
                     $relation->foreignKey,
                     $relation->toTable,
@@ -319,7 +329,8 @@ final class SchemaRegistry
         );
 
         if ($childInfo->base !== $parentInfo->base) {
-            throw StorageException::relationTypeMismatch(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::RelationTypeMismatch,
                 $childTable,
                 $relation->childColumn(),
                 $childColumns[$relation->childColumn()],
@@ -336,7 +347,8 @@ final class SchemaRegistry
                 $relation->parentColumn(),
             )
         ) {
-            throw StorageException::relationReferencesNotUnique(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::RelationReferencesNotUnique,
                 $parentTable,
                 $relation->parentColumn(),
             );
@@ -346,7 +358,8 @@ final class SchemaRegistry
             $relation->parentColumn() === PrimaryKey::FIELD
             && $relation->onUpdate !== ForeignKeyActionEnum::NO_ACTION
         ) {
-            throw StorageException::relationOnUpdateOnPk(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::RelationOnUpdateOnPk,
                 $relation->fromTable,
                 $relation->toTable,
             );
@@ -359,7 +372,8 @@ final class SchemaRegistry
                 || $relation->onUpdate === $setNull)
             && !$childInfo->nullable
         ) {
-            throw StorageException::foreignKeySetNullNotNullable(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::ForeignKeySetNullNotNullable,
                 $childTable,
                 $relation->childColumn(),
             );
@@ -416,7 +430,10 @@ final class SchemaRegistry
                 array $relations,
             ) use ($table): array {
                 if (isset($tables[$table->name])) {
-                    throw StorageException::tableAlreadyExists($table->name);
+                    throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableAlreadyExists,
+                        $table->name,
+                    );
                 }
 
                 $tables[$table->name] = $table;
@@ -441,7 +458,10 @@ final class SchemaRegistry
                 array $relations,
             ) use ($table): array {
                 if (!isset($tables[$table->name])) {
-                    throw StorageException::tableNotFound($table->name);
+                    throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableNotFound,
+                        $table->name,
+                    );
                 }
 
                 $tables[$table->name] = $table;
@@ -473,7 +493,10 @@ final class SchemaRegistry
                 &$updated,
             ): array {
                 $current = $tables[$name]
-                    ?? throw StorageException::tableNotFound($name);
+                    ?? throw new JsonProviderTableException(
+                        JsonProviderErrorEn::TableNotFound,
+                        $name,
+                    );
 
                 $updated = $transform($current);
                 $tables[$name] = $updated;
@@ -483,7 +506,10 @@ final class SchemaRegistry
         );
 
         if (!$updated instanceof TableSchema) {
-            throw StorageException::schemaTransformNoResult($name);
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::SchemaTransformNoResult,
+                $name,
+            );
         }
 
         return $updated;
@@ -572,6 +598,17 @@ final class SchemaRegistry
         $this->ensureLoaded();
     }
 
+    /**
+     * The signature of a declared relation, used to point at the declaration
+     * that already occupies the edge.
+     */
+    private static function declarationOf(RelationSchema $relation): string
+    {
+        return $relation->type->value . ' ' . $relation->fromTable
+            . '(' . $relation->foreignKey . ') -> '
+            . $relation->toTable . '(' . $relation->references . ')';
+    }
+
     private static function coveredBySingleColumnUnique(
         TableSchema $table,
         string $column,
@@ -631,14 +668,14 @@ final class SchemaRegistry
     private function parseTables(array $data): array
     {
         if (!\array_key_exists('tables', $data)) {
-            throw StorageException::invalidSchema(
-                "the 'tables' key is missing",
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::SchemaTablesMissing,
             );
         }
 
         if (!\is_array($data['tables'])) {
-            throw StorageException::invalidSchema(
-                "the 'tables' key is not a collection",
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::SchemaTablesNotCollection,
             );
         }
 
@@ -648,16 +685,18 @@ final class SchemaRegistry
             $name = (string)$name;
 
             if (!\is_array($def)) {
-                throw StorageException::invalidSchema(
-                    'table "' . $name . '": definition is not an object',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaTableNotObject,
+                    $name,
                 );
             }
 
             $columns = $def['columns'] ?? [];
 
             if (!\is_array($columns)) {
-                throw StorageException::invalidSchema(
-                    'table "' . $name . '": "columns" is not an object',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaColumnsNotObject,
+                    $name,
                 );
             }
 
@@ -671,15 +710,17 @@ final class SchemaRegistry
                  * down; reject it here at the json boundary.
                  */
                 if (\is_int($colName)) {
-                    throw StorageException::invalidColumnName(
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::InvalidColumnName,
                         (string)$colName,
                     );
                 }
 
                 if (!\is_string($colType)) {
-                    throw StorageException::invalidSchema(
-                        'table "' . $name . '", column "' . $colName
-                            . '": type is not a string',
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::SchemaColumnTypeNotString,
+                        $name,
+                        $colName,
                     );
                 }
 
@@ -720,8 +761,9 @@ final class SchemaRegistry
     private function parseUniqueConstraints(string $table, mixed $raw): array
     {
         if (!\is_array($raw)) {
-            throw StorageException::invalidSchema(
-                'table "' . $table . '": "unique" is not a list',
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::SchemaUniqueNotList,
+                $table,
             );
         }
 
@@ -729,28 +771,28 @@ final class SchemaRegistry
 
         foreach ($raw as $def) {
             if (!\is_array($def)) {
-                throw StorageException::invalidSchema(
-                    'table "' . $table
-                        . '": a unique constraint entry is not an object',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaUniqueNotObject,
+                    $table,
                 );
             }
 
             $constraintName = $def['name'] ?? null;
 
             if (!\is_string($constraintName) || $constraintName === '') {
-                throw StorageException::invalidSchema(
-                    'table "' . $table . '": a unique constraint has a '
-                        . 'missing or non-string name',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaUniqueName,
+                    $table,
                 );
             }
 
             $fields = $def['fields'] ?? null;
 
             if (!\is_array($fields) || $fields === []) {
-                throw StorageException::invalidSchema(
-                    'table "' . $table . '", unique constraint "'
-                        . $constraintName
-                        . '": "fields" is missing, empty or not a list',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaUniqueFields,
+                    $table,
+                    $constraintName,
                 );
             }
 
@@ -758,10 +800,10 @@ final class SchemaRegistry
 
             foreach ($fields as $field) {
                 if (!\is_string($field)) {
-                    throw StorageException::invalidSchema(
-                        'table "' . $table . '", unique constraint "'
-                            . $constraintName
-                            . '": a field entry is not a string',
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::SchemaUniqueFieldNotString,
+                        $table,
+                        $constraintName,
                     );
                 }
 
@@ -820,8 +862,9 @@ final class SchemaRegistry
     private function parseIndexes(string $table, mixed $raw): array
     {
         if (!\is_array($raw)) {
-            throw StorageException::invalidSchema(
-                'table "' . $table . '": "indexes" is not a list',
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::SchemaIndexesNotList,
+                $table,
             );
         }
 
@@ -829,27 +872,28 @@ final class SchemaRegistry
 
         foreach ($raw as $def) {
             if (!\is_array($def)) {
-                throw StorageException::invalidSchema(
-                    'table "' . $table
-                        . '": an index entry is not an object',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaIndexNotObject,
+                    $table,
                 );
             }
 
             $indexName = $def['name'] ?? null;
 
             if (!\is_string($indexName) || $indexName === '') {
-                throw StorageException::invalidSchema(
-                    'table "' . $table
-                        . '": an index has a missing or non-string name',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaIndexName,
+                    $table,
                 );
             }
 
             $rawFields = $def['fields'] ?? null;
 
             if (!\is_array($rawFields) || $rawFields === []) {
-                throw StorageException::invalidSchema(
-                    'table "' . $table . '", index "' . $indexName
-                        . '": "fields" is missing, empty or not a list',
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaIndexFields,
+                    $table,
+                    $indexName,
                 );
             }
 
@@ -857,19 +901,20 @@ final class SchemaRegistry
 
             foreach ($rawFields as $fieldDef) {
                 if (!\is_array($fieldDef)) {
-                    throw StorageException::invalidSchema(
-                        'table "' . $table . '", index "' . $indexName
-                            . '": a field entry is not an object',
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::SchemaIndexFieldNotObject,
+                        $table,
+                        $indexName,
                     );
                 }
 
                 $fieldName = $fieldDef['field'] ?? null;
 
                 if (!\is_string($fieldName) || $fieldName === '') {
-                    throw StorageException::invalidSchema(
-                        'table "' . $table . '", index "' . $indexName
-                            . '": a field entry has a missing or '
-                            . 'non-string "field"',
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::SchemaIndexFieldName,
+                        $table,
+                        $indexName,
                     );
                 }
 
@@ -882,12 +927,12 @@ final class SchemaRegistry
                         : null;
 
                     if ($parsedDir === null) {
-                        throw StorageException::invalidSchema(
-                            'table "' . $table . '", index "' . $indexName
-                                . '", field "' . $fieldName
-                                . '": invalid direction '
-                                . var_export($rawDir, true)
-                                . ' (expected "asc" or "desc")',
+                        throw new JsonProviderSchemaException(
+                            JsonProviderErrorEn::SchemaIndexDirection,
+                            $table,
+                            $indexName,
+                            $fieldName,
+                            var_export($rawDir, true),
                         );
                     }
 
@@ -943,27 +988,30 @@ final class SchemaRegistry
         }
 
         if (!\is_array($data['relations'])) {
-            throw StorageException::invalidSchema(
-                "the 'relations' key is not a list",
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::SchemaRelationsNotList,
             );
         }
 
         foreach ($data['relations'] as $position => $def) {
             if (!\is_array($def)) {
-                throw StorageException::relationEntryInvalid(
-                    'entry #' . $position . ' is not an object; expected '
-                        . 'keys: from, foreignKey, to, references, type',
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::RelationEntryNotObject,
+                    (string)$position,
                 );
             }
 
             foreach (['from', 'foreignKey', 'to', 'references'] as $key) {
                 if (!isset($def[$key]) || !\is_string($def[$key])) {
-                    throw StorageException::relationEntryInvalid(
-                        'entry #' . $position . ': key "' . $key
-                            . '" is missing or not a string; expected '
-                            . 'keys: from, foreignKey, to, references, '
-                            . 'type; actual keys: '
-                            . implode(', ', array_keys($def)),
+                    $val = implode(', ', array_map(
+                        static fn (int | string $k): string => (string)$k,
+                        array_keys($def),
+                    ));
+                    throw new JsonProviderRelationException(
+                        JsonProviderErrorEn::RelationEntryKey,
+                        (string)$position,
+                        $key,
+                        $val,
                     );
                 }
             }
@@ -974,10 +1022,10 @@ final class SchemaRegistry
                 : null;
 
             if ($type === null) {
-                throw StorageException::relationEntryInvalid(
-                    'entry #' . $position . ': unknown type '
-                        . var_export($rawType, true)
-                        . '; allowed types: belongsTo, hasMany, hasOne',
+                throw new JsonProviderRelationException(
+                    JsonProviderErrorEn::RelationEntryType,
+                    (string)$position,
+                    var_export($rawType, true),
                 );
             }
 
@@ -985,9 +1033,9 @@ final class SchemaRegistry
 
             if (\array_key_exists('backingIndex', $def)) {
                 if (!\is_string($def['backingIndex'])) {
-                    throw StorageException::relationEntryInvalid(
-                        'entry #' . $position
-                            . ': key "backingIndex" is not a string',
+                    throw new JsonProviderRelationException(
+                        JsonProviderErrorEn::RelationEntryBackingIndex,
+                        (string)$position,
                     );
                 }
 
@@ -1031,7 +1079,8 @@ final class SchemaRegistry
             : null;
 
         if ($action === null) {
-            throw StorageException::relationActionInvalid(
+            throw new JsonProviderRelationException(
+                JsonProviderErrorEn::RelationActionInvalid,
                 $key,
                 \is_scalar($raw) ? (string)$raw : \gettype($raw),
             );

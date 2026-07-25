@@ -1,121 +1,108 @@
 # Исключения и локализация
 
-Все исключения провайдера наследуют `AV\JsonProvider\Exception\JsonProviderException`. Конкретный класс для storage-ошибок — `StorageException`.
+Все исключения провайдера наследуются от `AV\JsonProvider\Exception\JsonProviderException` — абстрактного класса, который сам не бросается. Бросаются девять доменных классов: инженер выбирает гранулярность отлова тем, какой из них ловит.
+
+| Класс | Домен |
+| - | - |
+| `JsonProviderSchemaException` | структура схемы, DDL-контракты, идентификаторы, контракт первичного ключа, миграции колонок |
+| `JsonProviderTableException` | жизненный цикл таблицы и базы |
+| `JsonProviderQueryException` | построение запроса и фильтра |
+| `JsonProviderDataException` | значения и записи |
+| `JsonProviderRelationException` | внешние ключи — объявление и исполнение |
+| `JsonProviderMappingException` | привязка объекта записи к таблице |
+| `JsonProviderServiceException` | резервные копии, целостность, мета, адаптеры кеша |
+| `JsonProviderIoException` | файлы и JSON |
+| `JsonProviderLockException` | блокировки |
+
+## Разбор ошибки
 
 ```php
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderDataException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 
 try {
     $db->table('users')->insertByArray(['email' => $existing]);
-} catch (StorageException $e) {
-    $e->getMessage();           // английский (для логов)
-    $e->getLocalizedMessage();  // текущая локаль (для пользователя)
-    $e->getErrorKey();          // например 'UNIQUE_VIOLATION' — для программной обработки
+} catch (JsonProviderDataException $e) {
+    $e->error;                  // кейс словаря — для match, без магических строк
+    $e->getMessage();           // инвариантное сообщение (английское) для логов
+    $e->getLocalizedMessage();  // сообщение в активной локали, для человека
+    $e->getErrorKey();          // имя кейса строкой, для логов и метрик
+
+    match ($e->error) {
+        JsonProviderErrorEn::UniqueViolation => $this->reportDuplicate($e),
+        default => throw $e,
+    };
 }
 ```
 
-## Установка локали
+Идентификатор ситуации — кейс `JsonProviderErrorEn`, и он не зависит от выставленной локали: место броска всегда называет один и тот же enum, а локаль влияет только на текст.
+
+## Сообщения
+
+`getMessage()` фиксируется в момент создания исключения и остаётся английским — лог не должен зависеть от того, какую локаль выставило приложение. `getLocalizedMessage()` вычисляется на каждый вызов и следует активной локали; если локаль не знает кейса, возвращается английский текст целиком.
+
+## Выбор локали
 
 ```php
-use AV\JsonProvider\Exception\LangRuEnum;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorRu;
 
-$db->setLocale(LangRuEnum);  // любой кейс — важен только класс
+$db->setLocale(JsonProviderErrorRu::TableNotFound);  // важен только класс, кейс любой
+$db->resetLocale();                                  // вернуться к английскому
 ```
 
-Локаль действует на весь процесс. `getMessage()` всегда остаётся английским (стабильные строки логов). `getLocalizedMessage()` отдаёт перевод; неизвестные ключи откатываются на английский.
+Локаль действует на процесс целиком, а не на отдельный инстанс провайдера.
 
 ## Своя локаль
 
-```php
-use AV\JsonProvider\Exception\LocaleInterface;
+Локаль — это один enum на язык, реализующий `LocaleInterface`. Имена кейсов совпадают с `JsonProviderErrorEn`, значение — шаблон сообщения с позиционными `%s`:
 
-enum LangDeEnum: string implements LocaleInterface
+```php
+use AV\JsonProvider\Exception\Locale\LocaleInterface;
+
+enum JsonProviderErrorDe: string implements LocaleInterface
 {
-    case TABLE_NOT_FOUND  = 'Tabelle "%s" nicht im Schema gefunden';
-    case UNIQUE_VIOLATION = 'Eindeutigkeitsverletzung in "%s" auf Feldern [%s]: %s';
-    // отсутствующие ключи откатываются на английский
+    case TableNotFound = 'Tabelle "%s" nicht im Schema gefunden';
+    case UniqueViolation = 'Eindeutigkeitsverletzung in "%s" auf Feldern [%s]: %s';
 
     public static function translate(string $key, string ...$params): string
     {
         foreach (self::cases() as $case) {
             if ($case->name === $key) {
-                return $params !== [] ? \sprintf($case->value, ...$params) : $case->value;
+                return $params !== []
+                    ? \sprintf($case->value, ...$params)
+                    : $case->value;
             }
         }
-        return $key;   // вернуть ключ → fallback на английский
+
+        return $key;   // неизвестный кейс — провайдер возьмёт английский текст
     }
 }
 
-$db->setLocale(LangDeEnum::TABLE_NOT_FOUND);
+$db->setLocale(JsonProviderErrorDe::TableNotFound);
 ```
 
-Класс кастомной локали может находиться в любом namespace.
+Класс локали может лежать в любом пространстве имён. Переводить весь словарь сразу не обязательно: непереведённый кейс рендерится по-английски целиком, а не смешивается с переведённым текстом в одном предложении.
 
-## Частые ключи ошибок
+Текст шаблона — человеческий язык: имён методов и внутренних сокращений в нём нет, поэтому переводить его может человек, не знающий устройства пакета. Дословно остаются только ключи JSON-файлов (`"tables"`, `"fields"`), допустимые значения (`noAction`, `cascade`, `setNull`, `restrict`, `asc`, `desc`), имена типов колонок, имена атрибутов и литералы языка.
 
-| Ключ | Когда |
+## Логирование
+
+Если провайдер создан с PSR-3-логгером, **каждое** исключение провайдера пишет себя в лог на уровне `error` в момент возникновения — ловить его для этого не нужно:
+
+```php
+$db = JsonDataProvider::getInstance($path, $cache, $logger);
+```
+
+В лог уходит инвариантное сообщение и контекст:
+
+| Ключ контекста | Что в нём |
 | - | - |
-| `TABLE_NOT_FOUND` | неизвестное имя таблицы |
-| `TABLE_ALREADY_EXISTS` | `createTable` для уже зарегистрированного имени |
-| `COLUMN_NOT_FOUND` | comment-API вызван для несуществующей колонки |
-| `DATABASE_ALREADY_EXISTS` | `createDatabase` по уже существующему пути |
-| `UNIQUE_VIOLATION` | нарушение unique-ограничения на insert/update |
-| `FOREIGN_KEY_RESTRICT` | действие `restrict` заблокировало удаление/обновление |
-| `PK_CONTRACT_VIOLATED` | нарушение контракта PK или PK-индекса |
-| `META_ENTRY_MISSING` | нет записи в мете для зарегистрированной таблицы |
-| `META_ENTRY_CORRUPT` | запись меты повреждена (счётчик не int) — чинится `repair()` |
-| `INDEX_NOT_FOUND` | названного индекса нет в схеме таблицы |
-| `REORDER_COLUMNS_UNKNOWN` | reorderColumns: колонка не из схемы |
-| `REORDER_COLUMNS_DUPLICATE` | reorderColumns: дубликат имени колонки |
-| `REORDER_COLUMNS_INCOMPLETE` | reorderColumns: пропущены колонки |
-| `MIGRATE_COLUMN_TYPE_CHANGE` | migrateColumns: у удерживаемой колонки меняется тип |
-| `MIGRATE_COLUMN_NO_DEFAULT` | migrateColumns: not-null-колонка без дефолта добавлена в непустую таблицу |
-| `MIGRATE_FIELD_UNKNOWN_COLUMN` | ограничение/индекс ссылается на отсутствующую колонку (migrateColumns, addIndex, addUniqueConstraint) |
-| `INVALID_TABLE_NAME` | имя таблицы вне белого списка идентификаторов (или зарезервированное `_pendingRename`) |
-| `INVALID_COLUMN_NAME` | имя колонки вне белого списка идентификаторов |
-| `INVALID_INDEX_NAME` | имя индекса вне белого списка идентификаторов |
-| `RESERVED_INDEX_NAME` | имя индекса начинается с зарезервированного префикса `_fk_` |
-| `INVALID_COLUMN_TYPE` | тип колонки вне закрытого списка 24 типов |
-| `RELATION_ENTRY_INVALID` | битая запись relation в information_schema.json (ключи/тип) |
-| `RELATION_ACTION_INVALID` | onDelete/onUpdate вне noAction/cascade/setNull/restrict |
-| `RELATION_COLUMN_NOT_FOUND` | FK/referenced-колонка не существует в канонической таблице связи |
-| `RELATION_TYPE_MISMATCH` | базовые типы FK- и referenced-колонки не совпадают |
-| `RELATION_ALREADY_EXISTS` | addRelation: каноническое ребро уже объявлено (в любой нотации) |
-| `RELATION_NOT_FOUND` | dropRelation: связь по тройке (from, foreignKey, to) не объявлена |
-| `RELATION_REFERENCES_NOT_UNIQUE` | references не PK и не покрыта одноколоночным unique |
-| `RELATION_ON_UPDATE_ON_PK` | onUpdate объявлен на неизменяемом PK `id` |
-| `FOREIGN_KEY_SET_NULL_NOT_NULLABLE` | setNull на non-nullable FK-колонке (декларация или исполнение) |
-| `FK_BACKING_INDEX_MISSING` | restrict-проба без покрывающего backing-индекса — нужен `repair()` |
-| `INDEX_ALREADY_EXISTS` | addIndex: имя индекса уже занято |
-| `UNIQUE_CONSTRAINT_ALREADY_EXISTS` | addUniqueConstraint: имя ограничения уже занято |
-| `UNIQUE_CONSTRAINT_NOT_FOUND` | dropUniqueConstraint: названного ограничения нет |
-| `COLUMN_ALREADY_EXISTS` | renameColumn: целевое имя колонки занято |
-| `RENAME_INCOMPLETE` | запись/DDL в таблицу с живым маркером `_pendingRename` — сначала `repair()` |
-| `BACKUP_ARCHIVE_EXISTS` | целевой путь бэкапа занят |
-| `BACKUP_DESTINATION_INSIDE_DB` | целевой путь бэкапа внутри каталога БД |
-| `BACKUP_ARCHIVE_CORRUPT` | restore: архив отсутствует/нечитаем/неверный формат |
-| `BACKUP_SCHEMA_MISMATCH` | restore: набор таблиц в архиве не совпадает со схемой |
-| `BACKUP_CHECKSUM_MISMATCH` | restore: член архива не прошёл sha256-проверку манифеста |
-| `RESTORE_FAILED` | restore не удался (откачен, если возможно) |
-| `EXTENSION_REQUIRED` | кеш-адаптер не нашёл своё PHP-расширение |
-| `TYPE_MISMATCH` | значение не соответствует заявленному типу колонки |
-| `NULL_NOT_ALLOWED` | `null` для non-nullable-колонки |
-| `REQUIRED_COLUMN_MISSING` | insert пропустил non-nullable-колонку |
-| `NON_FINITE_FLOAT` | `NAN`/`INF` во float-колонку — не представимы в JSON |
-| `INVALID_UTF8` | строка не является корректной UTF-8 |
-| `QUERY_UNKNOWN_COLUMN` | колонка из where/orderBy/distinct/selectColumn отсутствует в схеме |
-| `CONDITION_TYPE_MISMATCH` | значение условия where не соответствует типу колонки/оператору |
-| `CONDITION_MALFORMED` | битая форма BETWEEN/IN (не массив, не [min, max]) |
-| `INVALID_SORT_DIRECTION` | направление orderBy не "asc"/"desc" |
-| `INVALID_LIMIT` | отрицательный limit |
-| `INVALID_OFFSET` | отрицательный offset |
-| `INVALID_TEMPORAL_VALUE` | дата/время не в принятом системном формате (в т.ч. TZ-оффсет вне ±14:00) |
-| `ZERO_DATE` | передана нулевая дата (`0000-00-00`) |
-| `TEMPORAL_FRACTION_UNSUPPORTED` | доли секунды не приняты типом (дробь у секундного типа или >3 знаков у миллисекундного) |
-| `LIKE_ON_INSTANT_UNSUPPORTED` | LIKE по колонке datetime/datetimez (хранится в UTC) |
-| `NUMERIC_PART_OUT_OF_RANGE` | значение `month`/`day` вне допустимого диапазона |
-| `DTO_SCHEMA_MISMATCH` | зарегистрированный DTO не соответствует схеме таблицы |
-| `DTO_NOT_REGISTERED` | объектный метод на таблице без привязанного DTO |
-| `DTO_ALREADY_REGISTERED` | к таблице уже привязан другой DTO-класс — сначала unregister |
-| `INVALID_ENUM_VALUE` | хранимое значение не является кейсом enum из DTO |
-| `DTO_HYDRATION_FAILED` | хранимое значение нельзя гидрировать в DTO |
+| `errorKey` | имя кейса — по нему фильтруются и считаются ошибки |
+| `origin` | место броска, `файл(строка)` |
+| `trace` | стек вызовов |
+
+Пути в `origin` и `trace` обрезаны: всё до сегмента `/vendor` отбрасывается, поэтому в лог попадает место внутри пакета, а не раскладка машины.
+
+## Словарь ситуаций
+
+177 кейсов; имя кейса — идентификатор, английский текст лежит в самом кейсе (`JsonProviderErrorEn::TableNotFound->value`).

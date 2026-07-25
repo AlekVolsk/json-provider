@@ -4,7 +4,7 @@ Indexes accelerate ordering and filtering without scanning the full table. They 
 
 ## Key format (v2) and the `indexFormat` marker
 
-A key is the hex-encoded concatenation of parts, one per index field. A part = type tag + payload: `null`, `false`, `true` are single-byte tags; numbers share one tag and 16 sortable bytes (an int and a float of the same value produce **one** key: `key(99) === key(99.0)`, `-0.0` folds into `0.0`; beyond double precision, `|v| > 2^53`, neighboring ints differ in the residual bytes, and numeric range bounds compare without the residual — the index yields a superset, the shared post-filter trims it exactly, the result matches a full scan); strings are tag + escaped content + terminator, with **no truncation**. Parts are prefix-free, so a composite key is injective: component boundaries never blend. A `DESC` direction inverts the part's bytes — key order tracks value order both ways. `NAN`/`INF` are not indexable (`INDEX_KEY_NON_FINITE`); a non-finite value in a query condition degrades to a full scan.
+A key is the hex-encoded concatenation of parts, one per index field. A part = type tag + payload: `null`, `false`, `true` are single-byte tags; numbers share one tag and 16 sortable bytes (an int and a float of the same value produce **one** key: `key(99) === key(99.0)`, `-0.0` folds into `0.0`; beyond double precision, `|v| > 2^53`, neighboring ints differ in the residual bytes, and numeric range bounds compare without the residual — the index yields a superset, the shared post-filter trims it exactly, the result matches a full scan); strings are tag + escaped content + terminator, with **no truncation**. Parts are prefix-free, so a composite key is injective: component boundaries never blend. A `DESC` direction inverts the part's bytes — key order tracks value order both ways. `NAN`/`INF` are not indexable (`IndexKeyNonFinite`); a non-finite value in a query condition degrades to a full scan.
 
 The format is stored per table in `meta.json` (`indexFormat`; a missing field reads as 1, legacy). The upgrade is lazy: tables with the old format are read via full scans, and the first write (or `rebuildAllIndexes()`, `repairTable()`, `optimizeTable()`) rebuilds every index with the current encoder and stamps `indexFormat: 2`. `rebuildIndex()` of a single index on a v1 table escalates to rebuilding all of them (one v2 file under a v1 marker would poison the table). `restore()` rebuilds indexes and stamps the format after restoring.
 
@@ -12,7 +12,7 @@ The format is stored per table in `meta.json` (`indexFormat`; a missing field re
 
 Before using an index the reader checks an O(1) gate: the committed `byteSize` in meta matches the actual data file size and `indexFormat >= 2`. Any doubt — a foreign append, lost meta, legacy format — **silently** degrades the query to a full scan (the result stays correct, no exception); the next write under the table EX lock heals and stamps.
 
-A trusted (v2) index is read with structural validation: the entry count equals `lineCount`, the lines form a permutation with no duplicates or gaps, every key is syntactically well-formed. A violation is a **loud** `INDEX_UNRELIABLE`: a structurally corrupt index never silently serves wrong rows. An empty index result is authoritative only after that validation. The same checks (category `INDEX_UNRELIABLE`) run in `validateTable()`, and `repairTable()` rebuilds and stamps.
+A trusted (v2) index is read with structural validation: the entry count equals `lineCount`, the lines form a permutation with no duplicates or gaps, every key is syntactically well-formed. A violation is a **loud** `JsonProviderServiceException`: a structurally corrupt index never silently serves wrong rows. An empty index result is authoritative only after that validation. The same checks (category `JsonProviderServiceException`) run in `validateTable()`, and `repairTable()` rebuilds and stamps.
 
 ## How an index is chosen for a query
 
@@ -48,8 +48,8 @@ NOT *   ✗  always full scan
 
 ## Naming and reserved names
 
-- Index name `pk` is reserved for the primary key index. Declaring a user index with this name (without `isPrimary=true`) raises `PK_CONTRACT_VIOLATED`.
-- The `_fk_` prefix is reserved for engine-managed FK backing indexes: `addIndex('_fk_...')` raises `RESERVED_INDEX_NAME`.
+- Index name `pk` is reserved for the primary key index. Declaring a user index with this name (without `isPrimary=true`) raises `JsonProviderSchemaException`.
+- The `_fk_` prefix is reserved for engine-managed FK backing indexes: `addIndex('_fk_...')` raises `ReservedIndexName`.
 - Index file name is **not** stored in the schema — it is derived from the index name (`<index-name>.index.ndjson`). You read it via `IndexSchema::getFileName()` if you need the path.
 
 ## Service FK (backing) indexes
@@ -63,10 +63,10 @@ Service index properties:
 
 - maintained by the regular index write machinery (append/rebuild/repair) like any index;
 - **invisible to query planning**: a select over the FK column behaves as if the column were unindexed — the service index exists for FK probes only;
-- their lifecycle belongs to the relation API: `dropIndex` of a service name raises `RESERVED_INDEX_NAME`; `dropRelation` removes the service index unless another probing relation still uses it (a reused user backing is never touched);
+- their lifecycle belongs to the relation API: `dropIndex` of a service name raises `ReservedIndexName`; `dropRelation` removes the service index unless another probing relation still uses it (a reused user backing is never touched);
 - `dropIndex` of a **user** index serving as a backing does not strand the FK: a service replacement is built in the same schema change and the relation is re-pointed to it.
 
-FK probes pass the same trust pipeline as the select path: the O(1) byteSize+format gate (a stale index degrades to an honest scan of the already-read rows), then full structural validation (corruption raises `INDEX_UNRELIABLE`). A restrict probe with a missing/non-covering backing is a loud configuration error, `FK_BACKING_INDEX_MISSING`, never a silent scan: for existing databases the first `repair()` closes it (reuses a covering user index or provisions `_fk_<column>`, and sets `backingIndex` — structural repair, data untouched).
+FK probes pass the same trust pipeline as the select path: the O(1) byteSize+format gate (a stale index degrades to an honest scan of the already-read rows), then full structural validation (corruption raises `JsonProviderServiceException`). A restrict probe with a missing/non-covering backing is a loud configuration error, `FkBackingIndexMissing`, never a silent scan: for existing databases the first `repair()` closes it (reuses a covering user index or provisions `_fk_<column>`, and sets `backingIndex` — structural repair, data untouched).
 
 ## Adding indexes at table creation
 

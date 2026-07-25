@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Exception\StorageException;
+use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -112,22 +112,22 @@ final class RenameTableTest
         try {
             $this->db->renameTable('missing', 'dst');
             Assert::fail('an unknown source table must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'TABLE_NOT_FOUND');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'TableNotFound');
         }
 
         try {
             $this->db->renameTable('src', 'child');
             Assert::fail('a taken target name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'TABLE_ALREADY_EXISTS');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'TableAlreadyExists');
         }
 
         try {
             $this->db->renameTable('src', 'пункт');
             Assert::fail('an invalid target name must be rejected');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'INVALID_TABLE_NAME');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'InvalidTableName');
         }
 
         Assert::true($this->db->hasTable('src'));
@@ -207,8 +207,8 @@ final class RenameTableTest
         try {
             $this->db->insert('dst', ['grp' => 9, 'name' => 'x']);
             Assert::fail('a write into the rename crash window must refuse');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RENAME_INCOMPLETE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RenameIncomplete');
         }
 
         Assert::true(file_exists($this->dbDir . '/src/src.ndjson'));
@@ -262,8 +262,8 @@ final class RenameTableTest
         try {
             $this->db->renameTable('dst', 'third');
             Assert::fail('a rename over a live marker must refuse');
-        } catch (StorageException $e) {
-            Assert::same($e->getErrorKey(), 'RENAME_INCOMPLETE');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'RenameIncomplete');
         }
 
         $meta = $this->meta();

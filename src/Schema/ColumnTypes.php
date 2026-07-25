@@ -18,10 +18,11 @@ namespace AV\JsonProvider\Schema;
  *
  * Temporal types (date/time/datetime and their millisecond `*z` variants) are
  * validated and normalized by the Validation layer. Instant-bearing values
- * (time, timez, datetime, datetimez) are stored in UTC and presented in the
- * current PHP timezone (date_default_timezone_get()); a bare `date` has no
- * instant and is stored verbatim. year/month/day are plain integer parts (year
- * may be negative for BC), validated by range but never timezone-shifted.
+ * (datetime, datetimez) are stored in UTC and presented in the current PHP
+ * timezone (date_default_timezone_get()); the wall-clock kinds (date, time,
+ * timez) carry no instant and are stored verbatim. year/month/day are plain
+ * integer parts (year may be negative for BC), validated by range but never
+ * timezone-shifted.
  */
 final class ColumnTypes
 {
