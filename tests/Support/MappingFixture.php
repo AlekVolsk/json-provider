@@ -13,7 +13,6 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Tests\Support\Dto\MapCategoryDto;
 
 /**
@@ -45,6 +44,11 @@ use AV\JsonProvider\Tests\Support\Dto\MapCategoryDto;
  * `map_plain` mirrors `map_children` without any relation, so the cost of FK
  * enforcement is a difference of two real operations rather than a comparison
  * against a stub.
+ *
+ * The DB is filled through JsonDataProvider::importRecords(), i.e. the public
+ * write path: records are normalized and validated, indexes rebuilt and the
+ * meta counters committed, so the benchmarks run against a database
+ * indistinguishable from one built with insert() calls.
  *
  * The DB lives under a run-unique directory (see TempDir) and is removed at
  * process shutdown.
@@ -220,29 +224,10 @@ final class MappingFixture
             onDelete: ForeignKeyActionEnum::CASCADE,
         ));
 
-        $storage = new NdjsonStorage($path);
-
-        self::write($db, $storage, $categories, self::categoryRows());
-        self::write($db, $storage, $rows, self::mapRows());
-        self::write($db, $storage, $children, self::childRows());
-        self::write($db, $storage, $plain, self::childRows());
-    }
-
-    /**
-     * Bulk-loads one table and rebuilds its indexes — the same shortcut
-     * LoadFixture uses, orders of magnitude faster than per-row insert().
-     *
-     * @param array<int,array<string,null|scalar>> $rows
-     */
-    private static function write(
-        JsonDataProvider $db,
-        NdjsonStorage $storage,
-        TableSchema $schema,
-        array $rows,
-    ): void {
-        $storage->write($schema->name, $schema->getFileName(), $rows);
-        $db->invalidateCache($schema->name);
-        $db->table($schema->name)->rebuildAllIndexes();
+        $db->importRecords($categories->name, self::categoryRows());
+        $db->importRecords($rows->name, self::mapRows());
+        $db->importRecords($children->name, self::childRows());
+        $db->importRecords($plain->name, self::childRows());
     }
 
     /**
@@ -264,9 +249,9 @@ final class MappingFixture
     }
 
     /**
-     * Datetimes are written straight to storage, bypassing the encoding write
-     * path, so they must already be in the canonical UTC form the decoder
-     * expects.
+     * Datetimes go through the ordinary validating write path, which encodes
+     * them to UTC — the values here are already in canonical UTC form, so the
+     * round trip is a no-op and the stored bytes stay predictable.
      *
      * @return array<int,array<string,null|scalar>>
      */

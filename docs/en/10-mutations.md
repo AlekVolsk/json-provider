@@ -56,6 +56,20 @@ The whole multi-table effect of a delete/update is planned **before the first by
 
 `onUpdate` cascades work only for relations referencing a non-PK unique column (see [relations](04-schema-model.md)) and propagate transitively: updating a child's FK column that grandchildren reference continues the closure. This includes `setNull` on **delete**: nulling the child FK column is a value change the grandchildren's onUpdate edges observe — a restrict grandchild blocks the delete, cascade/setNull grandchildren follow the null.
 
+## Bulk load
+
+```php
+$written = $db->importRecords('products', $rows);   // int — records written
+```
+
+Replaces the whole content of a table in one rewrite — the bulk counterpart of `insert()`, for seeding, imports and restores. Every record goes through the same normalization and validation `insert()` uses, then the data file is atomically replaced, indexes are rebuilt, meta counters (`lineCount`/`byteSize`) are committed and the cache is republished. The table ends up in exactly the state a sequence of `insert()` calls would leave, at a fraction of the cost.
+
+Ids are required on every record and must be unique within the batch: this is a load of known records, not a sequence of appends. Violations raise `RecordImportIdInvalid` and `RecordImportIdDuplicate`. The auto-increment counter is set to the largest supplied id, so the next `insert()` continues past the imported rows.
+
+Validation completes before anything is written: a bad row in the middle of the batch aborts the import with the table untouched rather than half-replaced.
+
+Foreign-key actions are **not** enforced (symmetric with `truncate` and `dropTable`): import the parent side first, or run `validate()` if the source is untrusted.
+
 ## Truncate
 
 ```php

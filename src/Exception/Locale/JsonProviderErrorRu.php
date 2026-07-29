@@ -251,6 +251,11 @@ enum JsonProviderErrorRu: string implements LocaleInterface
         . 'выполните восстановление таблицы';
     case RecordJsonEncodeFailed = 'Недопустимая запись в таблице "%s": не '
         . 'удалось закодировать JSON: %s';
+    case RecordImportIdInvalid = 'Недопустимая запись в таблице "%s": при '
+        . 'массовом импорте каждая запись должна нести целый положительный '
+        . 'id, получено %s';
+    case RecordImportIdDuplicate = 'Недопустимая запись в таблице "%s": при '
+        . 'массовом импорте id %s встречается более одного раза';
 
     case QueryUnknownColumn = 'В таблице "%s" нет колонки "%s" (указана в '
         . '"%s")';

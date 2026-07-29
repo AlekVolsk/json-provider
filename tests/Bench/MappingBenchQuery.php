@@ -31,6 +31,11 @@ use Testo\Bench;
  *
  * Ordering lives in MappingBenchSort, which compares the provider's ORDER BY
  * against sorting in PHP as well as against the object path.
+ *
+ * countAll / countFiltered stand apart: they compare `->count()` against
+ * counting the rows in PHP. Counting is the one query that needs no row data
+ * at all when there is no predicate, so the unfiltered pair shows whether the
+ * engine still pays for reading the table to answer it.
  */
 final class MappingBenchQuery
 {
@@ -169,6 +174,48 @@ final class MappingBenchQuery
                 ->where('decile', '=', 3)
                 ->selectAllByArray(),
         );
+    }
+
+    #[Bench(
+        callables: ['php:count' => [self::class, 'countAllPhp']],
+        calls: 1,
+        iterations: 8,
+    )]
+    #[ExpectNoAssertions]
+    public static function countAll(): int
+    {
+        return self::rowsArray()->count();
+    }
+
+    public static function countAllPhp(): int
+    {
+        return \count(MappingFixture::db()->readAll(
+            MappingFixture::ROWS_TABLE,
+        ));
+    }
+
+    #[Bench(
+        callables: ['php:count' => [self::class, 'countFilteredPhp']],
+        calls: 1,
+        iterations: 8,
+    )]
+    #[ExpectNoAssertions]
+    public static function countFiltered(): int
+    {
+        return self::rowsArray()
+            ->where('bucket', '=', MappingFixture::narrowBucket())
+            ->count();
+    }
+
+    public static function countFilteredPhp(): int
+    {
+        $rows = MappingFixture::db()->readAll(MappingFixture::ROWS_TABLE);
+        $wanted = MappingFixture::narrowBucket();
+
+        return \count(array_filter(
+            $rows,
+            static fn (array $r): bool => $r['bucket'] === $wanted,
+        ));
     }
 
     /**

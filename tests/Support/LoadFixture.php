@@ -9,16 +9,16 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Storage\NdjsonStorage;
 
 /**
  * Bulk load fixture for the benchmark suite.
  *
  * Seeds TABLES tables of ROWS rows each (the stress ceiling: beyond this a
- * real RDBMS is the better tool). Seeding goes straight through
- * NdjsonStorage::write plus a single index rebuild per table — orders of
- * magnitude faster than ROWS individual insert() calls — and runs once per
- * process (guarded by static state).
+ * real RDBMS is the better tool) through JsonDataProvider::importRecords(),
+ * one bulk load per table — orders of magnitude faster than ROWS individual
+ * insert() calls, and identical in outcome: records are validated, indexes
+ * rebuilt, meta counters committed. Runs once per process (guarded by static
+ * state).
  *
  * Each table `load_<n>` has columns id/name/val/price/flag and one lookup
  * index on `val`.
@@ -161,7 +161,6 @@ final class LoadFixture
     private static function seedAll(): void
     {
         $db = JsonDataProvider::createDatabase(self::dbPath());
-        $storage = new NdjsonStorage(self::dbPath());
 
         for ($t = 0; $t < self::TABLES; $t++) {
             $schema = self::tableSchema(self::tableName($t));
@@ -179,13 +178,7 @@ final class LoadFixture
                 ];
             }
 
-            $storage->write(
-                self::tableName($t),
-                $schema->getFileName(),
-                $rows,
-            );
-            $db->invalidateCache(self::tableName($t));
-            $db->table(self::tableName($t))->rebuildAllIndexes();
+            $db->importRecords(self::tableName($t), $rows);
         }
     }
 

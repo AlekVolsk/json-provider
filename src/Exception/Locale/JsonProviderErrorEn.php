@@ -247,6 +247,10 @@ enum JsonProviderErrorEn: string implements LocaleInterface
         . 'first';
     case RecordJsonEncodeFailed = 'Invalid record in table "%s": JSON '
         . 'encoding failed: %s';
+    case RecordImportIdInvalid = 'Invalid record in table "%s": bulk import '
+        . 'requires every record to carry a positive integer id, got %s';
+    case RecordImportIdDuplicate = 'Invalid record in table "%s": bulk '
+        . 'import carries id %s more than once';
 
     case QueryUnknownColumn = 'Table "%s" has no column "%s" (referenced in '
         . '"%s")';

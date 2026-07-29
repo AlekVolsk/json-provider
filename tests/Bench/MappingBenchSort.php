@@ -58,9 +58,9 @@ final class MappingBenchSort
 {
     #[Bench(
         callables: [
-            'api:array' => [self::class, 'narrowArray'],
+            'api:array'       => [self::class, 'narrowArray'],
             'php:sort-result' => [self::class, 'narrowSortResult'],
-            'php:scan-sort' => [self::class, 'narrowScanSort'],
+            'php:scan-sort'   => [self::class, 'narrowScanSort'],
         ],
         calls: 2,
         iterations: 8,
@@ -109,9 +109,9 @@ final class MappingBenchSort
 
     #[Bench(
         callables: [
-            'api:array' => [self::class, 'wideArray'],
+            'api:array'       => [self::class, 'wideArray'],
             'php:sort-result' => [self::class, 'wideSortResult'],
-            'php:scan-sort' => [self::class, 'wideScanSort'],
+            'php:scan-sort'   => [self::class, 'wideScanSort'],
         ],
         calls: 1,
         iterations: 8,
@@ -157,9 +157,9 @@ final class MappingBenchSort
 
     #[Bench(
         callables: [
-            'api:array' => [self::class, 'indexedArray'],
+            'api:array'       => [self::class, 'indexedArray'],
             'php:sort-result' => [self::class, 'indexedSortResult'],
-            'php:scan-sort' => [self::class, 'indexedScanSort'],
+            'php:scan-sort'   => [self::class, 'indexedScanSort'],
         ],
         calls: 1,
         iterations: 8,
@@ -203,9 +203,9 @@ final class MappingBenchSort
 
     #[Bench(
         callables: [
-            'api:array' => [self::class, 'unindexedArray'],
+            'api:array'       => [self::class, 'unindexedArray'],
             'php:sort-result' => [self::class, 'unindexedSortResult'],
-            'php:scan-sort' => [self::class, 'unindexedScanSort'],
+            'php:scan-sort'   => [self::class, 'unindexedScanSort'],
         ],
         calls: 1,
         iterations: 8,
@@ -249,9 +249,9 @@ final class MappingBenchSort
 
     #[Bench(
         callables: [
-            'api:array' => [self::class, 'localeArray'],
+            'api:array'       => [self::class, 'localeArray'],
             'php:sort-result' => [self::class, 'localeSortResult'],
-            'php:scan-sort' => [self::class, 'localeScanSort'],
+            'php:scan-sort'   => [self::class, 'localeScanSort'],
         ],
         calls: 1,
         iterations: 8,
@@ -291,6 +291,70 @@ final class MappingBenchSort
         self::sortByTitleCollated($rows);
 
         return \count(\array_slice($rows, 0, 1000));
+    }
+
+    #[Bench(
+        callables: ['php:sort-result' => [self::class, 'limitSortResult']],
+        warmup: 0,
+        calls: 1,
+        iterations: 8,
+    )]
+    #[ExpectNoAssertions]
+    public static function sortLimit10(): int
+    {
+        return self::orderedSlice(10);
+    }
+
+    #[Bench(
+        callables: ['php:sort-result' => [self::class, 'limitSortResult']],
+        warmup: 0,
+        calls: 1,
+        iterations: 8,
+    )]
+    #[ExpectNoAssertions]
+    public static function sortLimit100(): int
+    {
+        return self::orderedSlice(100);
+    }
+
+    #[Bench(
+        callables: ['php:sort-result' => [self::class, 'limitSortResult']],
+        warmup: 0,
+        calls: 1,
+        iterations: 8,
+    )]
+    #[ExpectNoAssertions]
+    public static function sortLimit10k(): int
+    {
+        return self::orderedSlice(10000);
+    }
+
+    /**
+     * The comparison side of the limit ladder: sorting the whole table in PHP
+     * costs the same whatever the limit is, so it doubles as the flat line the
+     * provider's curve is read against.
+     */
+    public static function limitSortResult(): int
+    {
+        $rows = self::arrayRows()->selectAllByArray();
+        self::sortBySku($rows);
+
+        return \count(\array_slice($rows, 0, 10));
+    }
+
+    /**
+     * ORDER BY over an unindexed column with a limit — the engine has to sort
+     * before it can slice, so this is where a partial (top-k) selection would
+     * show up.
+     */
+    private static function orderedSlice(int $limit): int
+    {
+        return \count(
+            self::arrayRows()
+                ->orderBy('sku', 'asc')
+                ->limit($limit)
+                ->selectAllByArray(),
+        );
     }
 
     /**

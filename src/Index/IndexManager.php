@@ -142,6 +142,13 @@ final class IndexManager
      * structure is guaranteed, corruption must be loud), or returns null
      * (degrade to full scan) for pre-v2 files.
      *
+     * The permutation bitmap and the per-key decode cost roughly a quarter of
+     * a lookup, and skipping them on the query path was measured and then
+     * rejected: IndexTrustTest holds that a duplicated line reference or a
+     * malformed key must raise INDEX_UNRELIABLE from the QUERY that meets it,
+     * not merely from a later rebuild or validate(). Detection at the point of
+     * use is the contract; the pass stays.
+     *
      * @return null|array<int,array{key:string,line:int}>
      */
     public function readIndexValidated(

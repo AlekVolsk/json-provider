@@ -42,13 +42,32 @@ final class TemporalCodec
         . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:?\d{2})?$/';
 
     /**
+     * The stored form is narrower than what encode() accepts: always a space
+     * separator, never an offset suffix, at most milliseconds.
+     */
+    private const string STORED_DATETIME_RE = '/^(\d{4})-(\d{2})-(\d{2}) '
+        . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/';
+
+    /**
+     * UTC never changes, and the local zone only when the script changes it,
+     * so both are built once instead of per value. Decoding a table of a
+     * hundred thousand rows with two datetime columns went through 400k
+     * DateTimeZone constructions before this.
+     */
+    private static \DateTimeZone | null $utcZone = null;
+
+    private static \DateTimeZone | null $localZone = null;
+
+    private static string $localZoneName = '';
+
+    /**
      * Application value -> canonical stored value (UTC for instant kinds).
      *
      * @throws TemporalParseException on any non-canonical or impossible input
      */
     public function encode(TemporalKind $kind, string $value): string
     {
-        $utc = new \DateTimeZone('UTC');
+        $utc = self::utcTz();
 
         if ($kind === TemporalKind::Date) {
             return $this->encodeDate($value, $utc);
@@ -68,7 +87,7 @@ final class TemporalCodec
     public function decode(TemporalKind $kind, string $value): string
     {
         try {
-            $utc = new \DateTimeZone('UTC');
+            $utc = self::utcTz();
 
             if ($kind === TemporalKind::Date) {
                 return $this->reformatDate($value, $utc);
@@ -170,7 +189,7 @@ final class TemporalCodec
         $dt = \DateTimeImmutable::createFromFormat(
             '!Y-m-d H:i:s.u',
             "1970-01-01 {$m[1]}:{$m[2]}:{$m[3]}.{$micro}",
-            new \DateTimeZone('UTC'),
+            self::utcTz(),
         );
         $this->assertClean($dt);
 
@@ -182,10 +201,7 @@ final class TemporalCodec
         string $value,
         \DateTimeZone $local,
     ): \DateTimeImmutable {
-        $re = '/^(\d{4})-(\d{2})-(\d{2}) '
-            . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/';
-
-        if (preg_match($re, $value, $m) !== 1) {
+        if (preg_match(self::STORED_DATETIME_RE, $value, $m) !== 1) {
             throw new TemporalParseException('bad local datetime');
         }
 
@@ -322,10 +338,7 @@ final class TemporalCodec
         \DateTimeZone $local,
         \DateTimeZone $utc,
     ): string {
-        $re = '/^(\d{4})-(\d{2})-(\d{2}) '
-            . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/';
-
-        if (preg_match($re, $value, $m) !== 1) {
+        if (preg_match(self::STORED_DATETIME_RE, $value, $m) !== 1) {
             throw new TemporalParseException('bad stored datetime');
         }
 
@@ -336,6 +349,15 @@ final class TemporalCodec
             $utc,
         );
         $this->assertClean($dt);
+
+        /*
+         * Stored values are already UTC, so when the script runs in UTC the
+         * shift is a no-op — skipping it saves a timezone conversion per
+         * value, and formatting still normalizes the fraction.
+         */
+        if ($local->getName() === $utc->getName()) {
+            return $dt->format($kind->canonicalFormat());
+        }
 
         return $dt->setTimezone($local)->format($kind->canonicalFormat());
     }
@@ -440,6 +462,18 @@ final class TemporalCodec
 
     private function localTz(): \DateTimeZone
     {
-        return new \DateTimeZone(date_default_timezone_get());
+        $name = date_default_timezone_get();
+
+        if (self::$localZone === null || self::$localZoneName !== $name) {
+            self::$localZone = new \DateTimeZone($name);
+            self::$localZoneName = $name;
+        }
+
+        return self::$localZone;
+    }
+
+    private static function utcTz(): \DateTimeZone
+    {
+        return self::$utcZone ??= new \DateTimeZone('UTC');
     }
 }

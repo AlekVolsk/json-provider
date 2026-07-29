@@ -25,6 +25,7 @@ use AV\JsonProvider\Query\ComparisonMode;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\OrderBy;
+use AV\JsonProvider\Query\PartialSort;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Query\ValueComparator;
 use AV\JsonProvider\Registry\MetaRegistry;
@@ -71,6 +72,13 @@ final class JsonDataProvider
     public const string CACHE_FORMAT_VERSION = '2';
     private const string CONTEXT_ORDER_BY = 'orderBy';
     private const string CONTEXT_DISTINCT = 'distinct';
+
+    /**
+     * How many times the result must exceed the kept prefix before a bounded
+     * selection is worth it instead of a full sort. Below this the native
+     * usort wins; the value is where the two met in the sort benchmarks.
+     */
+    private const int PARTIAL_SORT_MARGIN = 4;
 
     /** @var array<string,self> */
     private static array $instances = [];
@@ -1046,6 +1054,99 @@ final class JsonDataProvider
                 $this->ensureTableConsistent($tableSchema);
                 $this->writeAll($tableName, $tableSchema, []);
                 $this->meta->setLastInsertedId($tableName, 0);
+            },
+        );
+    }
+
+    /**
+     * Replaces the whole content of a table with the given records in one
+     * rewrite — the bulk counterpart of insert(), for seeding, imports and
+     * restores. Returns the number of records written.
+     *
+     * Every record goes through the ordinary normalization and validation
+     * used by insert(), then the data file is atomically replaced, indexes
+     * are rebuilt, meta (lineCount/byteSize) is committed and the cache is
+     * republished — so the table ends up in exactly the state a sequence of
+     * insert() calls would leave, at a fraction of the cost. The
+     * auto-increment counter is set to the largest supplied id, so the next
+     * insert() continues after the imported rows.
+     *
+     * Ids must be supplied and unique within the batch: this is a load of
+     * known records, not a sequence of appends. Every record is validated
+     * before anything is written, so a bad row aborts the import with the
+     * table untouched rather than half-replaced.
+     *
+     * Foreign keys are NOT enforced (symmetric with truncate and dropTable):
+     * import the parent side first, or run validate() afterwards if the
+     * source is untrusted.
+     *
+     * Runs under the database + table EX locks.
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    public function importRecords(string $tableName, array $records): int
+    {
+        // @var int<0, max>
+        return $this->locks->withLocks(
+            [$tableName => 'ex'],
+            'ex',
+            function () use ($tableName, $records): int {
+                $this->schema->reload();
+                $tableSchema = $this->schema->getTable($tableName);
+
+                /*
+                 * Before the rewrite, while the old tag still resolves —
+                 * afterwards it would tear down the entry writeAll just
+                 * published (same ordering as truncate).
+                 */
+                $prepared = [];
+                $watermark = 0;
+                $seen = [];
+
+                foreach ($records as $record) {
+                    $id = $record[PrimaryKey::FIELD] ?? null;
+
+                    if (!\is_int($id) || $id < 1) {
+                        throw new JsonProviderDataException(
+                            JsonProviderErrorEn::RecordImportIdInvalid,
+                            $tableSchema->name,
+                            get_debug_type($id),
+                        );
+                    }
+
+                    if (isset($seen[$id])) {
+                        throw new JsonProviderDataException(
+                            JsonProviderErrorEn::RecordImportIdDuplicate,
+                            $tableSchema->name,
+                            (string)$id,
+                        );
+                    }
+
+                    $seen[$id] = true;
+
+                    if ($id > $watermark) {
+                        $watermark = $id;
+                    }
+
+                    $prepared[] = [PrimaryKey::FIELD => $id]
+                        + $this->values->encodeForWrite(
+                            $tableSchema,
+                            $record,
+                            true,
+                        );
+                }
+
+                /*
+                 * Nothing is touched until every record has passed
+                 * validation: a bad row in the middle of the batch leaves the
+                 * table as it was, not half-replaced.
+                 */
+                $this->invalidateCache($tableName);
+                $this->ensureTableConsistent($tableSchema);
+                $this->writeAll($tableName, $tableSchema, $prepared);
+                $this->meta->setLastInsertedId($tableName, $watermark);
+
+                return \count($prepared);
             },
         );
     }
@@ -2169,7 +2270,16 @@ final class JsonDataProvider
             $tableSchema,
             $conditions,
         );
-        $index = $this->resolveIndex($tableSchema, $ordering, $conditions);
+        $keepPrefix = $limit !== null && $distinctFields === []
+            ? $offset + $limit
+            : null;
+        $pushPagination = $keepPrefix !== null;
+        $index = $this->resolveIndex(
+            $tableSchema,
+            $ordering,
+            $conditions,
+            $pushPagination,
+        );
         $paginatedByIndex = false;
         $records = null;
 
@@ -2202,6 +2312,7 @@ final class JsonDataProvider
                     $limit,
                     $offset,
                     $distinctFields,
+                    $pushPagination,
                     &$appliedPagination,
                 ): array | null {
                     $freshSchema = $this->schema->getTable($tableName);
@@ -2209,6 +2320,7 @@ final class JsonDataProvider
                         $freshSchema,
                         $ordering,
                         $conditions,
+                        $pushPagination,
                     );
 
                     if ($freshIndex === null) {
@@ -2246,10 +2358,16 @@ final class JsonDataProvider
         }
 
         if ($records === null) {
+            /*
+             * Only the first offset+limit records survive the slice below, so
+             * the sort may stop there — but not when dedup still has to run,
+             * since it consumes rows the prefix would already have dropped.
+             */
             $records = $this->selectFullScan(
                 $tableName,
                 $conditions,
                 $ordering,
+                $keepPrefix,
             );
         }
 
@@ -2298,6 +2416,10 @@ final class JsonDataProvider
     /**
      * Counts records matching the given conditions.
      *
+     * An unconditional count needs no row data, so it is answered from the
+     * meta counter when that counter is provably current — see
+     * countFromMeta(). Everything else reads and filters as before.
+     *
      * @param array<int,FilterCondition> $conditions
      */
     public function count(string $tableName, array $conditions = []): int
@@ -2307,6 +2429,15 @@ final class JsonDataProvider
             $tableSchema,
             $conditions,
         );
+
+        if ($conditions === []) {
+            $fromMeta = $this->countFromMeta($tableSchema);
+
+            if ($fromMeta !== null) {
+                return $fromMeta;
+            }
+        }
+
         $records = $this->readAllRaw($tableName);
 
         if ($conditions === []) {
@@ -2341,6 +2472,43 @@ final class JsonDataProvider
     public function flushDb(): void
     {
         $this->cache->flushDb($this->cacheNs);
+    }
+
+    /**
+     * The committed row count, or null when it cannot be trusted without
+     * reading the table.
+     *
+     * The gate is the one ensureTableConsistent() runs before a write: meta
+     * byteSize against the actual file size. lineCount and byteSize are
+     * committed together (commitAppend/commitRewrite), so a size that still
+     * matches means the counter describes exactly this file. A mismatch —
+     * crashed append, foreign write, pre-byteSize meta — yields null and the
+     * caller falls back to counting the rows.
+     *
+     * The blind spot is inherited from that gate: a foreign rewrite landing
+     * on the same byte length is invisible here, exactly as it is to the
+     * write path. Readers that must not miss it call validate().
+     */
+    private function countFromMeta(TableSchema $tableSchema): int | null
+    {
+        try {
+            $expected = $this->meta->getByteSize($tableSchema->name);
+
+            if ($expected === null) {
+                return null;
+            }
+
+            $actual = $this->ndjson->fileSizeBytes(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            );
+
+            return $expected === $actual
+                ? $this->meta->getLineCount($tableSchema->name)
+                : null;
+        } catch (JsonProviderException) {
+            return null;
+        }
     }
 
     /**
@@ -3093,30 +3261,78 @@ final class JsonDataProvider
     }
 
     /**
+     * Compares two records field by field under the ordering rules.
+     *
+     * @param array<string,null|scalar> $a
+     * @param array<string,null|scalar> $b
+     * @param array<int,OrderBy>        $ordering
+     */
+    private function compareRecords(
+        array $a,
+        array $b,
+        array $ordering,
+    ): int {
+        foreach ($ordering as $order) {
+            $cmp = $this->compareValues(
+                $a[$order->field] ?? null,
+                $b[$order->field] ?? null,
+            );
+
+            if ($cmp !== 0) {
+                return $order->direction === SortDirectionEnum::ASC
+                    ? $cmp
+                    : -$cmp;
+            }
+        }
+
+        return 0;
+    }
+
+    /**
      * Sorts records in place by the ordering rules (stable — usort in
      * PHP 8+).
      *
      * @param array<int,array<string,null|scalar>> $records
      * @param array<int,OrderBy>                   $ordering
      */
-    private function sortByOrdering(array &$records, array $ordering): void
-    {
-        usort($records, function (array $a, array $b) use ($ordering): int {
-            foreach ($ordering as $order) {
-                $cmp = $this->compareValues(
-                    $a[$order->field] ?? null,
-                    $b[$order->field] ?? null,
-                );
+    private function sortByOrdering(
+        array &$records,
+        array $ordering,
+        int | null $keep = null,
+    ): void {
+        /*
+         * With a limit small against the result, only the first $keep records
+         * are ever returned, so a bounded selection replaces the full sort
+         * (n log k against n log n). The margin keeps it out of the way when
+         * the limit approaches the row count: there the engine-level usort,
+         * running in C, beats a heap driven from PHP.
+         */
+        if (
+            $keep !== null
+            && $keep > 0
+            && $keep * self::PARTIAL_SORT_MARGIN <= \count($records)
+        ) {
+            $records = PartialSort::top(
+                $records,
+                fn (array $a, array $b): int => $this->compareRecords(
+                    $a,
+                    $b,
+                    $ordering,
+                ),
+                $keep,
+            );
 
-                if ($cmp !== 0) {
-                    return $order->direction === SortDirectionEnum::ASC
-                        ? $cmp
-                        : -$cmp;
-                }
-            }
+            return;
+        }
 
-            return 0;
-        });
+        usort(
+            $records,
+            fn (array $a, array $b): int => $this->compareRecords(
+                $a,
+                $b,
+                $ordering,
+            ),
+        );
     }
 
     /**
@@ -3510,6 +3726,7 @@ final class JsonDataProvider
         string $tableName,
         array $conditions,
         array $ordering,
+        int | null $keep = null,
     ): array {
         $records = $this->readAllRaw($tableName);
 
@@ -3521,7 +3738,7 @@ final class JsonDataProvider
         }
 
         if ($ordering !== []) {
-            $this->sortByOrdering($records, $ordering);
+            $this->sortByOrdering($records, $ordering, $keep);
         }
 
         return $records;
@@ -3707,13 +3924,31 @@ final class JsonDataProvider
         TableSchema $tableSchema,
         array $ordering,
         array $conditions,
+        bool $pushPagination = false,
     ): IndexSchema | null {
         if ($tableSchema->indexes === []) {
             return null;
         }
 
+        /*
+         * An ordering index pays off only when limit/offset can ride along
+         * with it: the engine then walks the index in order and stops at the
+         * limit, reading just the rows it returns.
+         *
+         * Without that cut it reads the whole table BY LINE NUMBER — a linear
+         * pass over the data file on top of parsing the index file — and then
+         * still filters. That is strictly more work than a plain full scan
+         * followed by a sort, and it also steals the choice from a far more
+         * selective condition index: `WHERE bucket = 7 ORDER BY title` used to
+         * pull all rows in title order to keep a hundred of them.
+         *
+         * So the ordering index is considered only when pagination can be
+         * pushed into it; otherwise the condition index below wins, and the
+         * ordering is applied to whatever it returns.
+         */
         if (
-            $ordering !== []
+            $pushPagination
+            && $ordering !== []
             && $this->orderingIndexable($tableSchema, $ordering)
         ) {
             foreach ($tableSchema->indexes as $index) {
