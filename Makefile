@@ -122,12 +122,34 @@ test-testo: ##@Testing Testo - unit tests (tests/Unit)
 		--log-junit="$(PATH_BUILD)/testo-junit.xml"
 
 
-test-testo-bench: ##@Testing Testo - load benchmarks (tests/Bench, 50 x 100k)
-	$(call title,"Testo - load benchmarks")
+test-bench: ##@Testing Testo - every benchmark (load + mapping, ~25 min)
+	$(call title,"Testo - all benchmarks")
 	@$(VENDOR_BIN)/testo \
         --config="$(PATH_ROOT)/testo.php" \
         --type=bench \
 		--log-junit="$(PATH_BUILD)/testo-bench-junit.xml" \
+		-vvv
+
+
+test-bench-load: ##@Testing Testo - load benchmarks (50 tables x 100k rows = 5M, ~883 MiB in temp, ~15 min)
+	$(call title,"Testo - load benchmarks")
+	@$(VENDOR_BIN)/testo \
+        --config="$(PATH_ROOT)/testo.php" \
+        --type=bench \
+        --path="$(PATH_TESTS)/Bench/LoadBenchWrite.php" \
+        --path="$(PATH_TESTS)/Bench/LoadBenchDto.php" \
+        --path="$(PATH_TESTS)/Bench/LoadBenchArray.php" \
+		-vvv
+
+
+test-bench-mapping: ##@Testing Testo - array vs DTO across filter/sort/relation modes (1 table x 100k, ~51 MiB, ~10 min)
+	$(call title,"Testo - mapping benchmarks")
+	@$(VENDOR_BIN)/testo \
+        --config="$(PATH_ROOT)/testo.php" \
+        --type=bench \
+        --path="$(PATH_TESTS)/Bench/MappingBenchHydration.php" \
+        --path="$(PATH_TESTS)/Bench/MappingBenchQuery.php" \
+        --path="$(PATH_TESTS)/Bench/MappingBenchRelations.php" \
 		-vvv
 
 

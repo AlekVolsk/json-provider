@@ -15,7 +15,7 @@ use Testo\Bench;
  * LoadBenchArray/Dto cover the read side, each pitting a query path against a
  * hand-rolled baseline. The write side has no meaningful naive counterpart (a
  * hand-rolled rewrite would just reimplement the provider), so these measure
- * ABSOLUTE wall time against a trivial reference — exactly like the seed/drop
+ * ABSOLUTE wall time against an empty `noop` — exactly like the seed/drop
  * one-shots. The signal is each operation's cost at scale, not a ratio.
  *
  * Every operation here is O(rows): a single insert appends and updates the
@@ -30,13 +30,13 @@ final class LoadBenchWrite
     private static string | null $archive = null;
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
     )]
     #[ExpectNoAssertions]
-    public static function seedDatabase(): int
+    public static function seedForWrite(): int
     {
         LoadFixture::seedFresh();
 
@@ -44,7 +44,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 2,
         iterations: 6,
@@ -63,7 +63,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 2,
@@ -80,7 +80,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 2,
@@ -97,7 +97,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 2,
@@ -111,7 +111,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 2,
@@ -127,7 +127,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
@@ -139,7 +139,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
@@ -156,7 +156,7 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
@@ -172,13 +172,13 @@ final class LoadBenchWrite
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
     )]
     #[ExpectNoAssertions]
-    public static function dropDatabase(): int
+    public static function dropAfterWrite(): int
     {
         if (self::$archive !== null && is_file(self::$archive)) {
             unlink(self::$archive);
@@ -191,9 +191,11 @@ final class LoadBenchWrite
     }
 
     /**
-     * Trivial comparison target for the one-shot benchmarks.
+     * Empty comparison target for these one-shot benchmarks: it exists only
+     * because a benchmark needs at least one callable, and it always takes
+     * first place. Read the absolute time of "current", not the ranking.
      */
-    public static function reference(): int
+    public static function noop(): int
     {
         return 0;
     }

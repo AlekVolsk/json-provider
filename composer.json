@@ -42,7 +42,9 @@
     "scripts": {
         "test": "make test",
         "test:testo": "make test-testo",
-        "test:bench": "make test-testo-bench",
+        "test:bench": "make test-bench",
+        "test:bench-load": "make test-bench-load",
+        "test:bench-mapping": "make test-bench-mapping",
         "test:cs-fixer": "make test-phpcsfixer",
         "cs-fixer:fix": "make test-phpcsfixer-fix",
         "test:phpcs": "make test-phpcs",
@@ -51,7 +53,9 @@
     "scripts-descriptions": {
         "test": "Run the full check suite via the Makefile",
         "test:testo": "Run testo unit tests",
-        "test:bench": "Run testo load benchmarks (50 x 100k)",
+        "test:bench": "Run every testo benchmark (load + mapping)",
+        "test:bench-load": "Run the load benchmarks (50 tables x 100k rows = 5M, ~883 MiB in temp)",
+        "test:bench-mapping": "Run the mapping benchmarks: array vs DTO across filter/sort/relation modes",
         "test:cs-fixer": "Check code style with PHP-CS-Fixer",
         "cs-fixer:fix": "Auto-fix code style with PHP-CS-Fixer",
         "test:phpcs": "Check code with PHP_CodeSniffer",

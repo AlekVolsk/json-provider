@@ -17,7 +17,7 @@ use Testo\Bench;
  *
  * Where LoadBenchArray pits the provider's query against a hand-rolled readAll,
  * this suite isolates the **DTO hydration cost**: each benchmark's marked
- * ("current") method runs a query through the typed object surface
+ * (reported as "current") method runs a query through the typed object surface
  * (selectAll → iterable<LoadRowDto>, selectOne → LoadRowDto) and its comparison
  * callable runs the very same query through the array surface. The delta is the
  * price of turning rows into objects at scale.
@@ -37,13 +37,13 @@ final class LoadBenchDto
     private static JsonDataProvider | null $registeredOn = null;
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
     )]
     #[ExpectNoAssertions]
-    public static function seedDatabase(): int
+    public static function seedForDto(): int
     {
         LoadFixture::seedFresh();
 
@@ -51,7 +51,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'whereEqArray']],
+        callables: ['api:array' => [self::class, 'whereEqArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -77,7 +77,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'pkLookupArray']],
+        callables: ['api:array' => [self::class, 'pkLookupArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -103,7 +103,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'orderByArray']],
+        callables: ['api:array' => [self::class, 'orderByArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -131,7 +131,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'deepPageArray']],
+        callables: ['api:array' => [self::class, 'deepPageArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -159,7 +159,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'fullScanArray']],
+        callables: ['api:array' => [self::class, 'fullScanArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -183,7 +183,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'rangeBetweenArray']],
+        callables: ['api:array' => [self::class, 'rangeBetweenArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -209,7 +209,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'inListArray']],
+        callables: ['api:array' => [self::class, 'inListArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -235,7 +235,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'likeArray']],
+        callables: ['api:array' => [self::class, 'likeArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -261,7 +261,7 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['array' => [self::class, 'distinctArray']],
+        callables: ['api:array' => [self::class, 'distinctArray']],
         calls: 3,
         iterations: 12,
     )]
@@ -287,13 +287,13 @@ final class LoadBenchDto
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
     )]
     #[ExpectNoAssertions]
-    public static function dropDatabase(): int
+    public static function dropAfterDto(): int
     {
         LoadFixture::dropAndRestore();
         self::$registeredOn = null;
@@ -302,9 +302,11 @@ final class LoadBenchDto
     }
 
     /**
-     * Trivial comparison target for the one-shot seed/drop benchmarks.
+     * Empty comparison target for the one-shot seed/drop benchmarks: it exists
+     * only because a benchmark needs at least one callable, and it always takes
+     * first place. Read the absolute time of "current", not the ranking.
      */
-    public static function reference(): int
+    public static function noop(): int
     {
         return 0;
     }

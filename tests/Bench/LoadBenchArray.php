@@ -13,30 +13,36 @@ use Testo\Bench;
  * stress ceiling beyond which a real RDBMS is the better tool).
  *
  * The suite runs as an ordered flow (methods execute in definition order):
- *   1. seedDatabase  — lifts the time limit and bulk-seeds the DB; its wall
- *      time is a read on the host's disk write throughput.
+ *   1. seedForRead — lifts the time limit and bulk-seeds the DB. Its wall time
+ *      is dominated by rebuilding one index pair per table, not by the write
+ *      itself.
  *   2. read/query benchmarks — each pits a provider query path (the marked
- *      "current" method) against a hand-rolled naive readAll implementation,
- *      to show the provider's overhead at scale. The provider materializes
- *      whole tables per query, so it is not expected to win every op; the
- *      goal is to measure the envelope, not a micro-benchmark.
- *   3. dropDatabase  — tears the DB down and restores the time limit.
+ *      method, reported as "current") against a hand-rolled readAll
+ *      implementation (reported as "php:scan" / "php:sort" / "php:slice"), to
+ *      show the provider's overhead at scale. The provider materializes whole
+ *      tables per query, so it is not expected to win every op; the goal is to
+ *      measure the envelope, not a micro-benchmark.
+ *   3. dropAfterRead — tears the DB down and restores the time limit.
+ *
+ * Only the whole-DB steps (seed, drop, countAcrossAllTables) touch all TABLES
+ * tables; every query benchmark reads table 0 alone, so its numbers describe
+ * ROWS rows, not TABLES * ROWS.
  *
  * The seed/drop steps must run exactly once, so they use warmup/calls/
- * iterations of 0/1/1 and a trivial `reference` callable (testo requires at
- * least one comparison target; here only the "current" absolute time
- * matters). Heavy I/O per call keeps the query benchmarks at low counts.
+ * iterations of 0/1/1 and a trivial `noop` callable (testo requires at least
+ * one comparison target; here only the "current" absolute time matters). Heavy
+ * I/O per call keeps the query benchmarks at low counts.
  */
 final class LoadBenchArray
 {
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
     )]
     #[ExpectNoAssertions]
-    public static function seedDatabase(): int
+    public static function seedForRead(): int
     {
         LoadFixture::seedFresh();
 
@@ -44,12 +50,12 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['fullScan' => [self::class, 'whereEqFullScan']],
+        callables: ['php:scan' => [self::class, 'whereEqPhpScan']],
         calls: 3,
         iterations: 12,
     )]
     #[ExpectNoAssertions]
-    public static function whereEqIndexed(): int
+    public static function whereEqQuery(): int
     {
         return \count(
             LoadFixture::db()
@@ -59,7 +65,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function whereEqFullScan(): int
+    public static function whereEqPhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -70,12 +76,12 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['fullScan' => [self::class, 'pkLookupFullScan']],
+        callables: ['php:scan' => [self::class, 'pkLookupPhpScan']],
         calls: 3,
         iterations: 12,
     )]
     #[ExpectNoAssertions]
-    public static function pkLookupIndexed(): int
+    public static function pkLookupQuery(): int
     {
         $row = LoadFixture::db()
             ->table(LoadFixture::tableName(0))
@@ -85,7 +91,7 @@ final class LoadBenchArray
         return $row === null ? 0 : 1;
     }
 
-    public static function pkLookupFullScan(): int
+    public static function pkLookupPhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -99,12 +105,12 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['phpSort' => [self::class, 'orderByPhpSort']],
+        callables: ['php:sort' => [self::class, 'orderByPhpSort']],
         calls: 3,
         iterations: 12,
     )]
     #[ExpectNoAssertions]
-    public static function orderByIndexed(): int
+    public static function orderByQuery(): int
     {
         return \count(
             LoadFixture::db()
@@ -127,7 +133,7 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['sliceReadAll' => [self::class, 'deepPageSlice']],
+        callables: ['php:slice' => [self::class, 'deepPagePhpSlice']],
         calls: 3,
         iterations: 12,
     )]
@@ -143,7 +149,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function deepPageSlice(): int
+    public static function deepPagePhpSlice(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -151,12 +157,12 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['fullScan' => [self::class, 'rangeBetweenFullScan']],
+        callables: ['php:scan' => [self::class, 'rangeBetweenPhpScan']],
         calls: 3,
         iterations: 12,
     )]
     #[ExpectNoAssertions]
-    public static function rangeBetweenIndexed(): int
+    public static function rangeBetweenQuery(): int
     {
         return \count(
             LoadFixture::db()
@@ -166,7 +172,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function rangeBetweenFullScan(): int
+    public static function rangeBetweenPhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -178,12 +184,12 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['fullScan' => [self::class, 'inListFullScan']],
+        callables: ['php:scan' => [self::class, 'inListPhpScan']],
         calls: 3,
         iterations: 12,
     )]
     #[ExpectNoAssertions]
-    public static function inListIndexed(): int
+    public static function inListQuery(): int
     {
         return \count(
             LoadFixture::db()
@@ -193,7 +199,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function inListFullScan(): int
+    public static function inListPhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
         $wanted = [1, 50, 100, 500, 999];
@@ -205,7 +211,7 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['naive' => [self::class, 'likeNaive']],
+        callables: ['php:scan' => [self::class, 'likePhpScan']],
         calls: 3,
         iterations: 12,
     )]
@@ -220,7 +226,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function likeNaive(): int
+    public static function likePhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -232,7 +238,7 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['naive' => [self::class, 'distinctNaive']],
+        callables: ['php:scan' => [self::class, 'distinctPhpScan']],
         calls: 3,
         iterations: 12,
     )]
@@ -247,7 +253,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function distinctNaive(): int
+    public static function distinctPhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
         $seen = [];
@@ -260,7 +266,7 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['naive' => [self::class, 'countWhereNaive']],
+        callables: ['php:scan' => [self::class, 'countWherePhpScan']],
         calls: 3,
         iterations: 12,
     )]
@@ -273,7 +279,7 @@ final class LoadBenchArray
             ->count();
     }
 
-    public static function countWhereNaive(): int
+    public static function countWherePhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -284,7 +290,7 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['naive' => [self::class, 'projectColumnNaive']],
+        callables: ['php:scan' => [self::class, 'projectColumnPhpScan']],
         calls: 3,
         iterations: 12,
     )]
@@ -298,7 +304,7 @@ final class LoadBenchArray
         );
     }
 
-    public static function projectColumnNaive(): int
+    public static function projectColumnPhpScan(): int
     {
         $rows = LoadFixture::db()->readAll(LoadFixture::tableName(0));
 
@@ -306,13 +312,13 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['naive' => [self::class, 'crossTableCountNaive']],
+        callables: ['php:scan' => [self::class, 'countAcrossAllTablesPhpScan']],
         warmup: 0,
         calls: 1,
         iterations: 2,
     )]
     #[ExpectNoAssertions]
-    public static function crossTableCount(): int
+    public static function countAcrossAllTables(): int
     {
         $db = LoadFixture::db();
         $total = 0;
@@ -324,7 +330,7 @@ final class LoadBenchArray
         return $total;
     }
 
-    public static function crossTableCountNaive(): int
+    public static function countAcrossAllTablesPhpScan(): int
     {
         $db = LoadFixture::db();
         $total = 0;
@@ -337,13 +343,13 @@ final class LoadBenchArray
     }
 
     #[Bench(
-        callables: ['reference' => [self::class, 'reference']],
+        callables: ['noop' => [self::class, 'noop']],
         warmup: 0,
         calls: 1,
         iterations: 1,
     )]
     #[ExpectNoAssertions]
-    public static function dropDatabase(): int
+    public static function dropAfterRead(): int
     {
         LoadFixture::dropAndRestore();
 
@@ -351,9 +357,11 @@ final class LoadBenchArray
     }
 
     /**
-     * Trivial comparison target for the one-shot seed/drop benchmarks.
+     * Empty comparison target for the one-shot seed/drop benchmarks: it exists
+     * only because a benchmark needs at least one callable, and it always
+     * takes first place. Read the absolute time of "current", not the ranking.
      */
-    public static function reference(): int
+    public static function noop(): int
     {
         return 0;
     }

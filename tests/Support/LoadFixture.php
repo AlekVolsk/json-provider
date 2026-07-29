@@ -22,10 +22,14 @@ use AV\JsonProvider\Storage\NdjsonStorage;
  *
  * Each table `load_<n>` has columns id/name/val/price/flag and one lookup
  * index on `val`.
+ *
+ * The DB lives under a run-unique directory (see TempDir), so two overlapping
+ * runs never share — or drop — each other's data, and the tree is removed at
+ * process shutdown even if a benchmark aborts before dropDatabase().
  */
 final class LoadFixture
 {
-    public const string DB_PATH = '/tmp/test_json_db_load';
+    public const string DB_PREFIX = 'jp-bench-load';
     public const int TABLES = 50;
     public const int ROWS = 100000;
 
@@ -34,6 +38,16 @@ final class LoadFixture
     private static float $seedSeconds = 0.0;
 
     private static int $prevTimeLimit = 0;
+
+    /**
+     * The run-unique database directory: "<temp>/jp-bench-load-<token>". Every
+     * caller resolves the load DB through this, so a concurrent run works on
+     * its own tree.
+     */
+    public static function dbPath(): string
+    {
+        return TempDir::root(self::DB_PREFIX);
+    }
 
     /**
      * Ensures the load DB is present (idempotent, reuses an on-disk seed).
@@ -65,7 +79,7 @@ final class LoadFixture
      */
     public static function seedFresh(): void
     {
-        if (JsonDataProvider::exists(self::DB_PATH)) {
+        if (JsonDataProvider::exists(self::dbPath())) {
             self::drop();
         }
 
@@ -105,7 +119,7 @@ final class LoadFixture
     {
         self::boot();
 
-        return JsonDataProvider::getInstance(self::DB_PATH);
+        return JsonDataProvider::getInstance(self::dbPath());
     }
 
     public static function tableName(int $index): string
@@ -120,14 +134,14 @@ final class LoadFixture
      */
     public static function alreadySeeded(): bool
     {
-        if (!JsonDataProvider::exists(self::DB_PATH)) {
+        if (!JsonDataProvider::exists(self::dbPath())) {
             return false;
         }
 
         try {
             $last = self::tableName(self::TABLES - 1);
 
-            return JsonDataProvider::getInstance(self::DB_PATH)
+            return JsonDataProvider::getInstance(self::dbPath())
                 ->table($last)
                 ->count() === self::ROWS;
         } catch (\Throwable) {
@@ -136,39 +150,18 @@ final class LoadFixture
     }
 
     /**
-     * Removes the load DB directory recursively.
+     * Removes the load DB directory recursively. Safe to call when the tree is
+     * already gone.
      */
     public static function drop(): void
     {
-        if (!is_dir(self::DB_PATH)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                self::DB_PATH,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir(self::DB_PATH);
+        TempDir::remove(self::dbPath());
     }
 
     private static function seedAll(): void
     {
-        $db = JsonDataProvider::createDatabase(self::DB_PATH);
-        $storage = new NdjsonStorage(self::DB_PATH);
+        $db = JsonDataProvider::createDatabase(self::dbPath());
+        $storage = new NdjsonStorage(self::dbPath());
 
         for ($t = 0; $t < self::TABLES; $t++) {
             $schema = self::tableSchema(self::tableName($t));
