@@ -4400,9 +4400,9 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->indexManager,
                 $this->values,
-                fn (TableSchema $t)   => $this->ensureTableConsistent($t),
+                fn (TableSchema $t) => $this->ensureTableConsistent($t),
                 fn (string $t): array => $this->readAllForWrite($t),
-                fn (string $t)        => $this->invalidateCache($t),
+                fn (string $t) => $this->invalidateCache($t),
                 function (
                     string $t,
                     int $lineCount,

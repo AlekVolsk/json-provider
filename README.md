@@ -7,6 +7,8 @@ A self-contained PHP data provider that turns a directory of NDJSON files into a
 Designed for compact, low-traffic workloads where a real RDBMS would be overkill: configuration stores, internal tools, embedded use cases, prototypes.
 
 > Experimental note: this provider was built end-to-end via Claude Code under human guidance, as part of an experiment to develop a working software module purely through guided AI.
+>
+> Fun note: this is a just-for-fun project with no ambition to be anything serious — after all, nobody in their right mind builds a database on JSON files 🙂
 
 ## Features
 

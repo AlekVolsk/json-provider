@@ -6,7 +6,8 @@
     "license": "GPL-3.0-or-later",
     "authors": [
         {
-            "name": "Aleksei Morozov (alekvolsk)",
+            "name": "Aleksey Morozov",
+            "email": "alekvolsk@gmail.com",
             "role": "Developer"
         }
     ],
