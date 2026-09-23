@@ -288,7 +288,7 @@ final class FkCascadeEngineTest
 
         $report = $this->db->validate();
         Assert::count($report->issuesBySeverity(
-            \AV\JsonProvider\Services\Integrity\IssueSeverity::ERROR,
+            \AV\JsonProvider\Services\Integrity\IssueSeverityEnum::ERROR,
         ), 0);
     }
 

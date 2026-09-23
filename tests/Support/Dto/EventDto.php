@@ -21,8 +21,8 @@ final class EventDto
     public function __construct(
         public int $id,
         public string $title,
-        public EventStatus $status,
-        public EventStatus | null $priority,
+        public EventStatusEnum $status,
+        public EventStatusEnum | null $priority,
         public \DateTimeImmutable $happensAt,
         public \DateTimeImmutable | null $endsAt,
         public \DateTimeImmutable $onDate,

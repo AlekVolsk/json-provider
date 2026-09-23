@@ -19,7 +19,7 @@ namespace AV\JsonProvider\Query;
  * back to a full scan. Without ext-intl the mode silently degrades to
  * Binary.
  */
-enum ComparisonMode
+enum ComparisonModeEnum
 {
     case Binary;
     case Locale;

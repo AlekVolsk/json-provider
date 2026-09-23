@@ -10,6 +10,8 @@ use AV\JsonProvider\Exception\JsonProviderServiceException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
+use AV\JsonProvider\Services\Integrity\IntegrityValidator;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Storage\TableLockManager;
@@ -36,6 +38,15 @@ use AV\JsonProvider\Storage\TableLockManager;
  * through the compression as well. Nested acquisition inside restore
  * (which already holds db EX plus table EX locks) re-enters.
  *
+ * Before anything is read, the database is validated under the same lock:
+ * any finding of error severity or worse (missing data file, broken
+ * index, half-finished rename, …) aborts the export with nothing
+ * written, so an archive never captures a structurally broken state as if
+ * it were whole. Data-level warnings (unique duplicates, FK orphans) do
+ * not block — the archive preserves the data as it is. The safety
+ * snapshot taken by Restore skips this gate: restoring a broken database
+ * is exactly what it exists for.
+ *
  * The manifest carries lastInsertedId counters (from meta, not derived
  * from data) and sha256 checksums of every member, computed from the very
  * bytes put into the archive.
@@ -47,6 +58,7 @@ final class Backup
 {
     private const string DEFAULT_NAME_PREFIX = 'backup-';
     private const string ARCHIVE_EXT = '.tar.gz';
+    private const string BUILD_PREFIX = '.jp-backup-';
 
     public function __construct(
         private readonly string $dbPath,
@@ -55,12 +67,14 @@ final class Backup
         private readonly NdjsonStorage $ndjson,
         private readonly MetaRegistry $meta,
         private readonly TableLockManager $locks,
+        private readonly IntegrityValidator $validator,
     ) {
     }
 
     /**
-     * Writes a backup archive at $destination. Returns the absolute path of
-     * the created archive.
+     * Writes a backup archive at $destination. Returns the path of the
+     * created archive — $destination as given (relative stays relative),
+     * completed with the default file name or extension when needed.
      *
      * If $destination is an existing directory or has no .tar.gz/.tar
      * extension, a default file name "backup-YYYY-MM-DD_HHMMSS.tar.gz" is
@@ -68,9 +82,14 @@ final class Backup
      *
      * Throws if:
      *  - the resolved archive path already exists,
-     *  - the resolved archive path is inside the DB directory.
+     *  - the resolved archive path is inside the DB directory,
+     *  - its directory is missing or not writable,
+     *  - writing the archive fails (BACKUP_WRITE_FAILED — the temporary
+     *    files are removed and no archive is left at the destination),
+     *  - $validate is on and the database fails integrity validation at
+     *    error severity or worse.
      */
-    public function export(string $destination): string
+    public function export(string $destination, bool $validate = true): string
     {
         $archivePath = $this->resolveDestination($destination);
 
@@ -83,26 +102,55 @@ final class Backup
             );
         }
 
-        $tarPath = substr($archivePath, 0, -3);
+        $directory = \dirname($archivePath);
 
-        if (file_exists($tarPath)) {
+        if (!is_dir($directory) || !is_writable($directory)) {
             throw new JsonProviderServiceException(
-                JsonProviderErrorEn::BackupArchiveExists,
-                $tarPath,
+                JsonProviderErrorEn::BackupDestinationNotWritable,
+                $directory,
             );
         }
 
         return $this->locks->withDatabase(
-            fn (): string => $this->doExport($archivePath, $tarPath),
+            function () use ($archivePath, $validate): string {
+                if ($validate) {
+                    $this->assertDatabaseValid();
+                }
+
+                return $this->doExport($archivePath);
+            },
+        );
+    }
+
+    private function assertDatabaseValid(): void
+    {
+        $report = $this->validator->validateDatabase();
+
+        if (!$report->hasErrors()) {
+            return;
+        }
+
+        $blocking = 0;
+
+        foreach ($report->issues as $issue) {
+            if ($issue->severity->rank() <= IssueSeverityEnum::ERROR->rank()) {
+                $blocking++;
+            }
+        }
+
+        throw new JsonProviderServiceException(
+            JsonProviderErrorEn::BackupSourceInvalid,
+            $blocking,
         );
     }
 
     /**
      * The critical section of export, under the database EX lock: read
      * every member into memory, checksum those exact bytes, build the
-     * manifest, then write and compress the archive.
+     * manifest, then write and compress the archive under a one-off name
+     * next to the destination and rename it into place (see PharArchive).
      */
-    private function doExport(string $archivePath, string $tarPath): string
+    private function doExport(string $archivePath): string
     {
         $this->schema->reload();
         $tables = $this->schema->getTables();
@@ -166,29 +214,39 @@ final class Backup
             );
         }
 
-        $tar = new \PharData($tarPath, 0, null, \Phar::TAR);
-        $tar->addFromString('manifest.json', $manifestJson);
-        $tar->addFromString('information_schema.json', $schemaJson);
+        $tarPath = \dirname($archivePath) . '/' . self::BUILD_PREFIX
+            . bin2hex(random_bytes(8)) . '.tar';
+        $gzPath = $tarPath . '.gz';
+        PharArchive::track($tarPath);
+        PharArchive::track($gzPath);
 
-        foreach ($tableContents as $member => $contents) {
-            $tar->addFromString($member, $contents);
-        }
+        try {
+            $tar = new \PharData($tarPath, 0, null, \Phar::TAR);
+            $tar->addFromString('manifest.json', $manifestJson);
+            $tar->addFromString('information_schema.json', $schemaJson);
 
-        $tar->compress(\Phar::GZ);
-        unset($tar);
+            foreach ($tableContents as $member => $contents) {
+                $tar->addFromString($member, $contents);
+            }
 
-        if (!file_exists($archivePath)) {
-            throw new JsonProviderIoException(
-                JsonProviderErrorEn::FileNotWritable,
+            $tar->compress(\Phar::GZ);
+            unset($tar);
+
+            if (!file_exists($gzPath) || !rename($gzPath, $archivePath)) {
+                throw new JsonProviderIoException(
+                    JsonProviderErrorEn::FileNotWritable,
+                    $archivePath,
+                );
+            }
+        } catch (\Throwable $e) {
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::BackupWriteFailed,
                 $archivePath,
+                $e->getMessage(),
             );
-        }
-
-        if (file_exists($tarPath) && !unlink($tarPath)) {
-            throw new JsonProviderIoException(
-                JsonProviderErrorEn::FileNotWritable,
-                $tarPath,
-            );
+        } finally {
+            PharArchive::discard($tarPath);
+            PharArchive::discard($gzPath);
         }
 
         return $archivePath;

@@ -223,14 +223,14 @@ final class IndexEquivalenceTest
 
         foreach ([0, 2, 4, 6] as $offset) {
             $page = $this->db->table('indexed')
-                ->isDistinct('price')
+                ->distinct('price')
                 ->orderBy('price', 'desc')
                 ->limit(2)
                 ->offset($offset)
                 ->selectAllByArray();
 
             $twinPage = $this->db->table('twin')
-                ->isDistinct('price')
+                ->distinct('price')
                 ->orderBy('price', 'desc')
                 ->limit(2)
                 ->offset($offset)
@@ -249,7 +249,7 @@ final class IndexEquivalenceTest
 
         $full = array_column(
             $this->db->table('twin')
-                ->isDistinct('price')
+                ->distinct('price')
                 ->orderBy('price', 'desc')
                 ->selectAllByArray(),
             'price',

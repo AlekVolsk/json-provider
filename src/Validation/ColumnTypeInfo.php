@@ -37,8 +37,8 @@ final class ColumnTypeInfo
      * The temporal kind for this base type, or null for non-temporal types
      * (int/string/bool/float and the numeric parts year/month/day).
      */
-    public function temporalKind(): TemporalKind | null
+    public function temporalKind(): TemporalKindEnum | null
     {
-        return TemporalKind::tryFromBase($this->base);
+        return TemporalKindEnum::tryFromBase($this->base);
     }
 }

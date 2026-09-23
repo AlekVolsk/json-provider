@@ -88,8 +88,8 @@ $db->addIndex('users', new IndexSchema(
 $db->dropIndex('users', 'idx_users_email');
 ```
 
-- имя занято → `IndexAlreadyExists`; поле не в колонках → `JsonProviderSchemaException`; PK-индекс добавить/удалить нельзя → `JsonProviderSchemaException`; неизвестное имя при dropIndex → `IndexNotFound`; служебные `_fk_`-индексы через этот API не создаются и не удаляются → `ReservedIndexName`;
-- `addIndex`: сначала файл и построение, схема публикуется последней — краш между ними оставляет необъявленный файл, который `validate()` видит как orphan и `repair()` удаляет. На таблице legacy-формата все индексы пересобираются текущим кодеком и штампуется `indexFormat=2`;
+- имя занято → `IndexAlreadyExists`; поле не в колонках → `IndexUnknownColumn`; PK-индекс добавить/удалить нельзя → `JsonProviderSchemaException`; неизвестное имя при dropIndex → `IndexNotFound`; служебные `_fk_`-индексы через этот API не создаются и не удаляются → `ReservedIndexName`;
+- `addIndex`: сначала файл и построение, схема публикуется последней — краш между ними оставляет необъявленный файл, который `validate()` видит как orphan и `repair()` удаляет. На таблице с форматом ниже текущего все индексы пересобираются текущим кодеком и штампуется `indexFormat=2`;
 - `dropIndex`: сначала схема, потом файл — краш между ними оставляет orphan-файл с той же судьбой. Если удаляемый пользовательский индекс служит backing'ом FK-связи, тем же изменением схемы достраивается служебная замена `_fk_<колонка>` и связь перепривязывается (см. [индексы](06-indexes.md)).
 
 ## addUniqueConstraint / dropUniqueConstraint — unique-ограничения
@@ -101,7 +101,7 @@ $db->addUniqueConstraint('users', new UniqueConstraint('uq_users_email', ['email
 $db->dropUniqueConstraint('users', 'uq_users_email');
 ```
 
-Имя занято → `UniqueConstraintAlreadyExists`; поле не в колонках → `JsonProviderSchemaException`; неизвестное имя при drop → `UniqueConstraintNotFound`. Одноколоночное ограничение, служащее опорой уникальности referenced-колонки объявленной связи, снять нельзя, пока жива связь (и нет другого одноколоночного unique на ту же колонку) → `RelationReferencesNotUnique`: с дубликатами в родительской колонке каскад удалял бы детей живого родителя-дубликата. Сначала `dropRelation`.
+Имя занято → `UniqueConstraintAlreadyExists`; поле не в колонках → `UniqueConstraintUnknownColumn`; неизвестное имя при drop → `UniqueConstraintNotFound`. Одноколоночное ограничение, служащее опорой уникальности referenced-колонки объявленной связи, снять нельзя, пока жива связь (и нет другого одноколоночного unique на ту же колонку) → `RelationReferencesNotUnique`: с дубликатами в родительской колонке каскад удалял бы детей живого родителя-дубликата. Сначала `dropRelation`.
 
 ## addRelation / dropRelation — связи
 

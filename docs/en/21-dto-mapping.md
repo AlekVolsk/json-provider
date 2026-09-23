@@ -21,7 +21,7 @@ final class User
         public int $id,
         public string $email,
         public ?int $age,
-        public Status $status,               // backed enum
+        public StatusEnum $status,            // backed enum
         public \DateTimeImmutable $createdAt, // datetime column
     ) {}
 }
@@ -52,6 +52,8 @@ Registration **compiles and validates** the DTO against the schema immediately �
 | `<type>\|null` | a nullable property `?T` |
 
 Temporal columns become real `DateTimeImmutable` objects; the timezone conversion is the same as the array API: `datetime`/`datetimez` are stored in UTC and presented locally, while `date`/`time`/`timez` are verbatim (wall-clock) — see [Schema model → Temporal types](04-schema-model.md#temporal-types-and-timezones).
+
+On write a `DateTimeImmutable` object is **truncated** (not rounded) to the column precision: `time`/`datetime` to the second, `timez`/`datetimez` to the millisecond. This differs from the array API, where a string with an excess fraction is rejected (`TemporalFractionUnsupported`): an object from `new \DateTimeImmutable()` almost always carries microseconds, and requiring them to be trimmed by hand would be impractical. If the lost fraction matters, use `datetimez`/`timez` or check the value before writing.
 
 ## Names — snake_case ↔ camelCase
 
@@ -86,9 +88,9 @@ Bindings are also released on their own: `dropTable()` takes one down with its t
 A backed enum property is stored by its backing value and rebuilt on read:
 
 - **write** — `$status->value` is stored (a plain `string`/`int` column);
-- **read** — `Status::from(<stored>)` rebuilds the case.
+- **read** — `StatusEnum::from(<stored>)` rebuilds the case.
 
-A stored value with no matching case throws `InvalidEnumValue`. Because the DTO's nullability must match the column's, a nullable column requires a nullable enum property (`?Status`), so a stored `null` maps cleanly to `null`.
+A stored value with no matching case throws `InvalidEnumValue`. Because the DTO's nullability must match the column's, a nullable column requires a nullable enum property (`?StatusEnum`), so a stored `null` maps cleanly to `null`.
 
 > If you change a DTO's contract (rename/remove an enum case, tighten nullability), migrate the existing values in the database. Otherwise reads of old rows will fail with `InvalidEnumValue` / `JsonProviderMappingException`.
 
@@ -100,7 +102,7 @@ $id = $db->table('users')->insert(new User(
     id: 0,                       // ignored; assigned by the provider
     email: 'a@b.c',
     age: 30,
-    status: Status::Active,
+    status: StatusEnum::Active,
     createdAt: new \DateTimeImmutable(),
 ));
 
@@ -112,10 +114,23 @@ foreach ($db->table('users')->where('age', '>', 18)->selectAll() as $user) {
     // ...
 }
 // update — overwrites the row identified by the DTO's own id with all its
-// fields (accumulated where() is ignored)
+// fields (accumulated where() is ignored — the id selects the row, see
+// "Which rows are updated" in mutations)
 $db->table('users')->update($user);
 ```
 
 `insert` returns an `int` id (consistent with `insertByArray`), not the object — the object is already in hand. A partial patch stays on the array surface (`updateByArray(['age' => 31])`); `update($dto)` is a whole-row overwrite, which costs nothing extra because a record is always rewritten in full.
+
+The object methods accept **any object** — the class is not checked: each value is read from the property named as in the registered DTO and goes through the ordinary column validation. When the object lacks such a property (not declared, or a typed property left uninitialized):
+
+- `insert` writes `null` to the column — a not-null column rejects it with `NullNotAllowed`;
+- `update` does the same by default (`MissingPropertyModeEnum::WriteNull`), while `MissingPropertyModeEnum::KeepStored` leaves the column out so it keeps the stored value. A property explicitly set to `null` is written in both modes.
+
+```php
+use AV\JsonProvider\Mapping\MissingPropertyModeEnum;
+
+// Contact has no phone property — the stored phone stays as it is
+$db->table('users')->update($contact, MissingPropertyModeEnum::KeepStored);
+```
 
 Calling an object method on a table with no DTO registered throws `DtoNotRegistered` — use the `*ByArray` twin instead.

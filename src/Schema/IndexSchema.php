@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Schema;
 
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Query\OrderBy;
 use AV\JsonProvider\Query\SortDirectionEnum;
 
@@ -48,6 +50,13 @@ final class IndexSchema
         } else {
             IdentifierRules::assertIndexName($name);
         }
+
+        if ($fields === []) {
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::IndexFieldsEmpty,
+                $name,
+            );
+        }
     }
 
     /**
@@ -72,7 +81,15 @@ final class IndexSchema
      */
     public function getFileName(): string
     {
-        return $this->name . '.index.ndjson';
+        return self::fileNameFor($this->name);
+    }
+
+    /**
+     * The index file name for an index given by name only.
+     */
+    public static function fileNameFor(string $indexName): string
+    {
+        return IdentifierRules::physicalName($indexName) . '.index.ndjson';
     }
 
     /**

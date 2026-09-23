@@ -4,7 +4,7 @@
 
 ## Шкала severity
 
-Единая шкала для отчёта валидатора и опционального PSR-3-логгера (`IssueSeverity`):
+Единая шкала для отчёта валидатора и опционального PSR-3-логгера (`IssueSeverityEnum`):
 
 | Уровень | Критерий | PSR-3 |
 | - | - | - |
@@ -13,9 +13,9 @@
 | `warning` | связи или типизация данных не соответствуют схеме | `warning` |
 | `info` | наблюдение по данным без задействования схемы (потерянные FK при `noAction`, успешная оптимизация) | `info` |
 
-`IssueSeverity::psrLevel()` возвращает уровень PSR-3, `rank()` — числовой ранг для сортировки (critical=0 … info=3). Отчёт (`IntegrityReport::$issues`) отсортирован critical-first; внутри одного уровня сохраняется порядок обнаружения. `hasErrors()` истинен для `error` **и** `critical`.
+`IssueSeverityEnum::psrLevel()` возвращает уровень PSR-3, `rank()` — числовой ранг для сортировки (critical=0 … info=3). Отчёт (`IntegrityReport::$issues`) отсортирован critical-first; внутри одного уровня сохраняется порядок обнаружения. `hasErrors()` истинен для `error` **и** `critical`.
 
-Если при создании инстанса передан PSR-3-логгер (`JsonDataProvider::getInstance($path, $cache, $logger)`), каждая находка прогона валидации логируется ровно один раз на уровне своего severity. Рантайм-деградации журналируются по той же шкале: тихий откат индексных чтений к full scan (byteSize-рассинхрон, легаси-формат) — `info`, бросок `JsonProviderServiceException` — `error`, пропуск нечитаемых строк при restore — `warning`, деградация кэш-бэкенда — `warning` (логгер кэш-адаптера, см. [16-caching.md](16-caching.md)).
+Если при создании инстанса передан PSR-3-логгер (`JsonDataProvider::getInstance($path, $cache, $logger)`), каждая находка прогона валидации логируется ровно один раз на уровне своего severity. Рантайм-деградации журналируются по той же шкале: тихий откат индексных чтений к full scan (byteSize-рассинхрон, формат ниже текущего) — `info`, бросок `JsonProviderServiceException` — `error`, пропуск нечитаемых строк при restore — `warning`, деградация кэш-бэкенда — `warning` (логгер кэш-адаптера, см. [16-caching.md](16-caching.md)).
 
 ## Validate
 
@@ -39,7 +39,7 @@ $report = $db->validate();   // вся БД
 | `meta_last_id_drift` | error | meta.lastInsertedId меньше `max(id)` существующих записей |
 | `pk_duplicate` | error | один id хранится в двух и более записях (id и строки — в контексте) |
 | `rename_incomplete` | error | в meta.json остался маркер `_pendingRename` — `renameTable` не докатился |
-| `fk_backing_index_missing` | error | у cascade/restrict-связи нет покрывающего backing-индекса на FK-колонке ребёнка (legacy-схема) |
+| `fk_backing_index_missing` | error | у cascade/restrict-связи нет покрывающего backing-индекса на FK-колонке ребёнка |
 | `repair_failed` | error | попытка ремонта бросила исключение или отказалась |
 | `broken_record` | warning | непарсимая NDJSON-строка (физический номер строки и сырой текст — в контексте); report-only |
 | `present_null` | warning | явный `null` в non-nullable колонке (колонка и строка — в контексте); report-only |
@@ -67,7 +67,7 @@ $report = $db->repair();             // вся БД
 `repair*` запускает валидатор, пытается починить каждое actionable-issue, завершает каждую затронутую таблицу проходом `optimizeTable`. Репэйрер **никогда не выбрасывает исключение наружу** — провалы фиксируются внутри issue-объектов отчёта:
 
 ```php
-foreach ($report->issuesByCategory(IssueCategory::INDEX_DRIFT) as $i) {
+foreach ($report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT) as $i) {
     if (!$i->repaired) {
         error_log('repair failed: ' . ($i->repairError ?? 'unknown'));
     }
@@ -90,7 +90,7 @@ foreach ($report->issuesByCategory(IssueCategory::INDEX_DRIFT) as $i) {
 | `meta_line_count_drift` | выставить фактическое число строк |
 | `meta_last_id_drift` | выставить `max(id)` существующих записей |
 | `meta_orphan_entry` | удалить запись из меты |
-| `orphan_db_entry` | удалить файл; каталог удаляется целиком только если все файлы в нём пусты — непустой сирота требует ручного решения |
+| `orphan_db_entry` | удалить файл; каталог удаляется целиком только если все файлы в нём пусты — непустой сирота требует ручного решения; каталог с заглавными буквами в имени провайдер не создаёт и не трогает — только вручную |
 | `table_file_missing` | создать пустой файл данных, недостающие файлы индексов и запись в мете (окно краша `createTable`); потерянные данные не выдумываются |
 | `pk_duplicate` | **не чинится**: помечается `repairError` — дубликаты PK разрешаются вручную |
 | `rename_incomplete` | докатить/откатить `renameTable` по фактическому состоянию схемы (см. ниже) |
@@ -117,6 +117,6 @@ Plain-text, английский, фиксированная ширина. По 
 ```php
 $report->hasErrors();      // true при error И critical
 $report->hasWarnings();
-$report->issuesBySeverity(IssueSeverity::CRITICAL);
-$report->issuesByCategory(IssueCategory::META_LINE_COUNT_DRIFT);
+$report->issuesBySeverity(IssueSeverityEnum::CRITICAL);
+$report->issuesByCategory(IssueCategoryEnum::META_LINE_COUNT_DRIFT);
 ```

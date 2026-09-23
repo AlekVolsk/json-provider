@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Services\Integrity\IntegrityReport;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\Fixture;
 use Testo\Assert;
 use Testo\Test;
@@ -37,7 +37,7 @@ final class IntegrityTest
         $report = Fixture::db()->validateTable('products');
 
         Assert::iterable(
-            $report->issuesByCategory(IssueCategory::INDEX_FILE_MISSING),
+            $report->issuesByCategory(IssueCategoryEnum::INDEX_FILE_MISSING),
         )->notEmpty();
 
         Fixture::db()->repairTable('products');
@@ -54,7 +54,7 @@ final class IntegrityTest
         $report = Fixture::db()->validateTable('products');
 
         Assert::iterable(
-            $report->issuesByCategory(IssueCategory::INDEX_DRIFT),
+            $report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT),
         )->notEmpty();
 
         Fixture::db()->repairTable('products');
@@ -68,7 +68,7 @@ final class IntegrityTest
 
         $report = Fixture::db()->validateTable('products');
         $issues = $report->issuesByCategory(
-            IssueCategory::ORPHAN_INDEX_FILE,
+            IssueCategoryEnum::ORPHAN_INDEX_FILE,
         );
 
         Assert::iterable($issues)->notEmpty();
@@ -99,7 +99,7 @@ final class IntegrityTest
         $report = Fixture::db()->validateTable('products');
 
         Assert::iterable(
-            $report->issuesByCategory(IssueCategory::META_LINE_COUNT_DRIFT),
+            $report->issuesByCategory(IssueCategoryEnum::META_LINE_COUNT_DRIFT),
         )->notEmpty();
 
         Fixture::db()->repairTable('products');
@@ -115,7 +115,7 @@ final class IntegrityTest
         file_put_contents($orphan, 'random');
 
         $report = Fixture::db()->validate();
-        $issues = $report->issuesByCategory(IssueCategory::ORPHAN_DB_ENTRY);
+        $issues = $report->issuesByCategory(IssueCategoryEnum::ORPHAN_DB_ENTRY);
 
         Assert::iterable($issues)->notEmpty();
 
@@ -133,7 +133,7 @@ final class IntegrityTest
         $report = Fixture::db()->repairTable('products');
 
         $orphanIssues = $report->issuesByCategory(
-            IssueCategory::ORPHAN_INDEX_FILE,
+            IssueCategoryEnum::ORPHAN_INDEX_FILE,
         );
         Assert::iterable($orphanIssues)->notEmpty();
 
@@ -143,7 +143,7 @@ final class IntegrityTest
         }
 
         $optimizeIssues = $report->issuesByCategory(
-            IssueCategory::TABLE_OPTIMIZED,
+            IssueCategoryEnum::TABLE_OPTIMIZED,
         );
         Assert::count($optimizeIssues, 1);
 
@@ -230,7 +230,10 @@ final class IntegrityTest
     {
         $report = Fixture::db()->validate();
         Assert::instanceOf($report, IntegrityReport::class);
-        Assert::same(IssueSeverity::from('error'), IssueSeverity::ERROR);
+        Assert::same(
+            IssueSeverityEnum::from('error'),
+            IssueSeverityEnum::ERROR,
+        );
     }
 
     /**

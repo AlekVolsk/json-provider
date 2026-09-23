@@ -22,7 +22,7 @@ use Psr\Log\LogLevel;
  *  - info:     a data-only observation with no schema involved (orphan FK
  *              values under noAction, successful optimization).
  */
-enum IssueSeverity: string
+enum IssueSeverityEnum: string
 {
     case CRITICAL = 'critical';
     case ERROR = 'error';

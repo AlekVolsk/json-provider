@@ -4,7 +4,7 @@ The provider ships with a built-in integrity service. `validate*` is read-only; 
 
 ## Severity scale
 
-One unified scale shared by the validator report and the optional PSR-3 logger (`IssueSeverity`):
+One unified scale shared by the validator report and the optional PSR-3 logger (`IssueSeverityEnum`):
 
 | Level | Criterion | PSR-3 |
 | - | - | - |
@@ -13,9 +13,9 @@ One unified scale shared by the validator report and the optional PSR-3 logger (
 | `warning` | relations or data typing do not match the schema | `warning` |
 | `info` | a data-only observation with no schema involved (orphan FKs under `noAction`, successful optimization) | `info` |
 
-`IssueSeverity::psrLevel()` returns the PSR-3 level, `rank()` the numeric rank used for sorting (critical=0 … info=3). The report (`IntegrityReport::$issues`) is ordered critical-first; emission order is kept within one level. `hasErrors()` is true for `error` **and** `critical`.
+`IssueSeverityEnum::psrLevel()` returns the PSR-3 level, `rank()` the numeric rank used for sorting (critical=0 … info=3). The report (`IntegrityReport::$issues`) is ordered critical-first; emission order is kept within one level. `hasErrors()` is true for `error` **and** `critical`.
 
-When a PSR-3 logger is attached to the instance (`JsonDataProvider::getInstance($path, $cache, $logger)`), every finding of a validation run is logged exactly once at its severity's level. Runtime degradations use the same scale: the silent fallback of index reads to full scans (byteSize desync, legacy format) is `info`, the `JsonProviderServiceException` throw is `error`, skipped unparseable lines during restore are `warning`, a degraded cache backend is `warning` (the cache adapter's own logger, see [16-caching.md](16-caching.md)).
+When a PSR-3 logger is attached to the instance (`JsonDataProvider::getInstance($path, $cache, $logger)`), every finding of a validation run is logged exactly once at its severity's level. Runtime degradations use the same scale: the silent fallback of index reads to full scans (byteSize desync, a format below the current one) is `info`, the `JsonProviderServiceException` throw is `error`, skipped unparseable lines during restore are `warning`, a degraded cache backend is `warning` (the cache adapter's own logger, see [16-caching.md](16-caching.md)).
 
 ## Validate
 
@@ -39,7 +39,7 @@ $report = $db->validate();   // whole DB
 | `meta_last_id_drift` | error | meta.lastInsertedId is below `max(id)` of the stored records |
 | `pk_duplicate` | error | one id is stored in two or more records (id and lines in the context) |
 | `rename_incomplete` | error | a `_pendingRename` marker is left in meta.json — `renameTable` did not complete |
-| `fk_backing_index_missing` | error | a cascade/restrict relation has no covering backing index on the child FK column (legacy schema) |
+| `fk_backing_index_missing` | error | a cascade/restrict relation has no covering backing index on the child FK column |
 | `repair_failed` | error | a repair attempt threw or refused |
 | `broken_record` | warning | an unparseable NDJSON line (physical line number and raw text in the context); report-only |
 | `present_null` | warning | an explicit `null` in a non-nullable column (column and line in the context); report-only |
@@ -67,7 +67,7 @@ $report = $db->repair();             // whole DB
 `repair*` runs the validator, attempts to fix every actionable issue, and finishes every touched table with an `optimizeTable` pass. The repairer **never throws past its boundary** — failures are recorded inside the report's issue objects:
 
 ```php
-foreach ($report->issuesByCategory(IssueCategory::INDEX_DRIFT) as $i) {
+foreach ($report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT) as $i) {
     if (!$i->repaired) {
         error_log('repair failed: ' . ($i->repairError ?? 'unknown'));
     }
@@ -90,7 +90,7 @@ What gets repaired:
 | `meta_line_count_drift` | set the actual row count |
 | `meta_last_id_drift` | set `max(id)` of the stored records |
 | `meta_orphan_entry` | drop the entry from meta |
-| `orphan_db_entry` | delete the file; a directory is removed as a whole only when every file in it is empty — a non-empty orphan needs a manual decision |
+| `orphan_db_entry` | delete the file; a directory is removed as a whole only when every file in it is empty — a non-empty orphan needs a manual decision; a directory with upper-case letters in its name is never created nor touched by the provider — manual removal only |
 | `table_file_missing` | provision an empty data file, missing index files and the meta entry (the `createTable` crash window); lost data is not invented |
 | `pk_duplicate` | **not repaired**: marked with `repairError` — duplicate PKs are resolved manually |
 | `rename_incomplete` | roll the `renameTable` forward/back by the actual schema state (see below) |
@@ -117,6 +117,6 @@ Plain text, English, fixed width. One line per issue with the severity tag, cate
 ```php
 $report->hasErrors();      // true for error AND critical
 $report->hasWarnings();
-$report->issuesBySeverity(IssueSeverity::CRITICAL);
-$report->issuesByCategory(IssueCategory::META_LINE_COUNT_DRIFT);
+$report->issuesBySeverity(IssueSeverityEnum::CRITICAL);
+$report->issuesByCategory(IssueCategoryEnum::META_LINE_COUNT_DRIFT);
 ```

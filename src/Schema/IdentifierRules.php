@@ -39,7 +39,19 @@ final class IdentifierRules
     public const string RESERVED_TABLE_NAME = '_pendingRename';
 
     private const string PATTERN
-        = '/^(?!\d+$)[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/';
+        = '/^(?!\d+$)[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/D';
+
+    /**
+     * The on-disk form of a table or index name — directory, data, index and
+     * lock file names. Always lower case, so the layout is the same on
+     * case-sensitive and case-insensitive file systems; two names differing
+     * only in case therefore denote the same files and are rejected as
+     * duplicates. Identifiers are ASCII, so strtolower is locale-independent.
+     */
+    public static function physicalName(string $name): string
+    {
+        return strtolower($name);
+    }
 
     public static function assertTableName(string $name): void
     {

@@ -3,7 +3,7 @@
     "description": "A self-contained PHP data provider that turns a directory of NDJSON files into a small relational-style database.",
     "type": "library",
     "keywords": ["ndjson", "json", "database", "storage", "orm", "flat-file", "no-sql", "embedded"],
-    "license": "GPL-3.0-or-later",
+    "license": "MIT",
     "authors": [
         {
             "name": "Aleksey Morozov",

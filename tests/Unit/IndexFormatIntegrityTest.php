@@ -9,8 +9,8 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -76,11 +76,11 @@ final class IndexFormatIntegrityTest
         $report = $this->db->validateTable(self::TABLE);
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::INDEX_FORMAT_OUTDATED),
+            $report->issuesByCategory(IssueCategoryEnum::INDEX_FORMAT_OUTDATED),
             0,
         );
         Assert::count(
-            $report->issuesByCategory(IssueCategory::INDEX_UNRELIABLE),
+            $report->issuesByCategory(IssueCategoryEnum::INDEX_UNRELIABLE),
             0,
         );
     }
@@ -93,13 +93,13 @@ final class IndexFormatIntegrityTest
         $report = $this->db->validateTable(self::TABLE);
 
         $outdated = $report->issuesByCategory(
-            IssueCategory::INDEX_FORMAT_OUTDATED,
+            IssueCategoryEnum::INDEX_FORMAT_OUTDATED,
         );
         Assert::count($outdated, 1);
-        Assert::same($outdated[0]->severity, IssueSeverity::INFO);
+        Assert::same($outdated[0]->severity, IssueSeverityEnum::INFO);
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::INDEX_DRIFT),
+            $report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT),
             0,
             'v1 keys must not be compared against the v2 encoder',
         );
@@ -114,7 +114,7 @@ final class IndexFormatIntegrityTest
         $report = $this->db->repairTable(self::TABLE);
 
         $outdated = $report->issuesByCategory(
-            IssueCategory::INDEX_FORMAT_OUTDATED,
+            IssueCategoryEnum::INDEX_FORMAT_OUTDATED,
         );
         Assert::count($outdated, 1);
         Assert::true($outdated[0]->repaired);
@@ -143,23 +143,23 @@ final class IndexFormatIntegrityTest
         $report = $this->db->validateTable(self::TABLE);
 
         $unreliable = $report->issuesByCategory(
-            IssueCategory::INDEX_UNRELIABLE,
+            IssueCategoryEnum::INDEX_UNRELIABLE,
         );
         Assert::count($unreliable, 1);
-        Assert::same($unreliable[0]->severity, IssueSeverity::ERROR);
+        Assert::same($unreliable[0]->severity, IssueSeverityEnum::ERROR);
         Assert::string($unreliable[0]->message)
             ->contains('expected exactly 1');
 
         $repairReport = $this->db->repairTable(self::TABLE);
         $repaired = $repairReport->issuesByCategory(
-            IssueCategory::INDEX_UNRELIABLE,
+            IssueCategoryEnum::INDEX_UNRELIABLE,
         );
         Assert::count($repaired, 1);
         Assert::true($repaired[0]->repaired);
 
         Assert::count(
             $this->db->validateTable(self::TABLE)
-                ->issuesByCategory(IssueCategory::INDEX_UNRELIABLE),
+                ->issuesByCategory(IssueCategoryEnum::INDEX_UNRELIABLE),
             0,
         );
     }
@@ -191,7 +191,7 @@ final class IndexFormatIntegrityTest
         $report = $this->db->validateTable('floats');
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::INDEX_DRIFT),
+            $report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT),
             0,
             'widened and raw reads must build identical keys',
         );
@@ -229,7 +229,7 @@ final class IndexFormatIntegrityTest
         $report = $this->db->validateTable('inf_t');
 
         Assert::int(
-            \count($report->issuesByCategory(IssueCategory::INDEX_DRIFT)),
+            \count($report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT)),
         )->greaterThan(0);
     }
 

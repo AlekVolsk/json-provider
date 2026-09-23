@@ -8,7 +8,7 @@ use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Backup\BackupManifest;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Tests\Support\Fixture;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -371,7 +371,7 @@ final class BackupRestoreTest
 
         $report = $db->validate();
         Assert::count(
-            $report->issuesByCategory(IssueCategory::ORPHAN_INDEX_FILE),
+            $report->issuesByCategory(IssueCategoryEnum::ORPHAN_INDEX_FILE),
             0,
             $report->format(),
         );

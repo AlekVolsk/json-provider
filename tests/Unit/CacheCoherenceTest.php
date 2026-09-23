@@ -7,7 +7,7 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Cache\InMemoryCache;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -218,7 +218,7 @@ final class CacheCoherenceTest
         Assert::same($this->db->table(self::TABLE)->count(), 1);
 
         $report = $this->db->repairTable(self::TABLE);
-        $corrupt = IssueCategory::META_ENTRY_CORRUPT;
+        $corrupt = IssueCategoryEnum::META_ENTRY_CORRUPT;
         $found = array_filter(
             $report->issues,
             static fn ($i): bool => $i->category === $corrupt,

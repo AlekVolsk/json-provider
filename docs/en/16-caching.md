@@ -28,7 +28,7 @@ Only APCu carries an explicit extension check in its constructor (`ExtensionRequ
 Every key has the shape `jdp:<format version>:<db path hash>:<table>:<tag>`:
 
 - the **path hash** (16 hex of sha1 over the directory's `realpath`) isolates databases sharing one backend pool: two databases with a `users` table can never read each other's rows;
-- the **format version** (`JsonDataProvider::CACHE_FORMAT_VERSION`) retires keys of older formats on upgrade — they expire by TTL/eviction;
+- the **format version** (`JsonDataProvider::CACHE_FORMAT_VERSION`) retires keys written in another format (by another package version) — they expire by TTL/eviction;
 - the **tag** is `<meta lineCount>-<physical data file size>-<inode>`. It binds a cache entry to one committed state of the table: any write that changes the size or the row count — including a FOREIGN append straight into the ndjson file, bypassing the provider — moves the tag; and the inode kills the A-B-A class: every full provider rewrite goes through tmp+rename onto a **fresh** inode, so a delete+insert of the same byte length, a truncate with a re-import, a drop+recreate or a same-length value swap **through the provider from any process** can never reproduce an earlier tag and resurrect a warm entry of the old state. Every stale entry simply stops resolving — with no cross-process invalidation messages at all.
 
 The row cache serves **only** full-scan reads and `count()`; index-driven selects always go to disk. Write paths never read the cache (it is never the base of a rewrite) and publish the fresh entry under the tag of the state they just committed.
@@ -59,7 +59,7 @@ $db = JsonDataProvider::getInstance(
 
 ## InMemoryCache: TTL and eviction
 
-`new InMemoryCache(ttl: 0, maxEntries: 1000)` — TTL in seconds (0 = forever, the historical default), an entry cap with FIFO eviction in insertion order (0 = unlimited). Expired entries are removed lazily on `get()`. Cross-process coherence is the job of the version-tagged keys, not of this adapter.
+`new InMemoryCache(ttl: 0, maxEntries: 1000)` — TTL in seconds (0 = forever, the default), an entry cap with FIFO eviction in insertion order (0 = unlimited). Expired entries are removed lazily on `get()`. Cross-process coherence is the job of the version-tagged keys, not of this adapter.
 
 ## Custom adapter
 

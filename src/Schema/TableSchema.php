@@ -20,8 +20,9 @@ use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
  * Physical file naming for the table data file is the provider's contract,
  * not user input: `<table-name>.ndjson`, placed in the table's subdirectory.
  *
- * The constructor **validates** the PK contract and throws
- * the primary key contract cases on any violation. This prevents silent
+ * The constructor **validates** the PK contract, index and unique
+ * constraint names and the columns they reference, and throws on any
+ * violation. This prevents silent
  * acceptance of a corrupted schema (e.g. tampered information_schema.json).
  *
  * For convenient assembly from a "human" description (without `id`, without
@@ -67,6 +68,8 @@ final class TableSchema
         self::validatePrimaryKey($name, $columns);
         self::validateColumnTypes($name, $columns);
         self::validateIndexes($name, $indexes);
+        self::validateFieldReferences($name, $columns, $indexes);
+        self::validateUniqueConstraints($name, $columns, $uniqueConstraints);
     }
 
     /**
@@ -186,7 +189,16 @@ final class TableSchema
      */
     public function getFileName(): string
     {
-        return $this->name . '.ndjson';
+        return self::dataFileName($this->name);
+    }
+
+    /**
+     * The data file name of a table given by name only (renames, cache
+     * tags) — the single place the naming rule lives.
+     */
+    public static function dataFileName(string $tableName): string
+    {
+        return IdentifierRules::physicalName($tableName) . '.ndjson';
     }
 
     /**
@@ -317,6 +329,8 @@ final class TableSchema
 
     /**
      * Validates the indexes list:
+     *  - index names are unique regardless of letter case (they name the
+     *    index files, see IdentifierRules::physicalName);
      *  - the name 'pk' is reserved: an index with that name must be the
      *    PK (isPrimary=true);
      *  - the PK index must be present;
@@ -330,8 +344,20 @@ final class TableSchema
         array $indexes,
     ): void {
         $pkSeenAt = null;
+        $names = [];
 
         foreach ($indexes as $position => $index) {
+            $physical = IdentifierRules::physicalName($index->name);
+
+            if (isset($names[$physical])) {
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::IndexAlreadyExists,
+                    $tableName,
+                    $index->name,
+                );
+            }
+            $names[$physical] = true;
+
             if ($index->name === IndexSchema::PK_NAME && !$index->isPrimary) {
                 throw new JsonProviderSchemaException(
                     JsonProviderErrorEn::PkIndexNameReserved,
@@ -364,6 +390,70 @@ final class TableSchema
                 $tableName,
                 (string)$pkSeenAt,
             );
+        }
+    }
+
+    /**
+     * Every indexed field must be a declared column: an index over a
+     * missing field would key every row by an empty value.
+     *
+     * @param array<string,string>   $columns
+     * @param array<int,IndexSchema> $indexes
+     */
+    private static function validateFieldReferences(
+        string $tableName,
+        array $columns,
+        array $indexes,
+    ): void {
+        foreach ($indexes as $index) {
+            foreach ($index->fields as $field) {
+                if (!isset($columns[$field->field])) {
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::IndexUnknownColumn,
+                        $tableName,
+                        $index->name,
+                        $field->field,
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Unique constraint names are unique within the table, and every
+     * constrained field is a declared column: a constraint over a missing
+     * field never produces a key and silently constrains nothing.
+     *
+     * @param array<string,string>        $columns
+     * @param array<int,UniqueConstraint> $uniqueConstraints
+     */
+    private static function validateUniqueConstraints(
+        string $tableName,
+        array $columns,
+        array $uniqueConstraints,
+    ): void {
+        $names = [];
+
+        foreach ($uniqueConstraints as $constraint) {
+            if (isset($names[$constraint->name])) {
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::UniqueConstraintAlreadyExists,
+                    $tableName,
+                    $constraint->name,
+                );
+            }
+            $names[$constraint->name] = true;
+
+            foreach ($constraint->fields as $field) {
+                if (!isset($columns[$field])) {
+                    throw new JsonProviderSchemaException(
+                        JsonProviderErrorEn::UniqueConstraintUnknownColumn,
+                        $tableName,
+                        $constraint->name,
+                        $field,
+                    );
+                }
+            }
         }
     }
 }

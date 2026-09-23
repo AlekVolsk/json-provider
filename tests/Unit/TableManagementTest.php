@@ -379,7 +379,7 @@ final class TableManagementTest
             ),
         ));
 
-        Assert::same($key, 'MigrateFieldUnknownColumnUnique');
+        Assert::same($key, 'UniqueConstraintUnknownColumn');
         Assert::true(\in_array('email', $db->columnNames('u'), true));
         Assert::count($db->readAll('u'), 1);
     }
@@ -405,7 +405,7 @@ final class TableManagementTest
             ),
         ));
 
-        Assert::same($key, 'MigrateFieldUnknownColumnIndex');
+        Assert::same($key, 'IndexUnknownColumn');
         Assert::true(\in_array('b', $db->columnNames('p'), true));
     }
 

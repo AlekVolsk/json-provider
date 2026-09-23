@@ -13,8 +13,8 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\SpyLogger;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -83,17 +83,20 @@ final class SeverityScaleTest
     #[Test]
     public function severityEnumMapsToPsrLevelsAndRanks(): void
     {
-        Assert::same(IssueSeverity::CRITICAL->psrLevel(), 'critical');
-        Assert::same(IssueSeverity::ERROR->psrLevel(), 'error');
-        Assert::same(IssueSeverity::WARNING->psrLevel(), 'warning');
-        Assert::same(IssueSeverity::INFO->psrLevel(), 'info');
+        Assert::same(IssueSeverityEnum::CRITICAL->psrLevel(), 'critical');
+        Assert::same(IssueSeverityEnum::ERROR->psrLevel(), 'error');
+        Assert::same(IssueSeverityEnum::WARNING->psrLevel(), 'warning');
+        Assert::same(IssueSeverityEnum::INFO->psrLevel(), 'info');
 
-        Assert::same(IssueSeverity::CRITICAL->rank(), 0);
-        Assert::same(IssueSeverity::ERROR->rank(), 1);
-        Assert::same(IssueSeverity::WARNING->rank(), 2);
-        Assert::same(IssueSeverity::INFO->rank(), 3);
+        Assert::same(IssueSeverityEnum::CRITICAL->rank(), 0);
+        Assert::same(IssueSeverityEnum::ERROR->rank(), 1);
+        Assert::same(IssueSeverityEnum::WARNING->rank(), 2);
+        Assert::same(IssueSeverityEnum::INFO->rank(), 3);
 
-        Assert::same(IssueSeverity::from('critical'), IssueSeverity::CRITICAL);
+        Assert::same(
+            IssueSeverityEnum::from('critical'),
+            IssueSeverityEnum::CRITICAL,
+        );
     }
 
     #[Test]
@@ -103,10 +106,12 @@ final class SeverityScaleTest
         unlink($this->dbDir . '/parents/parents.ndjson');
 
         $report = $this->db->validateTable('parents');
-        $found = $report->issuesByCategory(IssueCategory::TABLE_FILE_MISSING);
+        $found = $report->issuesByCategory(
+            IssueCategoryEnum::TABLE_FILE_MISSING,
+        );
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::CRITICAL);
+        Assert::same($found[0]->severity, IssueSeverityEnum::CRITICAL);
         Assert::true(
             $report->hasErrors(),
             'CRITICAL must count as an error in hasErrors()',
@@ -120,10 +125,12 @@ final class SeverityScaleTest
         $this->dropMetaEntry('parents');
 
         $report = $this->db->validateTable('parents');
-        $found = $report->issuesByCategory(IssueCategory::META_ENTRY_MISSING);
+        $found = $report->issuesByCategory(
+            IssueCategoryEnum::META_ENTRY_MISSING,
+        );
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::CRITICAL);
+        Assert::same($found[0]->severity, IssueSeverityEnum::CRITICAL);
     }
 
     #[Test]
@@ -133,10 +140,12 @@ final class SeverityScaleTest
         $this->corruptMetaEntry('parents');
 
         $report = $this->db->validateTable('parents');
-        $found = $report->issuesByCategory(IssueCategory::META_ENTRY_CORRUPT);
+        $found = $report->issuesByCategory(
+            IssueCategoryEnum::META_ENTRY_CORRUPT,
+        );
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::CRITICAL);
+        Assert::same($found[0]->severity, IssueSeverityEnum::CRITICAL);
     }
 
     #[Test]
@@ -146,10 +155,12 @@ final class SeverityScaleTest
         unlink($this->dbDir . '/childs/idx_label.index.ndjson');
 
         $report = $this->db->validateTable('childs');
-        $found = $report->issuesByCategory(IssueCategory::INDEX_FILE_MISSING);
+        $found = $report->issuesByCategory(
+            IssueCategoryEnum::INDEX_FILE_MISSING,
+        );
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::ERROR);
+        Assert::same($found[0]->severity, IssueSeverityEnum::ERROR);
     }
 
     #[Test]
@@ -167,12 +178,12 @@ final class SeverityScaleTest
         $this->db->insert('childs', ['parent_id' => 777, 'label' => 'lost']);
 
         $report = $this->db->validate();
-        $found = $report->issuesByCategory(IssueCategory::FK_ORPHAN);
+        $found = $report->issuesByCategory(IssueCategoryEnum::FK_ORPHAN);
 
         Assert::count($found, 1, $report->format());
         Assert::same(
             $found[0]->severity,
-            IssueSeverity::INFO,
+            IssueSeverityEnum::INFO,
             'an orphan under noAction is an accepted fact of the data',
         );
 
@@ -187,12 +198,12 @@ final class SeverityScaleTest
         ));
 
         $report = $this->db->validate();
-        $found = $report->issuesByCategory(IssueCategory::FK_ORPHAN);
+        $found = $report->issuesByCategory(IssueCategoryEnum::FK_ORPHAN);
 
         Assert::count($found, 1, $report->format());
         Assert::same(
             $found[0]->severity,
-            IssueSeverity::WARNING,
+            IssueSeverityEnum::WARNING,
             'an orphan under an enforced action means the enforcement '
                 . 'was bypassed',
         );
@@ -220,7 +231,7 @@ final class SeverityScaleTest
         Assert::same($ranks, $sorted, $report->format());
         Assert::same(
             $report->issues[0]->category,
-            IssueCategory::META_ENTRY_MISSING,
+            IssueCategoryEnum::META_ENTRY_MISSING,
         );
     }
 

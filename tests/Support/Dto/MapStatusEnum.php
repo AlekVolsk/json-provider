@@ -10,7 +10,7 @@ namespace AV\JsonProvider\Tests\Support\Dto;
  * between the two bindings is exactly one `from()` call per row, which is what
  * the enum benchmark measures.
  */
-enum MapStatus: string
+enum MapStatusEnum: string
 {
     case Draft = 'draft';
     case Active = 'active';

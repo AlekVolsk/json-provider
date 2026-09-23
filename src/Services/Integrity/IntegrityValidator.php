@@ -10,6 +10,7 @@ use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
+use AV\JsonProvider\Schema\IdentifierRules;
 use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
@@ -170,8 +171,8 @@ final class IntegrityValidator
                 || $pending['to'] === $tableName)
         ) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::RENAME_INCOMPLETE,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::RENAME_INCOMPLETE,
                 $tableName,
                 'renameTable "' . $pending['from'] . '" -> "'
                     . $pending['to'] . '" did not complete; run the '
@@ -185,8 +186,8 @@ final class IntegrityValidator
 
         if (!$this->ndjson->exists($tableName, $tableSchema->getFileName())) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::CRITICAL,
-                IssueCategory::TABLE_FILE_MISSING,
+                IssueSeverityEnum::CRITICAL,
+                IssueCategoryEnum::TABLE_FILE_MISSING,
                 $tableName,
                 'data file ' . $tableSchema->getFileName() . ' is missing',
             );
@@ -201,8 +202,8 @@ final class IntegrityValidator
 
         foreach ($rawLines['broken'] as $broken) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::WARNING,
-                IssueCategory::BROKEN_RECORD,
+                IssueSeverityEnum::WARNING,
+                IssueCategoryEnum::BROKEN_RECORD,
                 $tableName,
                 \sprintf(
                     'unparseable line %d: %s',
@@ -299,8 +300,8 @@ final class IntegrityValidator
             }
 
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::FK_BACKING_INDEX_MISSING,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::FK_BACKING_INDEX_MISSING,
                 $tableSchema->name,
                 'relation ' . $relation->fromTable . '('
                     . $relation->foreignKey . ') -> ' . $relation->toTable
@@ -359,8 +360,8 @@ final class IntegrityValidator
             }
 
             $issues[] = new IntegrityIssue(
-                IssueSeverity::WARNING,
-                IssueCategory::FK_BACKING_INDEX_ORPHANED,
+                IssueSeverityEnum::WARNING,
+                IssueCategoryEnum::FK_BACKING_INDEX_ORPHANED,
                 $tableSchema->name,
                 'service index "' . $index->name . '" is not the backing '
                     . 'of any probing relation',
@@ -410,8 +411,8 @@ final class IntegrityValidator
                 }
 
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::WARNING,
-                    IssueCategory::PRESENT_NULL,
+                    IssueSeverityEnum::WARNING,
+                    IssueCategoryEnum::PRESENT_NULL,
                     $tableSchema->name,
                     \sprintf(
                         'column "%s" is null in a non-nullable column '
@@ -466,8 +467,8 @@ final class IntegrityValidator
                 }
 
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::WARNING,
-                    IssueCategory::UNIQUE_DUPLICATE,
+                    IssueSeverityEnum::WARNING,
+                    IssueCategoryEnum::UNIQUE_DUPLICATE,
                     $tableSchema->name,
                     \sprintf(
                         'unique "%s" duplicated on lines %s',
@@ -508,8 +509,8 @@ final class IntegrityValidator
         }
 
         return [new IntegrityIssue(
-            IssueSeverity::WARNING,
-            IssueCategory::RECORD_KEY_ORDER,
+            IssueSeverityEnum::WARNING,
+            IssueCategoryEnum::RECORD_KEY_ORDER,
             $tableSchema->name,
             $wrongCount
                 . ' record(s) have key order or set differing from schema',
@@ -548,8 +549,8 @@ final class IntegrityValidator
             }
 
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::PK_DUPLICATE,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::PK_DUPLICATE,
                 $tableSchema->name,
                 'primary key ' . $id . ' is stored in '
                     . \count($lines) . ' records (lines '
@@ -579,8 +580,8 @@ final class IntegrityValidator
 
         if (!$formatCurrent && $tableSchema->indexes !== []) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::INFO,
-                IssueCategory::INDEX_FORMAT_OUTDATED,
+                IssueSeverityEnum::INFO,
+                IssueCategoryEnum::INDEX_FORMAT_OUTDATED,
                 $tableSchema->name,
                 'index files use a pre-v2 key format; readers fall back '
                     . 'to full scans until the next write (or repair) '
@@ -593,8 +594,8 @@ final class IntegrityValidator
 
             if (!$this->ndjson->exists($tableSchema->name, $fileName)) {
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::ERROR,
-                    IssueCategory::INDEX_FILE_MISSING,
+                    IssueSeverityEnum::ERROR,
+                    IssueCategoryEnum::INDEX_FILE_MISSING,
                     $tableSchema->name,
                     'index "' . $index->name . '" file '
                         . $fileName . ' is missing',
@@ -611,8 +612,8 @@ final class IntegrityValidator
                 );
             } catch (\Throwable $e) {
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::ERROR,
-                    IssueCategory::INDEX_FILE_CORRUPT,
+                    IssueSeverityEnum::ERROR,
+                    IssueCategoryEnum::INDEX_FILE_CORRUPT,
                     $tableSchema->name,
                     'index "' . $index->name . '" cannot be read: '
                         . $e->getMessage(),
@@ -624,8 +625,8 @@ final class IntegrityValidator
 
             if (\count($entries) !== \count($records)) {
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::ERROR,
-                    IssueCategory::INDEX_DRIFT,
+                    IssueSeverityEnum::ERROR,
+                    IssueCategoryEnum::INDEX_DRIFT,
                     $tableSchema->name,
                     'index "' . $index->name . '" has ' . \count($entries)
                         . ' entries vs ' . \count($records) . ' records',
@@ -640,8 +641,8 @@ final class IntegrityValidator
             foreach ($entries as $entry) {
                 if ($entry['line'] < 0 || $entry['line'] > $maxLine) {
                     $issues[] = new IntegrityIssue(
-                        IssueSeverity::ERROR,
-                        IssueCategory::INDEX_DRIFT,
+                        IssueSeverityEnum::ERROR,
+                        IssueCategoryEnum::INDEX_DRIFT,
                         $tableSchema->name,
                         'index "' . $index->name
                             . '" has dangling line reference '
@@ -683,8 +684,8 @@ final class IntegrityValidator
                 }
             } catch (JsonProviderException $e) {
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::ERROR,
-                    IssueCategory::INDEX_DRIFT,
+                    IssueSeverityEnum::ERROR,
+                    IssueCategoryEnum::INDEX_DRIFT,
                     $tableSchema->name,
                     'index "' . $index->name . '" cannot be verified: '
                         . 'a record holds a non-indexable value ('
@@ -704,8 +705,8 @@ final class IntegrityValidator
 
                 if ($expectedKeys[$line] !== $entry['key']) {
                     $issues[] = new IntegrityIssue(
-                        IssueSeverity::ERROR,
-                        IssueCategory::INDEX_DRIFT,
+                        IssueSeverityEnum::ERROR,
+                        IssueCategoryEnum::INDEX_DRIFT,
                         $tableSchema->name,
                         'index "' . $index->name
                             . '" key mismatch for line ' . $line,
@@ -742,8 +743,8 @@ final class IntegrityValidator
         for ($line = 0; $line < $lineCount; $line++) {
             if ($covered[$line] !== 1) {
                 return new IntegrityIssue(
-                    IssueSeverity::ERROR,
-                    IssueCategory::INDEX_UNRELIABLE,
+                    IssueSeverityEnum::ERROR,
+                    IssueCategoryEnum::INDEX_UNRELIABLE,
                     $tableName,
                     \sprintf(
                         'index "%s": line %d covered by %d entries '
@@ -798,8 +799,8 @@ final class IntegrityValidator
             }
 
             $issues[] = new IntegrityIssue(
-                IssueSeverity::WARNING,
-                IssueCategory::ORPHAN_INDEX_FILE,
+                IssueSeverityEnum::WARNING,
+                IssueCategoryEnum::ORPHAN_INDEX_FILE,
                 $tableSchema->name,
                 'orphan file ' . $fileName . ' is not declared in the schema',
                 context: ['file' => $fileName],
@@ -818,8 +819,8 @@ final class IntegrityValidator
     {
         if (!$this->meta->hasEntry($tableSchema->name)) {
             return [new IntegrityIssue(
-                IssueSeverity::CRITICAL,
-                IssueCategory::META_ENTRY_MISSING,
+                IssueSeverityEnum::CRITICAL,
+                IssueCategoryEnum::META_ENTRY_MISSING,
                 $tableSchema->name,
                 'meta entry is missing',
             )];
@@ -832,8 +833,8 @@ final class IntegrityValidator
             $declaredCount = $this->meta->getLineCount($tableSchema->name);
         } catch (JsonProviderException $e) {
             return [new IntegrityIssue(
-                IssueSeverity::CRITICAL,
-                IssueCategory::META_ENTRY_CORRUPT,
+                IssueSeverityEnum::CRITICAL,
+                IssueCategoryEnum::META_ENTRY_CORRUPT,
                 $tableSchema->name,
                 'meta entry is corrupt: ' . $e->getMessage(),
             )];
@@ -841,8 +842,8 @@ final class IntegrityValidator
 
         if ($actualCount !== $declaredCount) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::META_LINE_COUNT_DRIFT,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::META_LINE_COUNT_DRIFT,
                 $tableSchema->name,
                 'meta.lineCount=' . $declaredCount
                     . ' but actual records=' . $actualCount,
@@ -863,8 +864,8 @@ final class IntegrityValidator
 
         if ($declaredLastId < $maxId) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::META_LAST_ID_DRIFT,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::META_LAST_ID_DRIFT,
                 $tableSchema->name,
                 'meta.lastInsertedId=' . $declaredLastId
                     . ' but max(id)=' . $maxId,
@@ -886,8 +887,8 @@ final class IntegrityValidator
 
         if ($pending !== null) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::RENAME_INCOMPLETE,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::RENAME_INCOMPLETE,
                 $pending['from'],
                 'renameTable "' . $pending['from'] . '" -> "'
                     . $pending['to'] . '" did not complete; repair '
@@ -902,8 +903,8 @@ final class IntegrityValidator
         foreach ($this->meta->getTableNames() as $metaTable) {
             if (!isset($tables[$metaTable])) {
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::WARNING,
-                    IssueCategory::META_ORPHAN_ENTRY,
+                    IssueSeverityEnum::WARNING,
+                    IssueCategoryEnum::META_ORPHAN_ENTRY,
                     $metaTable,
                     'meta has an entry for a table not declared in the schema',
                 );
@@ -913,7 +914,7 @@ final class IntegrityValidator
         $allowed = ['information_schema.json' => true, 'meta.json' => true];
 
         foreach (array_keys($tables) as $name) {
-            $allowed[$name] = true;
+            $allowed[IdentifierRules::physicalName($name)] = true;
         }
 
         foreach ($this->json->listRootEntries() as $entry) {
@@ -922,8 +923,8 @@ final class IntegrityValidator
             }
 
             $issues[] = new IntegrityIssue(
-                IssueSeverity::WARNING,
-                IssueCategory::ORPHAN_DB_ENTRY,
+                IssueSeverityEnum::WARNING,
+                IssueCategoryEnum::ORPHAN_DB_ENTRY,
                 null,
                 ($entry['isDir'] ? 'orphan directory ' : 'orphan file ')
                     . $entry['name'],
@@ -995,8 +996,8 @@ final class IntegrityValidator
             }
 
             $severity = $relation->onDelete === ForeignKeyActionEnum::NO_ACTION
-                ? IssueSeverity::INFO
-                : IssueSeverity::WARNING;
+                ? IssueSeverityEnum::INFO
+                : IssueSeverityEnum::WARNING;
 
             $childRows = $this->readForRelations($tables, $childTable, $memo);
 
@@ -1013,7 +1014,7 @@ final class IntegrityValidator
 
                 $issues[] = new IntegrityIssue(
                     $severity,
-                    IssueCategory::FK_ORPHAN,
+                    IssueCategoryEnum::FK_ORPHAN,
                     $childTable,
                     \sprintf(
                         'table "%s"."%s"=%s has no matching "%s"."%s"',
@@ -1055,8 +1056,8 @@ final class IntegrityValidator
         foreach ([$relation->childTable(), $relation->parentTable()] as $t) {
             if (!isset($tables[$t])) {
                 return new IntegrityIssue(
-                    IssueSeverity::WARNING,
-                    IssueCategory::FK_ORPHAN,
+                    IssueSeverityEnum::WARNING,
+                    IssueCategoryEnum::FK_ORPHAN,
                     null,
                     'relation ' . $address
                         . ' references a missing table "' . $t
@@ -1078,8 +1079,8 @@ final class IntegrityValidator
                 : $relation->parentTable() . '.' . $relation->parentColumn();
 
             return new IntegrityIssue(
-                IssueSeverity::WARNING,
-                IssueCategory::FK_ORPHAN,
+                IssueSeverityEnum::WARNING,
+                IssueCategoryEnum::FK_ORPHAN,
                 null,
                 'relation ' . $address
                     . ' references a missing column ' . $missing
@@ -1093,8 +1094,8 @@ final class IntegrityValidator
 
         if ($childBase !== $parentBase) {
             return new IntegrityIssue(
-                IssueSeverity::WARNING,
-                IssueCategory::FK_ORPHAN,
+                IssueSeverityEnum::WARNING,
+                IssueCategoryEnum::FK_ORPHAN,
                 $relation->childTable(),
                 'relation ' . $address . ' type mismatch: "'
                     . $childBase . '" vs "' . $parentBase

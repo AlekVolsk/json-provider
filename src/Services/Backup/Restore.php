@@ -55,6 +55,16 @@ use Psr\Log\LoggerInterface;
 final class Restore
 {
     private const string ARCHIVE_TABLES_DIR = 'tables/';
+    private const string SNAPSHOT_DIR_PREFIX = 'jp-snapshot-';
+    private const string SNAPSHOT_FILE = 'snapshot.tar.gz';
+
+    /**
+     * The snapshot of a restore in flight: set while the database may be
+     * half-applied, cleared once the snapshot is removed or deliberately
+     * kept. Still set at process end means a fatal error interrupted the
+     * restore — see reportAbandonedSnapshot().
+     */
+    private string | null $openSnapshot = null;
 
     public function __construct(
         private readonly Backup $backup,
@@ -66,10 +76,15 @@ final class Restore
         private readonly TableLockManager $locks,
         private readonly LoggerInterface | null $logger = null,
     ) {
+        register_shutdown_function(
+            fn () => $this->reportAbandonedSnapshot(),
+        );
     }
 
     /**
-     * Restores DB state from the archive.
+     * Restores DB state from the archive. The archive is read through a
+     * private one-off copy (see PharArchive), so replacing the file at the
+     * same path between two restores in one process is always seen.
      */
     public function restore(
         string $archivePath,
@@ -77,7 +92,24 @@ final class Restore
         bool $pruneExtraTables = false,
     ): void {
         $this->ensureArchiveReadable($archivePath);
+        $copy = PharArchive::privateCopy($archivePath);
 
+        try {
+            $this->restoreFromCopy(
+                $copy,
+                $adoptArchivedSchema,
+                $pruneExtraTables,
+            );
+        } finally {
+            PharArchive::discard($copy);
+        }
+    }
+
+    private function restoreFromCopy(
+        string $archivePath,
+        bool $adoptArchivedSchema,
+        bool $pruneExtraTables,
+    ): void {
         $manifest = $this->readManifest($archivePath);
         $this->verifyChecksums($archivePath, $manifest);
 
@@ -188,6 +220,8 @@ final class Restore
             try {
                 $this->rollbackFromSnapshot($snapshotPath);
             } catch (\Throwable $rollback) {
+                $this->openSnapshot = null;
+
                 throw new JsonProviderServiceException(
                     JsonProviderErrorEn::RestoreRollbackFailed,
                     $primary->getMessage(),
@@ -196,7 +230,7 @@ final class Restore
                 );
             }
 
-            @unlink($snapshotPath);
+            $this->removeSnapshot($snapshotPath);
 
             throw new JsonProviderServiceException(
                 JsonProviderErrorEn::RestoreRolledBack,
@@ -204,7 +238,7 @@ final class Restore
             );
         }
 
-        @unlink($snapshotPath);
+        $this->removeSnapshot($snapshotPath);
     }
 
     /**
@@ -329,9 +363,10 @@ final class Restore
         BackupManifest $manifest,
     ): void {
         foreach ($manifest->checksums as $member => $expected) {
-            $bytes = @file_get_contents(
-                'phar://' . $archivePath . '/' . $member,
-            );
+            $memberPath = 'phar://' . $archivePath . '/' . $member;
+            $bytes = file_exists($memberPath)
+                ? file_get_contents($memberPath)
+                : false;
 
             if ($bytes === false) {
                 throw new JsonProviderServiceException(
@@ -356,9 +391,10 @@ final class Restore
      */
     private function readArchivedSchemaRaw(string $archivePath): array
     {
-        $raw = @file_get_contents(
-            'phar://' . $archivePath . '/information_schema.json',
-        );
+        $schemaPath = 'phar://' . $archivePath . '/information_schema.json';
+        $raw = file_exists($schemaPath)
+            ? file_get_contents($schemaPath)
+            : false;
 
         if ($raw === false) {
             throw new JsonProviderServiceException(
@@ -405,14 +441,62 @@ final class Restore
     }
 
     /**
-     * Creates a temporary safety snapshot of the current DB state.
+     * Creates the safety snapshot of the current DB state in a private
+     * (0700) directory under the system temp directory.
      */
     private function makeSnapshot(): string
     {
-        $tmp = sys_get_temp_dir() . '/jp-snapshot-'
-            . bin2hex(random_bytes(8)) . '.tar.gz';
+        $dir = PharArchive::privateDir(self::SNAPSHOT_DIR_PREFIX);
 
-        return $this->backup->export($tmp);
+        try {
+            $this->openSnapshot = $this->backup->export(
+                $dir . '/' . self::SNAPSHOT_FILE,
+                validate: false,
+            );
+        } catch (\Throwable $e) {
+            if (is_dir($dir)) {
+                rmdir($dir);
+            }
+
+            throw $e;
+        }
+
+        return $this->openSnapshot;
+    }
+
+    private function removeSnapshot(string $snapshotPath): void
+    {
+        PharArchive::discard($snapshotPath);
+
+        if (is_dir(\dirname($snapshotPath))) {
+            rmdir(\dirname($snapshotPath));
+        }
+        $this->openSnapshot = null;
+    }
+
+    /**
+     * A fatal error (memory exhaustion, timeout) interrupted a restore: the
+     * database may hold a mix of archived and previous tables, and the
+     * snapshot is the only copy of the state before the restore. It is kept
+     * and its path is reported — to the logger, or to the PHP error log
+     * when none is attached, next to the fatal error itself.
+     */
+    private function reportAbandonedSnapshot(): void
+    {
+        if ($this->openSnapshot === null) {
+            return;
+        }
+
+        $message = 'restore interrupted by a fatal error; the database may '
+            . 'be partially restored; the state before the restore is kept '
+            . 'in ' . $this->openSnapshot . ' — restore it from there, then '
+            . 'delete its directory';
+
+        if ($this->logger !== null) {
+            $this->logger->critical($message);
+        } else {
+            error_log($message);
+        }
     }
 
     /**

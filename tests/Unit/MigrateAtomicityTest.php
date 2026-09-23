@@ -8,7 +8,7 @@ use AV\JsonProvider\Cache\InMemoryCache;
 use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -121,9 +121,9 @@ final class MigrateAtomicityTest
 
         $report = $this->db->validate();
         Assert::int(\count($report->issuesBySeverity(
-            IssueSeverity::WARNING,
+            IssueSeverityEnum::WARNING,
         )) + \count($report->issuesBySeverity(
-            IssueSeverity::ERROR,
+            IssueSeverityEnum::ERROR,
         )))->greaterThan(0);
 
         $this->db->repair();

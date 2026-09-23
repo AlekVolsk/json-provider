@@ -26,8 +26,8 @@ final class IntegrityIssue
      * @param array<string,string> $context
      */
     public function __construct(
-        public readonly IssueSeverity $severity,
-        public readonly IssueCategory $category,
+        public readonly IssueSeverityEnum $severity,
+        public readonly IssueCategoryEnum $category,
         public readonly string | null $tableName,
         public readonly string $message,
         public readonly array $context = [],

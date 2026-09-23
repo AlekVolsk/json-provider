@@ -8,6 +8,7 @@ use AV\JsonProvider\Exception\JsonProviderIoException;
 use AV\JsonProvider\Exception\JsonProviderLockException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Exception\Locale\LocaleInterface;
+use AV\JsonProvider\Schema\IdentifierRules;
 
 /**
  * Single owner of inter-process locks for one database directory.
@@ -92,7 +93,10 @@ final class TableLockManager
      * Runs $fn while holding the requested locks: optional database lock
      * ($dbMode 'sh'|'ex'|null) plus per-table locks ('name' => 'sh'|'ex').
      * Tables are acquired in ascending name order; everything acquired here
-     * is released when $fn returns or throws. The acquisition deadline is
+     * is released when $fn returns or throws. Tables are keyed by the
+     * on-disk name: two spellings of one table share a lock file, which
+     * opened twice in one process would self-deadlock on flock, so such
+     * entries merge and keep the stronger mode. The acquisition deadline is
      * shared by all locks of the frame.
      *
      * @template T
@@ -125,7 +129,11 @@ final class TableLockManager
             $name = (string)$name;
             self::assertName($name);
             self::assertMode($mode);
-            $normalized[$name] = $mode;
+            $key = IdentifierRules::physicalName($name);
+
+            if (($normalized[$key] ?? null) !== self::MODE_EX) {
+                $normalized[$key] = $mode;
+            }
         }
 
         $tables = $normalized;
@@ -330,7 +338,8 @@ final class TableLockManager
     {
         self::assertMode($mode);
 
-        $held = $this->heldTables[$tableName] ?? null;
+        $held = $this->heldTables[IdentifierRules::physicalName($tableName)]
+            ?? null;
 
         if ($held === null) {
             return false;
@@ -387,7 +396,7 @@ final class TableLockManager
 
     private static function tableLockFile(string $tableName): string
     {
-        return 'table.' . $tableName . '.lock';
+        return 'table.' . IdentifierRules::physicalName($tableName) . '.lock';
     }
 
     private static function serviceLockFile(string $fileName): string
@@ -533,7 +542,8 @@ final class TableLockManager
     /**
      * Whether the open handle still refers to the file currently at the
      * lock path (same device+inode). False when the file was unlinked or
-     * replaced since the handle was opened.
+     * replaced since the handle was opened — including an unlink by a
+     * concurrent drop right before this check.
      *
      * @param resource $handle
      */
@@ -547,7 +557,12 @@ final class TableLockManager
 
         $path = $this->lockPath($lockFile);
         clearstatcache(true, $path);
-        $pathStat = @stat($path);
+
+        if (!file_exists($path)) {
+            return false;
+        }
+
+        $pathStat = stat($path);
 
         if ($pathStat === false) {
             return false;
@@ -568,7 +583,7 @@ final class TableLockManager
 
         $dir = $this->locksDir();
 
-        if (!is_dir($dir) && !@mkdir($dir, 0755) && !is_dir($dir)) {
+        if (!is_dir($dir) && !mkdir($dir, 0755) && !is_dir($dir)) {
             throw new JsonProviderIoException(
                 JsonProviderErrorEn::FileNotWritable,
                 $dir,

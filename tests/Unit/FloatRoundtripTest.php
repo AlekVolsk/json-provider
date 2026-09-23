@@ -251,7 +251,7 @@ final class FloatRoundtripTest
         $this->appendRawLine(['id' => 90, 'name' => 'b', 'price' => 99]);
 
         $rows = $this->db->table(self::TABLE)
-            ->isDistinct('price')->selectAllByArray();
+            ->distinct('price')->selectAllByArray();
 
         Assert::count($rows, 1);
     }

@@ -10,6 +10,7 @@ use AV\JsonProvider\Exception\JsonProviderTableException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
+use AV\JsonProvider\Schema\IdentifierRules;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
@@ -420,7 +421,9 @@ final class SchemaRegistry
     /**
      * Registers a new table in the schema and persists information_schema.json.
      * The duplicate check runs against the fresh on-disk state: a lost race
-     * with a concurrent createTable surfaces as TABLE_ALREADY_EXISTS.
+     * with a concurrent createTable surfaces as TABLE_ALREADY_EXISTS. Names
+     * differing only in letter case are duplicates — they share one
+     * directory (IdentifierRules::physicalName).
      */
     public function registerTable(TableSchema $table): void
     {
@@ -429,11 +432,17 @@ final class SchemaRegistry
                 array $tables,
                 array $relations,
             ) use ($table): array {
-                if (isset($tables[$table->name])) {
-                    throw new JsonProviderTableException(
-                        JsonProviderErrorEn::TableAlreadyExists,
-                        $table->name,
-                    );
+                $physical = IdentifierRules::physicalName($table->name);
+
+                foreach (array_keys($tables) as $existing) {
+                    if (
+                        IdentifierRules::physicalName($existing) === $physical
+                    ) {
+                        throw new JsonProviderTableException(
+                            JsonProviderErrorEn::TableAlreadyExists,
+                            $table->name,
+                        );
+                    }
                 }
 
                 $tables[$table->name] = $table;
@@ -745,6 +754,22 @@ final class SchemaRegistry
                     $typedColumns,
                 ),
             );
+        }
+
+        $physical = [];
+
+        foreach (array_keys($tables) as $name) {
+            $key = IdentifierRules::physicalName($name);
+
+            if (isset($physical[$key])) {
+                throw new JsonProviderSchemaException(
+                    JsonProviderErrorEn::SchemaTableNamesClash,
+                    $physical[$key],
+                    $name,
+                );
+            }
+
+            $physical[$key] = $name;
         }
 
         return $tables;

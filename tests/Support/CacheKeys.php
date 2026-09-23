@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Support;
 
 use AV\JsonProvider\JsonDataProvider;
+use AV\JsonProvider\Schema\IdentifierRules;
+use AV\JsonProvider\Schema\TableSchema;
 
 /**
  * Rebuilds the provider's namespaced, version-tagged cache key from the
@@ -23,9 +25,10 @@ final class CacheKeys
         \assert(\is_array($meta) && \is_array($meta[$table]));
         $lineCount = $meta[$table]['lineCount'] ?? 0;
         \assert(\is_int($lineCount));
-        $dataFile = $dbDir . '/' . $table . '/' . $table . '.ndjson';
+        $dataFile = $dbDir . '/' . IdentifierRules::physicalName($table) . '/'
+            . TableSchema::dataFileName($table);
         clearstatcache(true, $dataFile);
-        $stat = @stat($dataFile);
+        $stat = file_exists($dataFile) ? stat($dataFile) : false;
         $fileState = $stat === false
             ? 'nofile'
             : $stat['size'] . '-' . $stat['ino'];

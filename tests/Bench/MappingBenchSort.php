@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Bench;
 
 use AV\JsonProvider\JsonTable;
-use AV\JsonProvider\Query\ComparisonMode;
+use AV\JsonProvider\Query\ComparisonModeEnum;
 use AV\JsonProvider\Tests\Support\Dto\MapRowFullDto;
 use AV\JsonProvider\Tests\Support\MappingFixture;
 use Testo\Assert\ExpectNoAssertions;
@@ -29,8 +29,8 @@ use Testo\Bench;
  *
  * The engine sorts with the same usort() (see JsonDataProvider::sortByOrdering)
  * but routes every comparison through ValueComparator::compare, a method call
- * that re-dispatches on null-ness, type and ComparisonMode per pair, where the
- * PHP side inlines one strcmp. That overhead is real and shows up once the
+ * that re-dispatches on null-ness, type and ComparisonModeEnum per pair, where
+ * the PHP side inlines one strcmp. That overhead is real and shows up once the
  * result is already narrow: over a 10k-row selection php:sort-result comes out
  * ~12% ahead of the DTO path.
  *
@@ -50,8 +50,8 @@ use Testo\Bench;
  * Ordering targets are chosen to expose the index too: `title` is indexed, so
  * an unfiltered ORDER BY over it can be served from the index, while `sku` has
  * no index and always falls back to a scan-and-sort. sortLocale repeats the
- * indexed case under ComparisonMode::Locale, where the byte-ordered index no
- * longer agrees with the collator — the PHP side then pays for a Collator of
+ * indexed case under ComparisonModeEnum::Locale, where the byte-ordered index
+ * no longer agrees with the collator — the PHP side then pays for a Collator of
  * its own, so the comparison stays honest.
  */
 final class MappingBenchSort
@@ -260,7 +260,7 @@ final class MappingBenchSort
     public static function sortLocale(): int
     {
         return \count(iterator_to_array(
-            self::dtoRows(ComparisonMode::Locale)
+            self::dtoRows(ComparisonModeEnum::Locale)
                 ->orderBy('title', 'asc')
                 ->limit(1000)
                 ->selectAll(),
@@ -270,7 +270,7 @@ final class MappingBenchSort
     public static function localeArray(): int
     {
         return \count(
-            self::arrayRows(ComparisonMode::Locale)
+            self::arrayRows(ComparisonModeEnum::Locale)
                 ->orderBy('title', 'asc')
                 ->limit(1000)
                 ->selectAllByArray(),
@@ -279,7 +279,7 @@ final class MappingBenchSort
 
     public static function localeSortResult(): int
     {
-        $rows = self::arrayRows(ComparisonMode::Locale)->selectAllByArray();
+        $rows = self::arrayRows(ComparisonModeEnum::Locale)->selectAllByArray();
         self::sortByTitleCollated($rows);
 
         return \count(\array_slice($rows, 0, 1000));
@@ -361,7 +361,7 @@ final class MappingBenchSort
      * The rows table with MapRowFullDto bound and the comparison mode set.
      */
     private static function dtoRows(
-        ComparisonMode $mode = ComparisonMode::Binary,
+        ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
     ): JsonTable {
         return MappingFixture::bind(MapRowFullDto::class)
             ->setComparisonMode($mode)
@@ -369,7 +369,7 @@ final class MappingBenchSort
     }
 
     private static function arrayRows(
-        ComparisonMode $mode = ComparisonMode::Binary,
+        ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
     ): JsonTable {
         return MappingFixture::db()
             ->setComparisonMode($mode)

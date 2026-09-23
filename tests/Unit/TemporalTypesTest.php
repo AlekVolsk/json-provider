@@ -286,6 +286,59 @@ final class TemporalTypesTest
         $db->table(self::TABLE)->deleteById($id);
     }
 
+    #[Test]
+    public function instantOutsideYearsZeroToNineThousandInUtcIsRejected(): void
+    {
+        $db = self::db();
+
+        foreach (
+            [
+                '9999-12-31 23:00:00-05:00',
+                '9999-12-31T20:00:00-05:00',
+                '0000-01-01 01:00:00+03:00',
+            ] as $value
+        ) {
+            try {
+                self::insertEvent($db, ['happens_at' => $value]);
+                Assert::fail('must be rejected: ' . $value);
+            } catch (JsonProviderException $e) {
+                Assert::same($e->getErrorKey(), 'InvalidTemporalValue', $value);
+            }
+        }
+
+        $id = self::insertEvent(
+            $db,
+            ['happens_at' => '9999-12-31 18:00:00-05:00'],
+        );
+        Assert::same(self::rawField($id, 'happens_at'), '9999-12-31 23:00:00');
+        $db->table(self::TABLE)->deleteById($id);
+    }
+
+    #[Test]
+    public function temporalValueWithTrailingNewlineIsRejected(): void
+    {
+        $db = self::db();
+
+        foreach (
+            [
+                'at_time'    => "10:00:00\n",
+                'happens_at' => "2026-01-01 00:00:00\n",
+                'on_date'    => "2026-01-01\n",
+            ] as $column => $value
+        ) {
+            try {
+                self::insertEvent($db, [$column => $value]);
+                Assert::fail('must be rejected: ' . $column);
+            } catch (JsonProviderException $e) {
+                Assert::same(
+                    $e->getErrorKey(),
+                    'InvalidTemporalValue',
+                    $column,
+                );
+            }
+        }
+    }
+
     /**
      * A complete, all-valid event with the given overrides applied on top.
      *

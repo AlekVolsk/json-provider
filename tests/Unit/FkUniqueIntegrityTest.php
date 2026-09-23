@@ -10,8 +10,8 @@ use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -87,10 +87,10 @@ final class FkUniqueIntegrityTest
         $this->db->insert('pets', ['owner_id' => 999, 'nick' => 'lost']);
 
         $report = $this->db->validate();
-        $found = $report->issuesByCategory(IssueCategory::FK_ORPHAN);
+        $found = $report->issuesByCategory(IssueCategoryEnum::FK_ORPHAN);
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::INFO);
+        Assert::same($found[0]->severity, IssueSeverityEnum::INFO);
         Assert::same($found[0]->tableName, 'pets');
         Assert::string($found[0]->message)->contains('999');
         Assert::string($found[0]->message)->contains('owners');
@@ -113,7 +113,7 @@ final class FkUniqueIntegrityTest
         $report = $this->db->validateTable('pets');
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::FK_ORPHAN),
+            $report->issuesByCategory(IssueCategoryEnum::FK_ORPHAN),
             0,
             'the cross-table orphan pass belongs to the database-level '
                 . 'validate: ' . $report->format(),
@@ -146,10 +146,10 @@ final class FkUniqueIntegrityTest
         );
 
         $report = $this->db->validate();
-        $found = $report->issuesByCategory(IssueCategory::FK_ORPHAN);
+        $found = $report->issuesByCategory(IssueCategoryEnum::FK_ORPHAN);
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::WARNING);
+        Assert::same($found[0]->severity, IssueSeverityEnum::WARNING);
         Assert::string($found[0]->message)->contains('type mismatch');
     }
 
@@ -176,7 +176,7 @@ final class FkUniqueIntegrityTest
         );
 
         $report = $this->db->validate();
-        $found = $report->issuesByCategory(IssueCategory::FK_ORPHAN);
+        $found = $report->issuesByCategory(IssueCategoryEnum::FK_ORPHAN);
 
         Assert::count($found, 1, $report->format());
         Assert::string($found[0]->message)->contains('missing table');
@@ -194,10 +194,10 @@ final class FkUniqueIntegrityTest
         file_put_contents($path, str_replace('BBB', 'AAA', $raw));
 
         $report = $this->db->validate();
-        $found = $report->issuesByCategory(IssueCategory::UNIQUE_DUPLICATE);
+        $found = $report->issuesByCategory(IssueCategoryEnum::UNIQUE_DUPLICATE);
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::WARNING);
+        Assert::same($found[0]->severity, IssueSeverityEnum::WARNING);
         Assert::string($found[0]->message)->contains('u_code');
         Assert::same($found[0]->context['lines'] ?? '', '0,1');
     }
@@ -215,7 +215,7 @@ final class FkUniqueIntegrityTest
         $report = $this->db->validateTable('codes');
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::UNIQUE_DUPLICATE),
+            $report->issuesByCategory(IssueCategoryEnum::UNIQUE_DUPLICATE),
             1,
             $report->format(),
         );
@@ -230,7 +230,7 @@ final class FkUniqueIntegrityTest
         $report = $this->db->validate();
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::UNIQUE_DUPLICATE),
+            $report->issuesByCategory(IssueCategoryEnum::UNIQUE_DUPLICATE),
             0,
             $report->format(),
         );
@@ -259,9 +259,12 @@ final class FkUniqueIntegrityTest
 
         $report = $this->db->repair();
 
-        foreach (
-            [IssueCategory::FK_ORPHAN, IssueCategory::UNIQUE_DUPLICATE] as $cat
-        ) {
+        $categories = [
+            IssueCategoryEnum::FK_ORPHAN,
+            IssueCategoryEnum::UNIQUE_DUPLICATE,
+        ];
+
+        foreach ($categories as $cat) {
             $found = $report->issuesByCategory($cat);
             Assert::count($found, 1, $cat->value . ': ' . $report->format());
             Assert::false($found[0]->repaired);

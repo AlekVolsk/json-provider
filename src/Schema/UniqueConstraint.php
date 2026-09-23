@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Schema;
 
+use AV\JsonProvider\Exception\JsonProviderSchemaException;
+use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
+
 /**
  * Unique constraint on one or more fields.
  * Checked automatically on insert/update.
@@ -19,6 +22,12 @@ final class UniqueConstraint
         public readonly string $name,
         public readonly array $fields,
     ) {
+        if ($fields === []) {
+            throw new JsonProviderSchemaException(
+                JsonProviderErrorEn::UniqueConstraintFieldsEmpty,
+                $name,
+            );
+        }
     }
 
     /**

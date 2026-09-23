@@ -248,7 +248,7 @@ final class JsonStorage
         $this->ensureFileExists($path);
 
         clearstatcache(true, $path);
-        $stat = @stat($path);
+        $stat = stat($path);
 
         if ($stat === false) {
             throw new JsonProviderIoException(

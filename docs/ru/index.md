@@ -33,3 +33,4 @@ JsonProvider — это самодостаточный PHP-провайдер д
 19. [Структура модуля](19-module-structure.md)
 20. [Требования и зависимости](20-requirements-dependencies.md)
 21. [Отображение в DTO — типизированные объекты](21-dto-mapping.md)
+22. [Прямые методы провайдера — select / count / readAll / insert / update / delete](22-direct-provider-api.md)

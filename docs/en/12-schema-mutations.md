@@ -88,8 +88,8 @@ $db->addIndex('users', new IndexSchema(
 $db->dropIndex('users', 'idx_users_email');
 ```
 
-- a taken name → `IndexAlreadyExists`; a field outside the columns → `JsonProviderSchemaException`; the PK index cannot be added or dropped → `JsonProviderSchemaException`; an unknown name on dropIndex → `IndexNotFound`; service `_fk_` indexes cannot be created or dropped through this API → `ReservedIndexName`;
-- `addIndex`: the file is provisioned and built first, the schema published last — a crash in between leaves an undeclared file that `validate()` reports as orphan and `repair()` removes. On a legacy-format table every index is rebuilt with the current codec and `indexFormat=2` is stamped;
+- a taken name → `IndexAlreadyExists`; a field outside the columns → `IndexUnknownColumn`; the PK index cannot be added or dropped → `JsonProviderSchemaException`; an unknown name on dropIndex → `IndexNotFound`; service `_fk_` indexes cannot be created or dropped through this API → `ReservedIndexName`;
+- `addIndex`: the file is provisioned and built first, the schema published last — a crash in between leaves an undeclared file that `validate()` reports as orphan and `repair()` removes. On a table below the current format every index is rebuilt with the current codec and `indexFormat=2` is stamped;
 - `dropIndex`: schema first, then the file — a crash in between leaves an orphan file with the same fate. When the user index being dropped serves as the backing of an FK relation, a service replacement `_fk_<column>` is built in the same schema change and the relation is re-pointed (see [indexes](06-indexes.md)).
 
 ## addUniqueConstraint / dropUniqueConstraint — unique constraints
@@ -101,7 +101,7 @@ $db->addUniqueConstraint('users', new UniqueConstraint('uq_users_email', ['email
 $db->dropUniqueConstraint('users', 'uq_users_email');
 ```
 
-A taken name → `UniqueConstraintAlreadyExists`; a field outside the columns → `JsonProviderSchemaException`; an unknown name on drop → `UniqueConstraintNotFound`. A single-column constraint grounding the uniqueness of a declared relation's referenced column cannot be dropped while the relation lives (and no other single-column unique on the same column remains) → `RelationReferencesNotUnique`: with duplicates allowed in the parent column, a cascade would delete the children of a still-living duplicate parent. `dropRelation` first.
+A taken name → `UniqueConstraintAlreadyExists`; a field outside the columns → `UniqueConstraintUnknownColumn`; an unknown name on drop → `UniqueConstraintNotFound`. A single-column constraint grounding the uniqueness of a declared relation's referenced column cannot be dropped while the relation lives (and no other single-column unique on the same column remains) → `RelationReferencesNotUnique`: with duplicates allowed in the parent column, a cascade would delete the children of a still-living duplicate parent. `dropRelation` first.
 
 ## addRelation / dropRelation — relations
 

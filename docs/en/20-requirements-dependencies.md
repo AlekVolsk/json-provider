@@ -18,7 +18,7 @@ Composer lists them under `suggest` — none of them is required:
 - `ext-apcu` — the `ApcuCache` adapter;
 - `ext-memcached` — the `MemcachedCache` adapter;
 - `ext-redis` — the `RedisCache` adapter;
-- `ext-intl` — the `ComparisonMode::Locale` string ordering (collator); without the extension the mode silently behaves as `Binary`, see [Query builder](08-query-builder.md).
+- `ext-intl` — the `ComparisonModeEnum::Locale` string ordering (collator); without the extension the mode silently behaves as `Binary`, see [Query builder](08-query-builder.md).
 
 The cache layer is pluggable: the bundled `NullCache` and `InMemoryCache` (and your own adapter) need nothing extra. A missing extension surfaces differently per adapter: `ApcuCache` checks for it explicitly and raises `ExtensionRequired`, while `RedisCache`/`MemcachedCache` take a `\Redis`/`\Memcached` client in their constructor and fail with a `TypeError` before it even runs — see [Caching](16-caching.md).
 

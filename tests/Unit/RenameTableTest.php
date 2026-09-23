@@ -10,7 +10,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -140,13 +140,13 @@ final class RenameTableTest
 
         $report = $this->db->validate();
         Assert::count(
-            $report->issuesByCategory(IssueCategory::RENAME_INCOMPLETE),
+            $report->issuesByCategory(IssueCategoryEnum::RENAME_INCOMPLETE),
             2,
         );
 
         $repairReport = $this->db->repair();
         $reconciled = $repairReport->issuesByCategory(
-            IssueCategory::RENAME_INCOMPLETE,
+            IssueCategoryEnum::RENAME_INCOMPLETE,
         );
         Assert::count($reconciled, 1);
         Assert::true($reconciled[0]->repaired);
@@ -165,7 +165,7 @@ final class RenameTableTest
 
         $repairReport = $this->db->repair();
         $reconciled = $repairReport->issuesByCategory(
-            IssueCategory::RENAME_INCOMPLETE,
+            IssueCategoryEnum::RENAME_INCOMPLETE,
         );
         Assert::count($reconciled, 1);
         Assert::true($reconciled[0]->repaired);
@@ -229,14 +229,14 @@ final class RenameTableTest
         $report = $this->db->repairTable('dst');
 
         $renameIssues = $report->issuesByCategory(
-            IssueCategory::RENAME_INCOMPLETE,
+            IssueCategoryEnum::RENAME_INCOMPLETE,
         );
         Assert::count($renameIssues, 1);
         Assert::false($renameIssues[0]->repaired);
         Assert::notNull($renameIssues[0]->repairError);
 
         $fileMissing = $report->issuesByCategory(
-            IssueCategory::TABLE_FILE_MISSING,
+            IssueCategoryEnum::TABLE_FILE_MISSING,
         );
 
         foreach ($fileMissing as $issue) {
@@ -279,7 +279,7 @@ final class RenameTableTest
 
         $report = $this->db->validate();
         $orphans = $report->issuesByCategory(
-            IssueCategory::META_ORPHAN_ENTRY,
+            IssueCategoryEnum::META_ORPHAN_ENTRY,
         );
 
         foreach ($orphans as $issue) {

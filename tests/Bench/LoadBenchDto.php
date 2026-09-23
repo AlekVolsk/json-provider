@@ -271,7 +271,7 @@ final class LoadBenchDto
         return \count(iterator_to_array(
             self::db()
                 ->table(LoadFixture::tableName(0))
-                ->isDistinct('val')
+                ->distinct('val')
                 ->selectAll(),
         ));
     }
@@ -281,7 +281,7 @@ final class LoadBenchDto
         return \count(
             self::db()
                 ->table(LoadFixture::tableName(0))
-                ->isDistinct('val')
+                ->distinct('val')
                 ->selectAllByArray(),
         );
     }

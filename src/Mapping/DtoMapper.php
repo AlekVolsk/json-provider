@@ -7,7 +7,7 @@ namespace AV\JsonProvider\Mapping;
 use AV\JsonProvider\Exception\JsonProviderMappingException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Validation\TemporalCodec;
-use AV\JsonProvider\Validation\TemporalKind;
+use AV\JsonProvider\Validation\TemporalKindEnum;
 use AV\JsonProvider\Validation\TemporalParseException;
 
 /**
@@ -50,16 +50,27 @@ final class DtoMapper
     }
 
     /**
-     * Flattens a DTO into a local-form row for the write pipeline.
+     * Flattens a DTO into a local-form row for the write pipeline. A mapped
+     * property the object does not carry is handled per $missing.
      *
      * @return array<string,null|scalar>
      */
-    public function extract(DtoMap $map, object $dto): array
-    {
+    public function extract(
+        DtoMap $map,
+        object $dto,
+        MissingPropertyModeEnum $missing = MissingPropertyModeEnum::WriteNull,
+    ): array {
         $values = ($map->reader)($dto);
         $row = [];
 
         foreach ($map->fields as $field) {
+            if (
+                $missing === MissingPropertyModeEnum::KeepStored
+                && !\array_key_exists($field->property, $values)
+            ) {
+                continue;
+            }
+
             $row[$field->column] = $this->extractValue(
                 $map,
                 $field,
@@ -115,7 +126,7 @@ final class DtoMapper
     private function hydrateTemporal(
         DtoMap $map,
         string $column,
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         bool | float | int | string $raw,
     ): \DateTimeImmutable {
         if (!\is_string($raw)) {

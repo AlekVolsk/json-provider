@@ -13,7 +13,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\Dto\TimeDto;
 use AV\JsonProvider\Tests\Support\TempDir;
 use AV\JsonProvider\Validation\TemporalCodec;
-use AV\JsonProvider\Validation\TemporalKind;
+use AV\JsonProvider\Validation\TemporalKindEnum;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -103,10 +103,10 @@ final class TemporalPolicyTest
         $codec = new TemporalCodec();
 
         date_default_timezone_set('Europe/Berlin');
-        $summer = $codec->encode(TemporalKind::Time, '12:00:00');
+        $summer = $codec->encode(TemporalKindEnum::Time, '12:00:00');
 
         date_default_timezone_set('Pacific/Kiritimati');
-        $farEast = $codec->encode(TemporalKind::Time, '12:00:00');
+        $farEast = $codec->encode(TemporalKindEnum::Time, '12:00:00');
 
         date_default_timezone_set(self::TZ);
 
@@ -260,8 +260,8 @@ final class TemporalPolicyTest
         // transition day; a "today in the local zone" anchor rolls it forward
         // to 03:30:00. A fixed 1970-01-01 UTC anchor keeps it verbatim, so the
         // DTO read path no longer drifts under DST regardless of the date.
-        foreach ([TemporalKind::Time, TemporalKind::TimeZ] as $kind) {
-            $value = $kind === TemporalKind::TimeZ
+        foreach ([TemporalKindEnum::Time, TemporalKindEnum::TimeZ] as $kind) {
+            $value = $kind === TemporalKindEnum::TimeZ
                 ? '02:30:00.000'
                 : '02:30:00';
             $dt = $codec->localStringToDateTime($kind, $value);

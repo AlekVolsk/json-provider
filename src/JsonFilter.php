@@ -27,8 +27,8 @@ use AV\JsonProvider\Query\FilterOperatorEnum;
  *       ->limit(10)
  *       ->selectAllByArray();
  *
- * All conditions are AND-combined (OR-grouping is intentionally not supported
- * — it would change the semantics; tracked as a TODO at the domain layer).
+ * All conditions are AND-combined; OR-grouping is intentionally not
+ * supported.
  */
 final class JsonFilter
 {

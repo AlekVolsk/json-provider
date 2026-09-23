@@ -33,7 +33,7 @@ use AV\JsonProvider\Tests\Support\Dto\MapCategoryDto;
  *   - `status`   = one of three values → ~33% each
  *   - `note`     = unindexed, mirrors `bucket`'s selectivity for the
  *                  indexed-vs-unindexed comparison
- *   - `title`    = mixed-case Latin and Cyrillic, so ComparisonMode::Locale
+ *   - `title`    = mixed-case Latin and Cyrillic, so ComparisonModeEnum::Locale
  *                  orders it differently from the byte-ordered index
  *
  * Indexes: `bucket`, `category_id`, `title`. `note` and `decile` are left
@@ -74,7 +74,7 @@ final class MappingFixture
 
     /**
      * Title prefixes: mixed case plus Cyrillic, so byte order and collator
-     * order disagree and ComparisonMode::Locale has something to do.
+     * order disagree and ComparisonModeEnum::Locale has something to do.
      */
     private const array TITLES = [
         'apple', 'Apple', 'banana', 'Banana', 'cherry', 'Cherry',

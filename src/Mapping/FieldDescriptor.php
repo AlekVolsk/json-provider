@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Mapping;
 
-use AV\JsonProvider\Validation\TemporalKind;
+use AV\JsonProvider\Validation\TemporalKindEnum;
 
 /**
  * Compiled mapping for a single DTO field, produced once at registration.
@@ -26,7 +26,7 @@ final class FieldDescriptor
         public readonly string $property,
         public readonly string $column,
         public readonly bool $nullable,
-        public readonly TemporalKind | null $temporalKind = null,
+        public readonly TemporalKindEnum | null $temporalKind = null,
         public readonly string | null $enumClass = null,
         public readonly bool $floatColumn = false,
     ) {

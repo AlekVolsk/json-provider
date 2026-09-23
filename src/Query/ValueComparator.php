@@ -25,7 +25,7 @@ final class ValueComparator
     public static function compare(
         bool | float | int | string | null $a,
         bool | float | int | string | null $b,
-        ComparisonMode $mode = ComparisonMode::Binary,
+        ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
     ): int {
         if ($a === $b) {
             return 0;
@@ -40,7 +40,7 @@ final class ValueComparator
         }
 
         if (\is_string($a) && \is_string($b)) {
-            if ($mode === ComparisonMode::Locale) {
+            if ($mode === ComparisonModeEnum::Locale) {
                 $result = self::localeCompare($a, $b);
 
                 if ($result !== null) {

@@ -13,7 +13,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -73,7 +73,7 @@ final class FkBackingIndexTest
         Assert::count($index->fields, 1);
         Assert::same($index->fields[0]->field, 'userId');
         Assert::true(
-            is_file($this->dbDir . '/posts/_fk_userId.index.ndjson'),
+            is_file($this->dbDir . '/posts/_fk_userid.index.ndjson'),
             'the service index must exist physically',
         );
     }
@@ -125,14 +125,14 @@ final class FkBackingIndexTest
     {
         $this->db->addRelation($this->cascadeRelation());
         Assert::true(
-            is_file($this->dbDir . '/posts/_fk_userId.index.ndjson'),
+            is_file($this->dbDir . '/posts/_fk_userid.index.ndjson'),
         );
 
         $this->db->dropRelation('posts', 'userId', 'users');
 
         Assert::same($this->indexByName('posts', '_fk_userId'), null);
         Assert::false(
-            is_file($this->dbDir . '/posts/_fk_userId.index.ndjson'),
+            is_file($this->dbDir . '/posts/_fk_userid.index.ndjson'),
             'the unused service index file must be removed',
         );
 
@@ -147,7 +147,7 @@ final class FkBackingIndexTest
 
         Assert::true($this->indexByName('posts', 'byUser') !== null);
         Assert::true(
-            is_file($this->dbDir . '/posts/byUser.index.ndjson'),
+            is_file($this->dbDir . '/posts/byuser.index.ndjson'),
         );
     }
 
@@ -304,7 +304,7 @@ final class FkBackingIndexTest
         $found = array_filter(
             $report->issues,
             static fn ($i): bool => $i
-                ->category === IssueCategory::FK_BACKING_INDEX_MISSING,
+                ->category === IssueCategoryEnum::FK_BACKING_INDEX_MISSING,
         );
         Assert::count($found, 1);
 
@@ -337,7 +337,7 @@ final class FkBackingIndexTest
         $this->db->insert('posts', ['userId' => $userId]);
 
         file_put_contents(
-            $this->dbDir . '/posts/_fk_userId.index.ndjson',
+            $this->dbDir . '/posts/_fk_userid.index.ndjson',
             '{"key":"broken","line":0}' . "\n",
         );
 
@@ -396,7 +396,7 @@ final class FkBackingIndexTest
             '_fk_ownerId',
         );
         Assert::false(
-            is_file($this->dbDir . '/posts/_fk_userId.index.ndjson'),
+            is_file($this->dbDir . '/posts/_fk_userid.index.ndjson'),
             'the old service file must not linger',
         );
 
@@ -421,7 +421,7 @@ final class FkBackingIndexTest
             'the backing of the removed relations must go with them',
         );
         Assert::false(
-            is_file($this->dbDir . '/posts/_fk_userId.index.ndjson'),
+            is_file($this->dbDir . '/posts/_fk_userid.index.ndjson'),
         );
     }
 
@@ -440,7 +440,7 @@ final class FkBackingIndexTest
         $found = array_filter(
             $report->issues,
             static fn ($i): bool => $i
-                ->category === IssueCategory::FK_BACKING_INDEX_ORPHANED,
+                ->category === IssueCategoryEnum::FK_BACKING_INDEX_ORPHANED,
         );
         Assert::count($found, 1);
 
@@ -448,7 +448,7 @@ final class FkBackingIndexTest
 
         Assert::same($this->indexByName('posts', '_fk_userId'), null);
         Assert::false(
-            is_file($this->dbDir . '/posts/_fk_userId.index.ndjson'),
+            is_file($this->dbDir . '/posts/_fk_userid.index.ndjson'),
         );
     }
 

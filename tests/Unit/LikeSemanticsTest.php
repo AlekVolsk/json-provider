@@ -170,6 +170,25 @@ final class LikeSemanticsTest
     }
 
     #[Test]
+    public function patternDoesNotMatchValueWithTrailingNewline(): void
+    {
+        $this->db->insert(self::TABLE, ['t' => "exact\n"]);
+        $this->db->insert(self::TABLE, ['t' => 'exact']);
+
+        $found = $this->db->table(self::TABLE)
+            ->where('t', 'LIKE', 'exact')
+            ->selectColumn('t');
+
+        Assert::same($found, ['exact']);
+        Assert::same(
+            $this->db->table(self::TABLE)
+                ->where('t', 'LIKE', 'exact%')
+                ->count(),
+            2,
+        );
+    }
+
+    #[Test]
     public function consecutivePercentsCollapse(): void
     {
         $rows = $this->db->table(self::TABLE)

@@ -8,7 +8,7 @@ namespace AV\JsonProvider\Services\Integrity;
  * The output of IntegrityValidator / IntegrityRepairer.
  *
  * Contains a typed list of issues plus aggregate counters. Issues are
- * ordered critical-first by IssueSeverity::rank() (emission order is kept
+ * ordered critical-first by IssueSeverityEnum::rank() (emission order is kept
  * within one severity). The format() method produces a human-readable
  * plain-text report (English, technical, fixed-width).
  */
@@ -42,7 +42,7 @@ final class IntegrityReport
     {
         foreach ($this->issues as $issue) {
             if (
-                $issue->severity->rank() <= IssueSeverity::ERROR->rank()
+                $issue->severity->rank() <= IssueSeverityEnum::ERROR->rank()
             ) {
                 return true;
             }
@@ -54,7 +54,7 @@ final class IntegrityReport
     public function hasWarnings(): bool
     {
         foreach ($this->issues as $issue) {
-            if ($issue->severity === IssueSeverity::WARNING) {
+            if ($issue->severity === IssueSeverityEnum::WARNING) {
                 return true;
             }
         }
@@ -67,7 +67,7 @@ final class IntegrityReport
      *
      * @return array<int,IntegrityIssue>
      */
-    public function issuesBySeverity(IssueSeverity $severity): array
+    public function issuesBySeverity(IssueSeverityEnum $severity): array
     {
         return array_values(array_filter(
             $this->issues,
@@ -80,7 +80,7 @@ final class IntegrityReport
      *
      * @return array<int,IntegrityIssue>
      */
-    public function issuesByCategory(IssueCategory $category): array
+    public function issuesByCategory(IssueCategoryEnum $category): array
     {
         return array_values(array_filter(
             $this->issues,

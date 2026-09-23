@@ -41,9 +41,13 @@ $db->createTable(TableSchema::create(
 - `TableSchema::create(...)` — **factory with normalization**. Adds the PK column and PK index for you, accepts "human" descriptions. This is what application code normally uses.
 - `new TableSchema(...)` — **strict constructor**. Validates the contract but does not normalize. Used by the provider when reading existing schema files; you only need this in tests where you want to verify validation behaviour.
 
+Both paths check indexes and unique constraints before the schema reaches the disk: an empty field list is rejected by the `IndexSchema` and `UniqueConstraint` constructors themselves (`IndexFieldsEmpty` / `UniqueConstraintFieldsEmpty`), a repeated name within the table raises `IndexAlreadyExists` / `UniqueConstraintAlreadyExists`, and a field that is not among the columns raises `IndexUnknownColumn` / `UniqueConstraintUnknownColumn`.
+
 ## Table, column and index names
 
 A name is a whitelisted identifier: it starts with a letter, digit or underscore, continues with letters, digits, underscores or hyphens, is at most 64 characters long, and contains no dots or path separators. The rules live in `Schema\IdentifierRules` and are enforced at the schema boundary (the `TableSchema`/`IndexSchema` constructors), so they cover both the DDL API and loading `information_schema.json`. A violation raises `InvalidTableName` / `InvalidColumnName` / `InvalidIndexName`.
+
+Table names, and index names within a table, are unique **case-insensitively**: on disk they are lower case (see [storage layout](02-storage-layout.md)), so `Users` next to an existing `users` → `TableAlreadyExists`, index `IX` next to `ix` → `IndexAlreadyExists`, and a rename that only changes letter case is rejected as a taken name. A schema already holding such tables does not load → `SchemaTableNamesClash`. Column names are JSON keys, not files, and stay case-sensitive.
 
 Reserved: the `_fk_` prefix for index names (engine-managed FK backing indexes) → `ReservedIndexName`; the table name `_pendingRename` (the `renameTable` crash-marker key in `meta.json`) → `InvalidTableName`.
 
@@ -123,16 +127,16 @@ Condition values are checked by the same contract as writes — the first violat
 | `IN` | array whose elements follow the `=` rule; an empty array is valid and matches nothing; a non-array → `JsonProviderQueryException` |
 | `LIKE` | a string pattern; string and `date`/`time`/`timez` columns (matched against the stored=local form); `datetime`/`datetimez` → `LikeOnInstantUnsupported` |
 
-The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `JsonProviderQueryException`. `NAN`/`INF` against a `float` column → `NonFiniteFloat` (the same guard as on write). `datetime`/`datetimez` conditions are encoded to the stored UTC form; `date`/`time`/`timez` conditions match the stored (verbatim=local) form. A column missing from the schema in `where`/`orderBy`/`isDistinct`/`selectColumn` → `QueryUnknownColumn`.
+The single coercion is an `int` condition on a `float` column (`99 → 99.0`); numeric **strings** (`'5'` for `int`, `'9.5'` for `float`) are rejected, as are cross-type values (`1` for `bool` etc.) — `JsonProviderQueryException`. `NAN`/`INF` against a `float` column → `NonFiniteFloat` (the same guard as on write). `datetime`/`datetimez` conditions are encoded to the stored UTC form; `date`/`time`/`timez` conditions match the stored (verbatim=local) form. A column missing from the schema in `where`/`orderBy`/`distinct`/`selectColumn` → `QueryUnknownColumn`.
 
 ## Float format on disk
 
 JSON has a single number type, so a float without a fractional part could collapse into an int on re-read. The provider closes this from both sides:
 
 - **write** — a float is always stored with its fraction (`99.0` → `"price":99.0`, the `JSON_PRESERVE_ZERO_FRACTION` flag), so re-reading yields a PHP `float`;
-- **read** — int values in `float` columns are widened to `float` on every read path (full scan, indexed selects, `count`, cache fill, DTO hydration). Legacy rows written by older versions (`"price":99`) and external file edits are therefore indistinguishable from fresh writes: strict `=`/`IN` comparisons against `99.0` find them.
+- **read** — int values in `float` columns are widened to `float` on every read path (full scan, indexed selects, `count`, cache fill, DTO hydration). Integer values in the file (`"price":99`, e.g. after an external edit) are therefore indistinguishable from fresh writes: strict `=`/`IN` comparisons against `99.0` find them.
 
-No migration of existing databases is required; to rewrite files into the new format, run `optimizeTable()` once per table. Zero-sign nuance: a freshly written `-0.0` keeps its sign, while a legacy `-0` reads back as `int 0` and widens to an unsigned `0.0` — the sign of old rows is not restored.
+To rewrite such rows with a fractional part, run `optimizeTable()` once per table. Zero-sign nuance: a freshly written `-0.0` keeps its sign, while an integer `-0` in the file reads back as `int 0` and widens to an unsigned `0.0`.
 
 ## Unique constraint semantics
 
@@ -157,12 +161,16 @@ Temporal columns exist so that a moment written by a process in one timezone rea
 | `datetimez` | `Y-m-d H:i:s.v` (UTC) | yes | full instant with milliseconds |
 | `year` / `month` / `day` | integer | no | range-validated parts |
 
-**Sub-second precision.** The second-resolution kinds (`time`, `datetime`) reject any fraction; the millisecond kinds (`timez`, `datetimez`) accept 1–3 digits and reject more — never silently truncating (`TemporalFractionUnsupported`). For `datetime`/`datetimez` a TZ offset beyond ±14:00 (`+25:00`, `+00:99`) raises `InvalidTemporalValue`.
+**The `z` suffix.** In `timez` and `datetimez` the `z` suffix means millisecond precision, **not** the ISO `Z` marker (UTC). Whether a value is stored in UTC depends on whether the type carries an instant, not on the suffix: `datetime` and `datetimez` are both stored in UTC, `time` and `timez` both as is, in local time with no shift. That is why ISO `Z` in the input is accepted by `datetime`/`datetimez` (see below) and rejected by `timez` (`InvalidTemporalValue`).
+
+**Sub-second precision.** The second-resolution kinds (`time`, `datetime`) reject any fraction; the millisecond kinds (`timez`, `datetimez`) accept 1–3 digits and reject more — never silently truncating (`TemporalFractionUnsupported`). The rule covers string input; a `DateTimeImmutable` object coming from a DTO is truncated to the column precision, see [DTO mapping](21-dto-mapping.md). For `datetime`/`datetimez` a TZ offset beyond ±14:00 (`+25:00`, `+00:99`) raises `InvalidTemporalValue`, and so does an instant that falls outside years 0000–9999 once shifted to UTC (e.g. `9999-12-31 23:00` in `America/New_York`): the stored form keeps a four-digit year, which the order of indexes and ranges relies on.
 
 Input is accepted **only** in the correct system format — no dots, slashes, or reversed order, and no zero dates (`0000-00-00` throws):
 
 ```php
-date_default_timezone_set('Europe/Moscow'); $db->table('events')->insertByArray([
+date_default_timezone_set('Europe/Moscow');
+
+$db->table('events')->insertByArray([
     'happensAt' => '2026-07-05 12:30:00',    // stored as 2026-07-05 09:30:00 (UTC)
     'onDate'    => '2026-07-05',              // stored verbatim
     'atTime'    => '23:30:00',               // stored verbatim (wall-clock)
@@ -225,8 +233,6 @@ Which side is the **child** (physically holds the FK column) depends on the rela
 
 `foreignKey` is always a column of the **child**, `references` a column of the **parent**. Both notations describe the same canonical edge; the engine (cascades, restrict, lock plans) works only with the canonical resolution, so both notations enforce identically.
 
-> **Upgrade warning.** Previously the engine treated the from table as the child for ANY relation type. Legacy `hasMany`/`hasOne` declarations face two outcomes: (a) those declared "engine-style" (from = child) now fail with a loud `RelationColumnNotFound` — the FK column does not exist in the canonical child table; (b) those declared "intuitively" (the FK column really lives in the to table) were a no-op for years and now **SILENTLY ACTIVATE** — including cascade deletion of children. Audit every `hasMany`/`hasOne` in your schemas before upgrading.
-
 ### What the actions mean
 
 - `onDelete` fires when a parent row is deleted: `cascade` deletes the referencing children (transitively), `setNull` nulls their FK, `restrict` refuses the delete while at least one reference exists (MySQL-immediate semantics: a reference counts even when the referencing child is deleted by the same statement — a self-referential restrict table cannot be emptied by one delete-all; delete leaves before roots).
@@ -244,7 +250,7 @@ Relations are declared and removed via `addRelation()` / `dropRelation()` (see [
 6. `setNull` requires a nullable FK column → `ForeignKeySetNullNotNullable`;
 7. no edge with the same canonical quadruple (child.column → parent.column) is declared yet — in either notation → `RelationAlreadyExists`.
 
-Legacy edges loaded from the schema are not re-validated on load (loading is strict structurally only). The FK engine re-checks their semantics in the plan phase — but **only for executable edges** (action ≠ `noAction` for the current event): a dead edge with mismatched types does not block working deletes/updates, while an executable one fails with the same `RelationColumnNotFound`/`RelationTypeMismatch` before anything is written.
+Edges loaded from the schema are not re-validated on load (loading is strict structurally only). The FK engine re-checks their semantics in the plan phase — but **only for executable edges** (action ≠ `noAction` for the current event): a dead edge with mismatched types does not block working deletes/updates, while an executable one fails with the same `RelationColumnNotFound`/`RelationTypeMismatch` before anything is written.
 
 ### Strict schema loading
 
@@ -297,12 +303,14 @@ Manipulate them independently of the structure — these are schema-only meta-op
 
 ```php
 $db->setTableComment('respondents', 'Form respondents');
-$db->setTableComment('respondents', null);                       $db->setColumnComment('respondents', 'formId', 'Parent form id');
-$db->setColumnComment('respondents', 'formId', null);            $db->setColumnComments('respondents', [                          // replace the whole map
+$db->setTableComment('respondents', null);
+$db->setColumnComment('respondents', 'formId', 'Parent form id');
+$db->setColumnComment('respondents', 'formId', null);
+$db->setColumnComments('respondents', [ // replace the whole map
     'formId'    => 'Parent form id',
     'dedupHash' => 'Anti-duplicate hash',
 ]);
-$db->setColumnComments('respondents', ['formId' => '...'], merge: true);   // merge on top
+$db->setColumnComments('respondents', ['formId' => '...'], merge: true); // merge on top
 ```
 
 `setColumnComment` / `setColumnComments` throw `JsonProviderSchemaException` with case `ColumnNotFound` if a name is not a declared column.

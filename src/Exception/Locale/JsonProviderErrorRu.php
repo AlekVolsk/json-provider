@@ -69,6 +69,14 @@ enum JsonProviderErrorRu: string implements LocaleInterface
         . 'ограничения с именем "%s"';
     case UniqueConstraintAlreadyExists = 'В таблице "%s" уже есть уникальное '
         . 'ограничение с именем "%s"';
+    case IndexFieldsEmpty = 'Индекс "%s" должен охватывать хотя бы одну '
+        . 'колонку';
+    case UniqueConstraintFieldsEmpty = 'Уникальное ограничение "%s" должно '
+        . 'охватывать хотя бы одну колонку';
+    case IndexUnknownColumn = 'Таблица "%s": индекс "%s" ссылается на '
+        . 'неизвестную колонку "%s"';
+    case UniqueConstraintUnknownColumn = 'Таблица "%s": уникальное '
+        . 'ограничение "%s" ссылается на неизвестную колонку "%s"';
     case InvalidTableName = 'Недопустимое имя таблицы "%s": должно '
         . 'начинаться с буквы, цифры или подчёркивания и содержать только '
         . 'буквы, цифры, подчёркивания и дефисы (не более 64 символов, без '
@@ -103,11 +111,6 @@ enum JsonProviderErrorRu: string implements LocaleInterface
         . 'её допускающей null';
     case SchemaTransformNoResult = 'Внутренняя ошибка: перестройка схемы '
         . 'таблицы "%s" не дала результата';
-    case MigrateFieldUnknownColumnIndex = 'Миграция колонок таблицы "%s": '
-        . 'индекс "%s" ссылается на неизвестную колонку "%s"';
-    case MigrateFieldUnknownColumnUnique = 'Миграция колонок таблицы "%s": '
-        . 'уникальное ограничение "%s" ссылается на неизвестную колонку '
-        . '"%s"';
     case MigrateFieldUnknownColumnRelation = 'Миграция колонок таблицы "%s": '
         . 'связь %s(%s) -> %s ссылается на неизвестную колонку "%s" — '
         . 'сначала снимите связь';
@@ -140,6 +143,8 @@ enum JsonProviderErrorRu: string implements LocaleInterface
         . 'не является коллекцией';
     case SchemaRelationsNotList = 'Ошибка схемы хранилища: ключ "relations" '
         . 'не является списком';
+    case SchemaTableNamesClash = 'Ошибка схемы хранилища: таблицы "%s" и '
+        . '"%s" различаются только регистром букв и заняли бы один каталог';
     case SchemaTableNotObject = 'Ошибка схемы хранилища, таблица "%s": '
         . 'определение не является объектом';
     case SchemaColumnsNotObject = 'Ошибка схемы хранилища, таблица "%s": '
@@ -359,6 +364,12 @@ enum JsonProviderErrorRu: string implements LocaleInterface
     case DtoIdMustBeInt = 'Таблица "%s": обновление объектом требует '
         . 'целочисленного идентификатора в объекте записи';
 
+    case BackupSourceInvalid = 'Резервное копирование прервано: проверка '
+        . 'целостности нашла проблемы уровня «ошибка» и выше (%s); ничего '
+        . 'не записано';
+    case BackupDestinationNotWritable = 'Резервная копия не записана: '
+        . 'каталог %s не существует или недоступен для записи';
+    case BackupWriteFailed = 'Резервная копия не записана в %s: %s';
     case BackupArchiveExists = 'Архив резервной копии уже существует: %s';
     case BackupDestinationInsideDb = 'Путь резервной копии должен быть вне '
         . 'каталога базы: %s';

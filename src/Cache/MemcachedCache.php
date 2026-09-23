@@ -164,7 +164,7 @@ final class MemcachedCache implements CacheInterface
      */
     private function physicalKey(string $key): string
     {
-        if (preg_match('/^(jdp:[^:]+:[^:]+:)(.+)$/', $key, $m) !== 1) {
+        if (preg_match('/^(jdp:[^:]+:[^:]+:)(.+)$/D', $key, $m) !== 1) {
             return $key;
         }
 

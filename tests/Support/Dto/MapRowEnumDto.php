@@ -7,7 +7,7 @@ namespace AV\JsonProvider\Tests\Support\Dto;
 use AV\JsonProvider\Mapping\Attribute\JsonProviderRecord;
 
 /**
- * MapRowScalarDto with one binding changed: `status` arrives as MapStatus
+ * MapRowScalarDto with one binding changed: `status` arrives as MapStatusEnum
  * instead of `string`. The whole delta between the two is one enum `from()`
  * per row.
  */
@@ -18,7 +18,7 @@ final class MapRowEnumDto
         public int $id,
         public string $sku,
         public int $categoryId,
-        public MapStatus $status,
+        public MapStatusEnum $status,
         public int $bucket,
         public int $decile,
         public float $price,

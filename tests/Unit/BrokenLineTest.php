@@ -6,8 +6,8 @@ namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -101,10 +101,10 @@ final class BrokenLineTest
         $this->injectBrokenLine();
 
         $report = $this->db->validateTable(self::TABLE);
-        $found = $report->issuesByCategory(IssueCategory::BROKEN_RECORD);
+        $found = $report->issuesByCategory(IssueCategoryEnum::BROKEN_RECORD);
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::WARNING);
+        Assert::same($found[0]->severity, IssueSeverityEnum::WARNING);
         Assert::same($found[0]->context['line'] ?? '', '2');
         Assert::string($found[0]->context['raw'] ?? '')
             ->contains('{CORRUPTED');
@@ -132,12 +132,12 @@ final class BrokenLineTest
             'repair must not rewrite a file holding unparseable lines',
         );
 
-        $broken = $report->issuesByCategory(IssueCategory::BROKEN_RECORD);
+        $broken = $report->issuesByCategory(IssueCategoryEnum::BROKEN_RECORD);
         Assert::count($broken, 1, $report->format());
         Assert::false($broken[0]->repaired);
         Assert::null($broken[0]->repairError);
 
-        $failed = $report->issuesByCategory(IssueCategory::REPAIR_FAILED);
+        $failed = $report->issuesByCategory(IssueCategoryEnum::REPAIR_FAILED);
         Assert::count($failed, 1, $report->format());
         Assert::string($failed[0]->message)->contains('unparseable');
     }
@@ -167,7 +167,9 @@ final class BrokenLineTest
         $this->db->insert(self::TABLE, ['v' => 'a']);
 
         $report = $this->db->repairTable(self::TABLE);
-        $optimized = $report->issuesByCategory(IssueCategory::TABLE_OPTIMIZED);
+        $optimized = $report->issuesByCategory(
+            IssueCategoryEnum::TABLE_OPTIMIZED,
+        );
 
         Assert::count($optimized, 1, $report->format());
         Assert::true($optimized[0]->repaired);

@@ -113,7 +113,7 @@ final class IndexUniqueApiTest
             ));
             Assert::fail('an index over an unknown column must be rejected');
         } catch (JsonProviderException $e) {
-            Assert::same($e->getErrorKey(), 'MigrateFieldUnknownColumnIndex');
+            Assert::same($e->getErrorKey(), 'IndexUnknownColumn');
         }
 
         Assert::false(file_exists($this->indexPath('idx_ghost')));
@@ -269,7 +269,7 @@ final class IndexUniqueApiTest
             );
             Assert::fail('an unknown constraint field must be rejected');
         } catch (JsonProviderException $e) {
-            Assert::same($e->getErrorKey(), 'MigrateFieldUnknownColumnUnique');
+            Assert::same($e->getErrorKey(), 'UniqueConstraintUnknownColumn');
         }
     }
 

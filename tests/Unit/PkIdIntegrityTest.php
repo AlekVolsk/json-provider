@@ -6,7 +6,7 @@ namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -91,7 +91,7 @@ final class PkIdIntegrityTest
         $this->db->invalidateCache(self::TABLE);
 
         $report = $this->db->validateTable(self::TABLE);
-        $findings = $report->issuesByCategory(IssueCategory::PK_DUPLICATE);
+        $findings = $report->issuesByCategory(IssueCategoryEnum::PK_DUPLICATE);
 
         Assert::count($findings, 1);
         Assert::same($findings[0]->context['id'], '2');
@@ -99,7 +99,7 @@ final class PkIdIntegrityTest
 
         $repairReport = $this->db->repairTable(self::TABLE);
         $repaired = $repairReport->issuesByCategory(
-            IssueCategory::PK_DUPLICATE,
+            IssueCategoryEnum::PK_DUPLICATE,
         );
 
         Assert::count($repaired, 1);

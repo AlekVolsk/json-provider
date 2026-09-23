@@ -8,7 +8,7 @@ use AV\JsonProvider\Mapping\Attribute\JsonProviderRecord;
 
 /**
  * Every non-temporal column of `map_rows`, all bound as plain scalars —
- * `status` included, as a `string` rather than as MapStatus. Against
+ * `status` included, as a `string` rather than as MapStatusEnum. Against
  * MapRowNarrowDto it isolates the cost of field COUNT; against MapRowEnumDto,
  * which differs from it in that single binding, it isolates the cost of enum
  * conversion.

@@ -33,3 +33,4 @@ This document is the working reference for an engineer integrating JsonProvider 
 19. [Module structure](19-module-structure.md)
 20. [Requirements and dependencies](20-requirements-dependencies.md)
 21. [DTO mapping — typed objects](21-dto-mapping.md)
+22. [Direct provider methods — select / count / readAll / insert / update / delete](22-direct-provider-api.md)

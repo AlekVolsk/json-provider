@@ -84,8 +84,8 @@ final class IntegrityRepairer
             $issues[] = $this->optimizeTable($tableName);
         } catch (\Throwable $e) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::REPAIR_FAILED,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::REPAIR_FAILED,
                 $tableName,
                 'optimizeTable failed: ' . $e->getMessage(),
             );
@@ -118,8 +118,8 @@ final class IntegrityRepairer
             }
         } catch (\Throwable $e) {
             $issues[] = new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::RENAME_INCOMPLETE,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::RENAME_INCOMPLETE,
                 null,
                 'pending rename reconciliation failed',
                 repairError: $e->getMessage(),
@@ -136,8 +136,8 @@ final class IntegrityRepairer
                 $issues[] = $this->optimizeTable($tableName);
             } catch (\Throwable $e) {
                 $issues[] = new IntegrityIssue(
-                    IssueSeverity::ERROR,
-                    IssueCategory::REPAIR_FAILED,
+                    IssueSeverityEnum::ERROR,
+                    IssueCategoryEnum::REPAIR_FAILED,
                     $tableName,
                     'optimizeTable failed: ' . $e->getMessage(),
                 );
@@ -179,8 +179,8 @@ final class IntegrityRepairer
 
         if ($rawLines['broken'] !== []) {
             return new IntegrityIssue(
-                IssueSeverity::ERROR,
-                IssueCategory::REPAIR_FAILED,
+                IssueSeverityEnum::ERROR,
+                IssueCategoryEnum::REPAIR_FAILED,
                 $tableName,
                 'table has ' . \count($rawLines['broken'])
                     . ' unparseable line(s); resolve manually before '
@@ -208,8 +208,8 @@ final class IntegrityRepairer
         }
 
         return new IntegrityIssue(
-            IssueSeverity::INFO,
-            IssueCategory::TABLE_OPTIMIZED,
+            IssueSeverityEnum::INFO,
+            IssueCategoryEnum::TABLE_OPTIMIZED,
             $tableName,
             'records sorted by id, all indexes rebuilt ('
                 . \count($records) . ' rows)',
@@ -237,45 +237,45 @@ final class IntegrityRepairer
     {
         try {
             return match ($issue->category) {
-                IssueCategory::INDEX_FILE_MISSING,
-                IssueCategory::INDEX_FILE_CORRUPT,
-                IssueCategory::INDEX_UNRELIABLE,
-                IssueCategory::INDEX_DRIFT => $this
+                IssueCategoryEnum::INDEX_FILE_MISSING,
+                IssueCategoryEnum::INDEX_FILE_CORRUPT,
+                IssueCategoryEnum::INDEX_UNRELIABLE,
+                IssueCategoryEnum::INDEX_DRIFT => $this
                     ->repairIndex($issue),
-                IssueCategory::INDEX_FORMAT_OUTDATED => $this
+                IssueCategoryEnum::INDEX_FORMAT_OUTDATED => $this
                     ->repairIndexFormat($issue),
-                IssueCategory::ORPHAN_INDEX_FILE => $this
+                IssueCategoryEnum::ORPHAN_INDEX_FILE => $this
                     ->repairOrphanIndexFile($issue),
-                IssueCategory::RECORD_KEY_ORDER => $this
+                IssueCategoryEnum::RECORD_KEY_ORDER => $this
                     ->repairRecordKeyOrder($issue),
-                IssueCategory::META_ENTRY_MISSING => $this
+                IssueCategoryEnum::META_ENTRY_MISSING => $this
                     ->repairMetaEntryMissing($issue),
-                IssueCategory::META_ENTRY_CORRUPT => $this
+                IssueCategoryEnum::META_ENTRY_CORRUPT => $this
                     ->repairMetaEntryCorrupt($issue),
-                IssueCategory::META_LINE_COUNT_DRIFT => $this
+                IssueCategoryEnum::META_LINE_COUNT_DRIFT => $this
                     ->repairMetaLineCount($issue),
-                IssueCategory::META_LAST_ID_DRIFT => $this
+                IssueCategoryEnum::META_LAST_ID_DRIFT => $this
                     ->repairMetaLastId($issue),
-                IssueCategory::META_ORPHAN_ENTRY => $this
+                IssueCategoryEnum::META_ORPHAN_ENTRY => $this
                     ->repairMetaOrphanEntry($issue),
-                IssueCategory::ORPHAN_DB_ENTRY => $this
+                IssueCategoryEnum::ORPHAN_DB_ENTRY => $this
                     ->repairOrphanDbEntry($issue),
-                IssueCategory::TABLE_FILE_MISSING => $this
+                IssueCategoryEnum::TABLE_FILE_MISSING => $this
                     ->repairTableFileMissing($issue),
-                IssueCategory::PK_DUPLICATE => $issue->withRepairError(
+                IssueCategoryEnum::PK_DUPLICATE => $issue->withRepairError(
                     'duplicate primary keys require manual resolution',
                 ),
-                IssueCategory::BROKEN_RECORD,
-                IssueCategory::PRESENT_NULL,
-                IssueCategory::FK_ORPHAN,
-                IssueCategory::UNIQUE_DUPLICATE  => $issue,
-                IssueCategory::RENAME_INCOMPLETE => $issue->withRepairError(
+                IssueCategoryEnum::BROKEN_RECORD,
+                IssueCategoryEnum::PRESENT_NULL,
+                IssueCategoryEnum::FK_ORPHAN,
+                IssueCategoryEnum::UNIQUE_DUPLICATE  => $issue,
+                IssueCategoryEnum::RENAME_INCOMPLETE => $issue->withRepairError(
                     'a pending rename spans two tables and the meta file; '
                         . 'run the database-level repair() to reconcile it',
                 ),
-                IssueCategory::FK_BACKING_INDEX_MISSING => $this
+                IssueCategoryEnum::FK_BACKING_INDEX_MISSING => $this
                     ->repairFkBackingIndex($issue),
-                IssueCategory::FK_BACKING_INDEX_ORPHANED => $this
+                IssueCategoryEnum::FK_BACKING_INDEX_ORPHANED => $this
                     ->repairOrphanedServiceIndex($issue),
                 default => $issue,
             };
@@ -803,8 +803,8 @@ final class IntegrityRepairer
         $to = $pending['to'];
 
         $issue = new IntegrityIssue(
-            IssueSeverity::ERROR,
-            IssueCategory::RENAME_INCOMPLETE,
+            IssueSeverityEnum::ERROR,
+            IssueCategoryEnum::RENAME_INCOMPLETE,
             $from,
             'renameTable "' . $from . '" -> "' . $to
                 . '" did not complete; reconciled by the actual '
@@ -818,8 +818,8 @@ final class IntegrityRepairer
             $this->ndjson->renameTableDir($from, $to);
             $this->ndjson->renameFile(
                 $to,
-                $from . '.ndjson',
-                $to . '.ndjson',
+                TableSchema::dataFileName($from),
+                TableSchema::dataFileName($to),
             );
             $this->meta->moveEntry($from, $to);
         }
@@ -833,6 +833,9 @@ final class IntegrityRepairer
      * Deletes an orphan root entry. A directory is removed as a whole ONLY
      * when none of its files holds any bytes — repair fixes structures,
      * never destroys data; a non-empty orphan requires a manual decision.
+     * A directory whose name is not lower case is never touched: the
+     * provider does not create such directories, and storage would resolve
+     * the name to the lower-case one — possibly a live table.
      */
     private function repairOrphanDbEntry(IntegrityIssue $issue): IntegrityIssue
     {
@@ -846,6 +849,13 @@ final class IntegrityRepairer
         }
 
         if ($kind === 'dir') {
+            if ($name !== IdentifierRules::physicalName($name)) {
+                return $issue->withRepairError(
+                    'orphan dir with upper-case letters requires manual '
+                        . 'removal',
+                );
+            }
+
             foreach ($this->ndjson->listFiles($name) as $fileName) {
                 if ($this->ndjson->fileSizeBytes($name, $fileName) > 0) {
                     return $issue->withRepairError(

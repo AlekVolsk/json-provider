@@ -15,7 +15,7 @@ use Testo\Test;
 /**
  * Tests for type-distinguishing distinct keys: null, '', false, 0, '0',
  * true, 1 and '1' are eight different values and all survive
- * isDistinct(); real duplicates collapse keeping the first occurrence;
+ * distinct(); real duplicates collapse keeping the first occurrence;
  * composite distinct distinguishes per-combination.
  *
  * The schema boundary rejects unknown column types, so one column can hold
@@ -68,7 +68,7 @@ final class DistinctTypingTest
         ));
 
         $rows = $this->db->table(self::TABLE)
-            ->isDistinct('v')->selectAllByArray();
+            ->distinct('v')->selectAllByArray();
 
         Assert::count($rows, \count($values));
     }
@@ -81,7 +81,7 @@ final class DistinctTypingTest
         }
 
         $rows = $this->db->table(self::TABLE)
-            ->isDistinct('v')->selectAllByArray();
+            ->distinct('v')->selectAllByArray();
 
         Assert::same(array_column($rows, 'v'), ['a', 'b', 'c']);
         Assert::same(array_column($rows, 'id'), [1, 2, 4]);
@@ -104,7 +104,7 @@ final class DistinctTypingTest
         ));
 
         $rows = $this->db->table(self::TABLE)
-            ->isDistinct('v', 'w')->selectAllByArray();
+            ->distinct('v', 'w')->selectAllByArray();
 
         Assert::count($rows, 4);
         Assert::same(array_column($rows, 'id'), [1, 2, 3, 4]);
@@ -117,7 +117,7 @@ final class DistinctTypingTest
         $this->db->insert(self::TABLE, ['v' => 'a', 'w' => "b\x00c"]);
 
         $rows = $this->db->table(self::TABLE)
-            ->isDistinct('v', 'w')->selectAllByArray();
+            ->distinct('v', 'w')->selectAllByArray();
 
         Assert::count($rows, 2);
     }

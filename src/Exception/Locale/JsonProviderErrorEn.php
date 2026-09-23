@@ -73,6 +73,13 @@ enum JsonProviderErrorEn: string implements LocaleInterface
         . 'named "%s"';
     case UniqueConstraintAlreadyExists = 'Table "%s" already has a unique '
         . 'constraint named "%s"';
+    case IndexFieldsEmpty = 'Index "%s" must cover at least one column';
+    case UniqueConstraintFieldsEmpty = 'Unique constraint "%s" must cover at '
+        . 'least one column';
+    case IndexUnknownColumn = 'Table "%s": index "%s" references unknown '
+        . 'column "%s"';
+    case UniqueConstraintUnknownColumn = 'Table "%s": unique constraint "%s" '
+        . 'references unknown column "%s"';
     case InvalidTableName = 'Invalid table name "%s": must start with a '
         . 'letter, digit or underscore and contain only letters, digits, '
         . 'underscores or hyphens (max 64 characters, no dots or path '
@@ -106,10 +113,6 @@ enum JsonProviderErrorEn: string implements LocaleInterface
         . 'there is no safe default; declare it nullable';
     case SchemaTransformNoResult = 'Internal error: rebuilding the schema of '
         . 'table "%s" produced no result';
-    case MigrateFieldUnknownColumnIndex = 'Column migration for table "%s": '
-        . 'index "%s" references unknown column "%s"';
-    case MigrateFieldUnknownColumnUnique = 'Column migration for table "%s": '
-        . 'unique constraint "%s" references unknown column "%s"';
     case MigrateFieldUnknownColumnRelation = 'Column migration for table '
         . '"%s": relation %s(%s) -> %s references unknown column "%s" — drop '
         . 'the relation first';
@@ -141,6 +144,8 @@ enum JsonProviderErrorEn: string implements LocaleInterface
         . 'is not a collection';
     case SchemaRelationsNotList = 'Storage schema error: the "relations" key '
         . 'is not a list';
+    case SchemaTableNamesClash = 'Storage schema error: tables "%s" and '
+        . '"%s" differ only in letter case and would share one directory';
     case SchemaTableNotObject = 'Storage schema error, table "%s": the '
         . 'definition is not an object';
     case SchemaColumnsNotObject = 'Storage schema error, table "%s": '
@@ -344,6 +349,11 @@ enum JsonProviderErrorEn: string implements LocaleInterface
     case DtoIdMustBeInt = 'Table "%s": updating by object requires an '
         . 'integer id on the DTO';
 
+    case BackupSourceInvalid = 'Backup aborted: integrity validation found '
+        . '%s problem(s) of error severity or worse; nothing was written';
+    case BackupDestinationNotWritable = 'The backup was not written: the '
+        . 'directory %s does not exist or is not writable';
+    case BackupWriteFailed = 'The backup was not written to %s: %s';
     case BackupArchiveExists = 'The backup archive already exists at: %s';
     case BackupDestinationInsideDb = 'The backup destination must lie '
         . 'outside the database directory: %s';

@@ -37,16 +37,16 @@ namespace AV\JsonProvider\Validation;
  */
 final class TemporalCodec
 {
-    private const string DATE_RE = '/^(\d{4})-(\d{2})-(\d{2})$/';
+    private const string DATE_RE = '/^(\d{4})-(\d{2})-(\d{2})$/D';
     private const string DATETIME_RE = '/^(\d{4})-(\d{2})-(\d{2})[ T]'
-        . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:?\d{2})?$/';
+        . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:?\d{2})?$/D';
 
     /**
      * The stored form is narrower than what encode() accepts: always a space
      * separator, never an offset suffix, at most milliseconds.
      */
     private const string STORED_DATETIME_RE = '/^(\d{4})-(\d{2})-(\d{2}) '
-        . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/';
+        . '(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/D';
 
     /**
      * UTC never changes, and the local zone only when the script changes it,
@@ -65,11 +65,11 @@ final class TemporalCodec
      *
      * @throws TemporalParseException on any non-canonical or impossible input
      */
-    public function encode(TemporalKind $kind, string $value): string
+    public function encode(TemporalKindEnum $kind, string $value): string
     {
         $utc = self::utcTz();
 
-        if ($kind === TemporalKind::Date) {
+        if ($kind === TemporalKindEnum::Date) {
             return $this->encodeDate($value, $utc);
         }
 
@@ -84,12 +84,12 @@ final class TemporalCodec
      * Canonical stored value -> local presentation value. Never throws: an
      * unparseable stored value is returned as-is.
      */
-    public function decode(TemporalKind $kind, string $value): string
+    public function decode(TemporalKindEnum $kind, string $value): string
     {
         try {
             $utc = self::utcTz();
 
-            if ($kind === TemporalKind::Date) {
+            if ($kind === TemporalKindEnum::Date) {
                 return $this->reformatDate($value, $utc);
             }
 
@@ -109,10 +109,12 @@ final class TemporalCodec
      * This is the DTO-facing counterpart to the string codec: it produces the
      * same local wall-clock form that decode() emits, so the value can flow
      * through the ordinary (UTC-encoding) write pipeline unchanged. A bare date
-     * is formatted from the object as-is (no timezone shift).
+     * is formatted from the object as-is (no timezone shift). A fraction finer
+     * than the kind keeps is truncated by the format, not rejected: objects
+     * almost always carry microseconds, unlike deliberately typed strings.
      */
     public function dateTimeToLocalString(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         \DateTimeImmutable $value,
     ): string {
         if (!$kind->shiftsTimezone()) {
@@ -135,12 +137,12 @@ final class TemporalCodec
      * @throws TemporalParseException
      */
     public function localStringToDateTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
     ): \DateTimeImmutable {
         $local = $this->localTz();
 
-        if ($kind === TemporalKind::Date) {
+        if ($kind === TemporalKindEnum::Date) {
             return $this->parseLocalDate($value, $local);
         }
 
@@ -174,12 +176,12 @@ final class TemporalCodec
      * caller reads the wall-clock back with format(); the anchor is inert.
      */
     private function parseLocalTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
     ): \DateTimeImmutable {
         $re = $kind->hasFraction()
-            ? '/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/'
-            : '/^(\d{2}):(\d{2}):(\d{2})$/';
+            ? '/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/D'
+            : '/^(\d{2}):(\d{2}):(\d{2})$/D';
 
         if (preg_match($re, $value, $m) !== 1) {
             throw new TemporalParseException('bad local time');
@@ -197,7 +199,7 @@ final class TemporalCodec
     }
 
     private function parseLocalDateTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
         \DateTimeZone $local,
     ): \DateTimeImmutable {
@@ -247,13 +249,13 @@ final class TemporalCodec
      * part of the output.
      */
     private function encodeTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
         \DateTimeZone $utc,
     ): string {
         if (
             preg_match(
-                '/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/',
+                '/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/D',
                 $value,
                 $m,
             ) !== 1
@@ -275,13 +277,13 @@ final class TemporalCodec
     }
 
     private function decodeTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
         \DateTimeZone $utc,
     ): string {
         $re = $kind->hasFraction()
-            ? '/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/'
-            : '/^(\d{2}):(\d{2}):(\d{2})$/';
+            ? '/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/D'
+            : '/^(\d{2}):(\d{2}):(\d{2})$/D';
 
         if (preg_match($re, $value, $m) !== 1) {
             throw new TemporalParseException('bad stored time');
@@ -298,8 +300,13 @@ final class TemporalCodec
         return $dt->format($kind->canonicalFormat());
     }
 
+    /**
+     * The stored form keeps a four-digit year — its byte order is the sort
+     * order of indexes and ranges — so an instant that leaves years
+     * 0000-9999 on the shift to UTC is rejected.
+     */
     private function encodeDateTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
         \DateTimeZone $local,
         \DateTimeZone $utc,
@@ -328,12 +335,18 @@ final class TemporalCodec
             );
         }
         $this->assertClean($dt);
+        $stored = $dt->setTimezone($utc);
+        $year = (int)$stored->format('Y');
 
-        return $dt->setTimezone($utc)->format($kind->canonicalFormat());
+        if ($year < 0 || $year > 9999) {
+            throw new TemporalParseException('instant outside years 0000-9999');
+        }
+
+        return $stored->format($kind->canonicalFormat());
     }
 
     private function decodeDateTime(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
         \DateTimeZone $local,
         \DateTimeZone $utc,
@@ -380,7 +393,7 @@ final class TemporalCodec
      * truncates — an unsupported precision is a loud, dedicated error.
      */
     private function assertFractionAllowed(
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $fraction,
     ): void {
         if (!$kind->hasFraction()) {

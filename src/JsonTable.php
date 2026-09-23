@@ -9,6 +9,7 @@ use AV\JsonProvider\Exception\JsonProviderQueryException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
+use AV\JsonProvider\Mapping\MissingPropertyModeEnum;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\OrderBy;
@@ -18,7 +19,7 @@ use AV\JsonProvider\Schema\TableSchema;
 /**
  * QueryBuilder for a single table.
  *
- * Mutable with auto-reset: chain calls (where/orderBy/limit/offset/isDistinct)
+ * Mutable with auto-reset: chain calls (where/orderBy/limit/offset/distinct)
  * accumulate state on the same instance and return `$this`. Any terminal
  * operation (select*, count, exists, insert, update*, delete*) consumes the
  * accumulated state and clears it — including on exception. The same builder
@@ -185,7 +186,7 @@ final class JsonTable
      * of duplicates keeps its first row in result order, so the ordering
      * decides which one survives.
      */
-    public function isDistinct(string ...$fields): self
+    public function distinct(string ...$fields): self
     {
         $this->distinctFields = array_values($fields);
 
@@ -388,14 +389,18 @@ final class JsonTable
     /**
      * Overwrites the row identified by the DTO's own id with all of the DTO's
      * fields. Accumulated where() conditions are ignored — the id drives it.
+     * A mapped property the object does not carry is written as null or
+     * leaves the column untouched, per $missing.
      * Returns true on success (including no matching row, affectedRows 0).
      */
-    public function update(object $dto): bool
-    {
+    public function update(
+        object $dto,
+        MissingPropertyModeEnum $missing = MissingPropertyModeEnum::WriteNull,
+    ): bool {
         $map = $this->requireDtoMap();
 
         try {
-            $record = $this->mapper->extract($map, $dto);
+            $record = $this->mapper->extract($map, $dto, $missing);
             $id = $record['id'] ?? null;
 
             if (!\is_int($id)) {
@@ -598,9 +603,15 @@ final class JsonTable
         }
     }
 
+    /**
+     * Called first by every DTO terminal operation, before its own
+     * try/finally, so the failure path resets the query state itself.
+     */
     private function requireDtoMap(): DtoMap
     {
         if ($this->dtoMap === null) {
+            $this->resetState();
+
             throw new JsonProviderMappingException(
                 JsonProviderErrorEn::DtoNotRegistered,
                 $this->tableSchema->name,

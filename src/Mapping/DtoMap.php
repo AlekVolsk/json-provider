@@ -13,7 +13,7 @@ use AV\JsonProvider\Mapping\Attribute\JsonProviderRecord;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Validation\ColumnTypeInfo;
-use AV\JsonProvider\Validation\TemporalKind;
+use AV\JsonProvider\Validation\TemporalKindEnum;
 
 /**
  * A DTO class compiled against a table schema.
@@ -248,7 +248,7 @@ final class DtoMap
         $nullable = $type->allowsNull();
 
         if ($phpType === \DateTimeImmutable::class) {
-            $kind = TemporalKind::tryFromBase($info->base);
+            $kind = TemporalKindEnum::tryFromBase($info->base);
 
             if ($kind === null) {
                 throw self::mismatch(

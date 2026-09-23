@@ -32,7 +32,7 @@ enum FilterOperatorEnum: string
     public function matches(
         bool | float | int | string | null $recordValue,
         mixed $conditionValue,
-        ComparisonMode $mode = ComparisonMode::Binary,
+        ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
     ): bool {
         return match ($this) {
             self::EQ => $recordValue === $conditionValue,
@@ -112,7 +112,7 @@ enum FilterOperatorEnum: string
             $regex .= preg_quote($char, '/');
         }
 
-        $result = preg_match('/^' . $regex . '$/s', $recordValue);
+        $result = preg_match('/^' . $regex . '$/sD', $recordValue);
 
         if ($result === false) {
             throw new JsonProviderQueryException(
@@ -145,7 +145,7 @@ enum FilterOperatorEnum: string
     private function matchesBetween(
         bool | float | int | string | null $recordValue,
         mixed $conditionValue,
-        ComparisonMode $mode,
+        ComparisonModeEnum $mode,
     ): bool {
         if (
             $recordValue === null

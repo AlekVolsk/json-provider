@@ -10,7 +10,8 @@ use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 /**
  * Atomic full-file replacement: the payload is written to a writer-unique
  * temp file (<path>.<pid>.<random>.tmp), flushed to hardware (fsync), then
- * rename()d over the target. A reader always sees either the complete old
+ * rename()d over the target, and the directory is fsynced so the rename
+ * itself survives a power loss. A reader always sees either the complete old
  * file or the complete new one — never a truncated or partially written
  * state; a crash mid-write leaves the target untouched. Orphaned *.tmp
  * siblings of the target (crashed writers) are swept before each write.
@@ -86,7 +87,7 @@ final class AtomicFileWriter
         fclose($handle);
 
         if (!$ok) {
-            @unlink($tmp);
+            self::removeIfPresent($tmp);
 
             throw new JsonProviderIoException(
                 JsonProviderErrorEn::FileNotWritable,
@@ -98,18 +99,44 @@ final class AtomicFileWriter
     }
 
     /**
-     * The COMMIT half: renames a prepared temp file over its target.
+     * The COMMIT half: renames a prepared temp file over its target and
+     * fsyncs the directory, making the new directory entry durable.
      */
     public static function commit(string $tmp, string $path): void
     {
-        if (!@rename($tmp, $path)) {
-            @unlink($tmp);
+        if (!rename($tmp, $path)) {
+            self::removeIfPresent($tmp);
 
             throw new JsonProviderIoException(
                 JsonProviderErrorEn::FileNotWritable,
                 $path,
             );
         }
+
+        self::syncDirectory(\dirname($path));
+    }
+
+    /**
+     * Best-effort directory fsync so a metadata operation (rename) is
+     * durable before the caller proceeds. On filesystems or PHP builds
+     * where a directory cannot be opened or synced the call degrades to a
+     * no-op — the rename itself is still atomic, only its durability window
+     * widens.
+     */
+    public static function syncDirectory(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        $handle = fopen($dir, 'r');
+
+        if ($handle === false) {
+            return;
+        }
+
+        fsync($handle);
+        fclose($handle);
     }
 
     /**
@@ -119,7 +146,7 @@ final class AtomicFileWriter
      */
     public static function abort(string $tmp): void
     {
-        @unlink($tmp);
+        self::removeIfPresent($tmp);
     }
 
     /**
@@ -131,7 +158,12 @@ final class AtomicFileWriter
     {
         $dir = \dirname($path);
         $base = basename($path) . '.';
-        $entries = @scandir($dir);
+
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        $entries = scandir($dir);
 
         if ($entries === false) {
             return;
@@ -142,8 +174,20 @@ final class AtomicFileWriter
                 str_starts_with($entry, $base)
                 && str_ends_with($entry, '.tmp')
             ) {
-                @unlink($dir . '/' . $entry);
+                self::removeIfPresent($dir . '/' . $entry);
             }
+        }
+    }
+
+    /**
+     * Temp files are removed on failure paths where the file may already be
+     * gone (never created, or swept by a concurrent writer): absence is the
+     * desired outcome, not an error.
+     */
+    private static function removeIfPresent(string $file): void
+    {
+        if (file_exists($file)) {
+            unlink($file);
         }
     }
 }

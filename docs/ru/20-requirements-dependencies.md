@@ -18,7 +18,7 @@ Composer объявляет их в секции `suggest` — ни одно н�
 - `ext-apcu` — адаптер кеша `ApcuCache`;
 - `ext-memcached` — адаптер кеша `MemcachedCache`;
 - `ext-redis` — адаптер кеша `RedisCache`;
-- `ext-intl` — режим сравнения строк `ComparisonMode::Locale` (коллатор); без расширения режим тихо работает как `Binary`, см. [Билдер запросов](08-query-builder.md).
+- `ext-intl` — режим сравнения строк `ComparisonModeEnum::Locale` (коллатор); без расширения режим тихо работает как `Binary`, см. [Билдер запросов](08-query-builder.md).
 
 Кеш-слой подключаемый: встроенным `NullCache` и `InMemoryCache` (как и вашему собственному адаптеру) ничего дополнительного не нужно. Отсутствие расширения проявляется по-разному: `ApcuCache` проверяет его явно и бросает `ExtensionRequired`, а `RedisCache`/`MemcachedCache` требуют клиента `\Redis`/`\Memcached` в конструкторе и без расширения падают `TypeError` ещё до входа в него — см. [Кеширование](16-caching.md).
 

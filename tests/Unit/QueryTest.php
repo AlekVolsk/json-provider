@@ -10,7 +10,7 @@ use Testo\Test;
 
 /**
  * Tests for selection: where (all operators), orderBy, limit, offset,
- * isDistinct, selectColumn. Read-only — the fixture is not mutated.
+ * distinct, selectColumn. Read-only — the fixture is not mutated.
  */
 final class QueryTest
 {
@@ -541,10 +541,10 @@ final class QueryTest
     }
 
     #[Test]
-    public function isDistinctDeduplicates(): void
+    public function distinctDeduplicates(): void
     {
         $distinct = Fixture::db()->table('products')
-            ->isDistinct('category_id')
+            ->distinct('category_id')
             ->selectAllByArray();
 
         Assert::count($distinct, 10);
@@ -554,20 +554,20 @@ final class QueryTest
     }
 
     #[Test]
-    public function isDistinctMultipleFields(): void
+    public function distinctMultipleFields(): void
     {
         $distinct = Fixture::db()->table('tags')
-            ->isDistinct('label')
+            ->distinct('label')
             ->selectAllByArray();
 
         Assert::count($distinct, 5);
     }
 
     #[Test]
-    public function isDistinctCount(): void
+    public function distinctCount(): void
     {
         $count = Fixture::db()->table('products')
-            ->isDistinct('category_id')
+            ->distinct('category_id')
             ->count();
 
         Assert::same($count, 10);

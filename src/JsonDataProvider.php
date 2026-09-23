@@ -21,7 +21,7 @@ use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
 use AV\JsonProvider\Mapping\DtoRegistry;
-use AV\JsonProvider\Query\ComparisonMode;
+use AV\JsonProvider\Query\ComparisonModeEnum;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\OrderBy;
@@ -101,7 +101,7 @@ final class JsonDataProvider
     private readonly string $dbPath;
     private readonly string $cacheNs;
     private readonly LoggerInterface | null $logger;
-    private ComparisonMode $comparisonMode = ComparisonMode::Binary;
+    private ComparisonModeEnum $comparisonMode = ComparisonModeEnum::Binary;
 
     private function __construct(
         string $dbPath,
@@ -218,7 +218,7 @@ final class JsonDataProvider
      * disagree). Equality operators are unaffected. Without ext-intl,
      * Locale silently behaves as Binary.
      */
-    public function setComparisonMode(ComparisonMode $mode): self
+    public function setComparisonMode(ComparisonModeEnum $mode): self
     {
         $this->comparisonMode = $mode;
 
@@ -529,7 +529,7 @@ final class JsonDataProvider
                 $this->ndjson->renameFile(
                     $to,
                     $tableSchema->getFileName(),
-                    $to . '.ndjson',
+                    TableSchema::dataFileName($to),
                 );
 
                 $this->meta->clearPendingRename();
@@ -630,8 +630,6 @@ final class JsonDataProvider
                         $desired->columns,
                     ),
                 );
-
-                $this->assertSchemaFieldsDeclared($target);
 
                 $currentColumns = array_keys($current->columns);
                 $desiredColumns = array_keys($desired->columns);
@@ -1064,12 +1062,14 @@ final class JsonDataProvider
      * restores. Returns the number of records written.
      *
      * Every record goes through the ordinary normalization and validation
-     * used by insert(), then the data file is atomically replaced, indexes
+     * used by insert(), unique constraints are checked across the whole
+     * batch, then the data file is atomically replaced, indexes
      * are rebuilt, meta (lineCount/byteSize) is committed and the cache is
      * republished — so the table ends up in exactly the state a sequence of
      * insert() calls would leave, at a fraction of the cost. The
-     * auto-increment counter is set to the largest supplied id, so the next
-     * insert() continues after the imported rows.
+     * auto-increment counter is raised to the largest supplied id and never
+     * lowered, so the next insert() continues after the imported rows and
+     * ids of replaced rows are not reissued.
      *
      * Ids must be supplied and unique within the batch: this is a load of
      * known records, not a sequence of appends. Every record is validated
@@ -1136,6 +1136,14 @@ final class JsonDataProvider
                         );
                 }
 
+                foreach ($tableSchema->uniqueConstraints as $constraint) {
+                    $this->assertNoUniqueDuplicates(
+                        $tableName,
+                        $constraint,
+                        $prepared,
+                    );
+                }
+
                 /*
                  * Nothing is touched until every record has passed
                  * validation: a bad row in the middle of the batch leaves the
@@ -1144,7 +1152,10 @@ final class JsonDataProvider
                 $this->invalidateCache($tableName);
                 $this->ensureTableConsistent($tableSchema);
                 $this->writeAll($tableName, $tableSchema, $prepared);
-                $this->meta->setLastInsertedId($tableName, $watermark);
+                $this->meta->setLastInsertedId(
+                    $tableName,
+                    max($watermark, $this->meta->getLastInsertedId($tableName)),
+                );
 
                 return \count($prepared);
             },
@@ -1303,8 +1314,9 @@ final class JsonDataProvider
                  * leftover — the same shape repair would sweep as an
                  * orphan, removed eagerly here.
                  */
-                $oldServiceFile = IdentifierRules::serviceIndexNameFor($from)
-                    . '.index.ndjson';
+                $oldServiceFile = IndexSchema::fileNameFor(
+                    IdentifierRules::serviceIndexNameFor($from),
+                );
                 $this->ndjson->deleteFile($tableName, $oldServiceFile);
                 $this->recompileDto($tableName, $newSchema);
             },
@@ -1529,7 +1541,7 @@ final class JsonDataProvider
      * index name must be valid and free (INDEX_ALREADY_EXISTS), the PK
      * index cannot be added or replaced (PK_CONTRACT_VIOLATED), and every
      * indexed field must be a declared column
-     * (MIGRATE_FIELD_UNKNOWN_COLUMN).
+     * (INDEX_UNKNOWN_COLUMN).
      *
      * Order: the file is provisioned and built first, the schema published
      * last — a crash in between leaves an undeclared file that validate()
@@ -1557,7 +1569,10 @@ final class JsonDataProvider
                 }
 
                 foreach ($tableSchema->indexes as $existing) {
-                    if ($existing->name === $index->name) {
+                    if (
+                        IdentifierRules::physicalName($existing->name)
+                        === IdentifierRules::physicalName($index->name)
+                    ) {
                         throw new JsonProviderSchemaException(
                             JsonProviderErrorEn::IndexAlreadyExists,
                             $tableName,
@@ -1569,7 +1584,7 @@ final class JsonDataProvider
                 foreach ($index->fields as $field) {
                     if (!isset($tableSchema->columns[$field->field])) {
                         throw new JsonProviderSchemaException(
-                            JsonProviderErrorEn::MigrateFieldUnknownColumnIndex,
+                            JsonProviderErrorEn::IndexUnknownColumn,
                             $tableName,
                             $index->name,
                             $field->field,
@@ -1762,7 +1777,7 @@ final class JsonDataProvider
      * NULL semantics — records with a null key never conflict): a stored
      * duplicate raises UNIQUE_VIOLATION with nothing written. A taken name
      * raises UNIQUE_CONSTRAINT_ALREADY_EXISTS, an unknown field
-     * MIGRATE_FIELD_UNKNOWN_COLUMN. Schema-only mutation — constraints
+     * UNIQUE_CONSTRAINT_UNKNOWN_COLUMN. Schema-only mutation — constraints
      * have no files.
      */
     public function addUniqueConstraint(
@@ -1789,9 +1804,7 @@ final class JsonDataProvider
                 foreach ($constraint->fields as $field) {
                     if (!isset($tableSchema->columns[$field])) {
                         throw new JsonProviderSchemaException(
-                            // phpcs:disable Generic.Files.LineLength
-                            JsonProviderErrorEn::MigrateFieldUnknownColumnUnique,
-                            // phpcs:enable
+                            JsonProviderErrorEn::UniqueConstraintUnknownColumn,
                             $tableName,
                             $constraint->name,
                             $field,
@@ -1799,33 +1812,11 @@ final class JsonDataProvider
                     }
                 }
 
-                $seen = [];
-
-                foreach ($this->readAllForWrite($tableName) as $record) {
-                    $key = $constraint->keyOf($record);
-
-                    if ($key === null) {
-                        continue;
-                    }
-
-                    if (isset($seen[$key])) {
-                        $fieldValues = array_map(
-                            static fn (string $f): string => (string)(
-                                $record[$f] ?? ''
-                            ),
-                            $constraint->fields,
-                        );
-
-                        throw new JsonProviderDataException(
-                            JsonProviderErrorEn::UniqueViolation,
-                            $tableName,
-                            implode(', ', $constraint->fields),
-                            implode(', ', $fieldValues),
-                        );
-                    }
-
-                    $seen[$key] = true;
-                }
+                $this->assertNoUniqueDuplicates(
+                    $tableName,
+                    $constraint,
+                    $this->readAllForWrite($tableName),
+                );
 
                 $this->schema->updateTable(
                     $tableName,
@@ -2157,7 +2148,9 @@ final class JsonDataProvider
 
     /**
      * Exports the current DB state to a .tar.gz archive at $destination.
-     * Returns the absolute path of the created archive. The export runs
+     * Returns the path of the created archive — $destination as given
+     * (relative stays relative), completed with the default file name or
+     * extension when needed. The export runs
      * under the database EX lock, so all tables come from one committed
      * generation; the manifest carries per-table id counters and sha256
      * checksums of every member.
@@ -2271,7 +2264,7 @@ final class JsonDataProvider
             $conditions,
         );
         $keepPrefix = $limit !== null && $distinctFields === []
-            ? $offset + $limit
+            ? ($limit > PHP_INT_MAX - $offset ? PHP_INT_MAX : $offset + $limit)
             : null;
         $pushPagination = $keepPrefix !== null;
         $index = $this->resolveIndex(
@@ -2418,7 +2411,7 @@ final class JsonDataProvider
      *
      * An unconditional count needs no row data, so it is answered from the
      * meta counter when that counter is provably current — see
-     * countFromMeta(). Everything else reads and filters as before.
+     * countFromMeta(). Everything else reads and filters the rows.
      *
      * @param array<int,FilterCondition> $conditions
      */
@@ -3097,41 +3090,6 @@ final class JsonDataProvider
     }
 
     /**
-     * Ensures every unique-constraint field and index field in $desired refers
-     * to a column that $desired actually declares — otherwise the constraint or
-     * index would compute keys over a missing field (empty string for all
-     * rows), yielding phantom collisions and broken lookups.
-     */
-    private function assertSchemaFieldsDeclared(TableSchema $desired): void
-    {
-        foreach ($desired->uniqueConstraints as $constraint) {
-            foreach ($constraint->fields as $field) {
-                if (!isset($desired->columns[$field])) {
-                    throw new JsonProviderSchemaException(
-                        JsonProviderErrorEn::MigrateFieldUnknownColumnUnique,
-                        $desired->name,
-                        $constraint->name,
-                        $field,
-                    );
-                }
-            }
-        }
-
-        foreach ($desired->indexes as $index) {
-            foreach ($index->fields as $field) {
-                if (!isset($desired->columns[$field->field])) {
-                    throw new JsonProviderSchemaException(
-                        JsonProviderErrorEn::MigrateFieldUnknownColumnIndex,
-                        $desired->name,
-                        $index->name,
-                        $field->field,
-                    );
-                }
-            }
-        }
-    }
-
-    /**
      * Rejects adding a not-null column with no zero-value default to a table
      * that already holds rows: those rows would otherwise be filled with an
      * invalid value (null, or an out-of-range 0 for month/day).
@@ -3536,7 +3494,7 @@ final class JsonDataProvider
         try {
             $stat = $this->ndjson->fileStat(
                 $tableName,
-                $tableName . '.ndjson',
+                TableSchema::dataFileName($tableName),
             );
         } catch (JsonProviderException) {
             return;
@@ -3819,6 +3777,10 @@ final class JsonDataProvider
         int $offset,
         int | null $limit,
     ): array {
+        if ($limit === 0) {
+            return [];
+        }
+
         $records = $this->values->widenFloats(
             $tableSchema,
             $this->ndjson->readLines(
@@ -4017,7 +3979,7 @@ final class JsonDataProvider
             return false;
         }
 
-        return $this->comparisonMode !== ComparisonMode::Locale
+        return $this->comparisonMode !== ComparisonModeEnum::Locale
             || !$this->isStringColumn($tableSchema, $condition->field);
     }
 
@@ -4037,7 +3999,7 @@ final class JsonDataProvider
             }
 
             if (
-                $this->comparisonMode === ComparisonMode::Locale
+                $this->comparisonMode === ComparisonModeEnum::Locale
                 && $this->isStringColumn($tableSchema, $order->field)
             ) {
                 return false;
@@ -4119,6 +4081,47 @@ final class JsonDataProvider
                 $incoming,
                 $excludeId,
             );
+        }
+    }
+
+    /**
+     * Rejects a record set in which two records share a non-null key of the
+     * constraint (SQL NULL semantics, type-strict keys — same rules as the
+     * per-record check).
+     *
+     * @param array<int,array<string,null|scalar>> $records
+     */
+    private function assertNoUniqueDuplicates(
+        string $tableName,
+        UniqueConstraint $constraint,
+        array $records,
+    ): void {
+        $seen = [];
+
+        foreach ($records as $record) {
+            $key = $constraint->keyOf($record);
+
+            if ($key === null) {
+                continue;
+            }
+
+            if (isset($seen[$key])) {
+                $fieldValues = array_map(
+                    static fn (string $f): string => (string)(
+                        $record[$f] ?? ''
+                    ),
+                    $constraint->fields,
+                );
+
+                throw new JsonProviderDataException(
+                    JsonProviderErrorEn::UniqueViolation,
+                    $tableName,
+                    implode(', ', $constraint->fields),
+                    implode(', ', $fieldValues),
+                );
+            }
+
+            $seen[$key] = true;
         }
     }
 
@@ -4342,7 +4345,7 @@ final class JsonDataProvider
         try {
             $stat = $this->ndjson->fileStat(
                 $tableName,
-                $tableName . '.ndjson',
+                TableSchema::dataFileName($tableName),
             );
             $fileState = $stat['size'] . '-' . $stat['ino'];
         } catch (JsonProviderException) {
@@ -4426,6 +4429,7 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->meta,
                 $this->locks,
+                $this->validator(),
             );
         }
 

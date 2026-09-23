@@ -36,7 +36,7 @@ Designed for compact, low-traffic workloads where a real RDBMS would be overkill
 - PHP 8.4+
 - Bundled PHP extensions: `ext-json`, `ext-phar`, `ext-zlib`
 - One Composer runtime dependency: `psr/log` (^3) — the optional logger interface
-- Optional extensions: `ext-apcu`, `ext-memcached`, `ext-redis` (cache adapters), `ext-intl` (`ComparisonMode::Locale`)
+- Optional extensions: `ext-apcu`, `ext-memcached`, `ext-redis` (cache adapters), `ext-intl` (`ComparisonModeEnum::Locale`)
 
 ## Quick taste
 
@@ -83,4 +83,4 @@ twin — `insertByArray`, `selectOneByArray`, `selectAllByArray`, … See
 
 ## License
 
-GPL-3.0-or-later.
+MIT — see [LICENSE](LICENSE).

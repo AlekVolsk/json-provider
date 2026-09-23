@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Index\IndexManager;
-use AV\JsonProvider\Query\ComparisonMode;
+use AV\JsonProvider\Query\ComparisonModeEnum;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\SortDirectionEnum;
@@ -268,7 +268,7 @@ final class IndexBinarySearchTest
         $expected = [];
 
         foreach ($records as $line => $record) {
-            if ($condition->matches($record, ComparisonMode::Binary)) {
+            if ($condition->matches($record, ComparisonModeEnum::Binary)) {
                 $expected[] = $line;
             }
         }
@@ -286,7 +286,12 @@ final class IndexBinarySearchTest
         $trimmed = [];
 
         foreach ($lines as $line) {
-            if ($condition->matches($records[$line], ComparisonMode::Binary)) {
+            $matches = $condition->matches(
+                $records[$line],
+                ComparisonModeEnum::Binary,
+            );
+
+            if ($matches) {
                 $trimmed[] = $line;
             }
         }

@@ -7,8 +7,8 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
-use AV\JsonProvider\Services\Integrity\IssueSeverity;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
+use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -70,10 +70,10 @@ final class PresentNullDefaultsTest
         ]);
 
         $report = $this->db->validateTable(self::TABLE);
-        $found = $report->issuesByCategory(IssueCategory::PRESENT_NULL);
+        $found = $report->issuesByCategory(IssueCategoryEnum::PRESENT_NULL);
 
         Assert::count($found, 1, $report->format());
-        Assert::same($found[0]->severity, IssueSeverity::WARNING);
+        Assert::same($found[0]->severity, IssueSeverityEnum::WARNING);
         Assert::same($found[0]->context['column'] ?? '', 'n');
         Assert::same($found[0]->context['line'] ?? '', '0');
     }
@@ -86,7 +86,7 @@ final class PresentNullDefaultsTest
         $report = $this->db->validateTable(self::TABLE);
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::PRESENT_NULL),
+            $report->issuesByCategory(IssueCategoryEnum::PRESENT_NULL),
             0,
             $report->format(),
         );
@@ -103,7 +103,7 @@ final class PresentNullDefaultsTest
         $report = $this->db->validateTable(self::TABLE);
 
         Assert::count(
-            $report->issuesByCategory(IssueCategory::PRESENT_NULL),
+            $report->issuesByCategory(IssueCategoryEnum::PRESENT_NULL),
             0,
             'an absent key is the back-fill case, not present_null: '
                 . $report->format(),
@@ -120,7 +120,7 @@ final class PresentNullDefaultsTest
         ]);
 
         $report = $this->db->repairTable(self::TABLE);
-        $found = $report->issuesByCategory(IssueCategory::PRESENT_NULL);
+        $found = $report->issuesByCategory(IssueCategoryEnum::PRESENT_NULL);
 
         Assert::count($found, 1, $report->format());
         Assert::false($found[0]->repaired);
@@ -297,7 +297,7 @@ final class PresentNullDefaultsTest
 
         $report = $this->db->validateTable(self::TABLE);
         Assert::count(
-            $report->issuesByCategory(IssueCategory::PRESENT_NULL),
+            $report->issuesByCategory(IssueCategoryEnum::PRESENT_NULL),
             0,
             'the write must not plant a null the validator then reports: '
                 . $report->format(),

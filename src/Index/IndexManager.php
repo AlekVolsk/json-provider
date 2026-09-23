@@ -397,7 +397,7 @@ final class IndexManager
     {
         if (
             \strlen($key) % 2 !== 0
-            || preg_match('/^[0-9a-f]*$/', $key) !== 1
+            || preg_match('/^[0-9a-f]*$/D', $key) !== 1
         ) {
             return false;
         }

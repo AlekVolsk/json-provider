@@ -25,7 +25,7 @@ use AV\JsonProvider\Schema\ColumnTypes;
  * The `*z` kinds keep millisecond precision (format token `v`); the plain kinds
  * are second-resolution.
  */
-enum TemporalKind: string
+enum TemporalKindEnum: string
 {
     case Date = ColumnTypes::DATE;
     case Time = ColumnTypes::TIME;

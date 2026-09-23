@@ -8,7 +8,7 @@ use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\TableSchema;
-use AV\JsonProvider\Services\Integrity\IssueCategory;
+use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -159,7 +159,7 @@ final class DdlAtomicityTest
 
         foreach ($report->issues as $issue) {
             if (
-                $issue->category === IssueCategory::TABLE_FILE_MISSING
+                $issue->category === IssueCategoryEnum::TABLE_FILE_MISSING
                 && $issue->repaired
             ) {
                 $repaired = true;
@@ -334,7 +334,7 @@ final class DdlAtomicityTest
 
         foreach ($report->issues as $issue) {
             if (
-                $issue->category === IssueCategory::ORPHAN_DB_ENTRY
+                $issue->category === IssueCategoryEnum::ORPHAN_DB_ENTRY
                 && $issue->repairError !== null
             ) {
                 $flagged = true;
@@ -361,7 +361,7 @@ final class DdlAtomicityTest
 
         foreach ($report->issues as $issue) {
             if (
-                $issue->category === IssueCategory::ORPHAN_DB_ENTRY
+                $issue->category === IssueCategoryEnum::ORPHAN_DB_ENTRY
                 && $issue->repaired
             ) {
                 $repaired = true;

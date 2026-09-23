@@ -10,7 +10,7 @@ namespace AV\JsonProvider\Services\Integrity;
  *
  * Categories are not localized — they are technical identifiers.
  */
-enum IssueCategory: string
+enum IssueCategoryEnum: string
 {
     case TABLE_FILE_MISSING = 'table_file_missing';
     case INDEX_FILE_MISSING = 'index_file_missing';

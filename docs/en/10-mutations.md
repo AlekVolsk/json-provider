@@ -34,6 +34,13 @@ $ok = $db->table('products')->updateByIdByArray($id, ['price' => 9.99]);
 
 The `id` field is silently ignored in update payloads — it cannot be changed.
 
+### Which rows are updated
+
+An array and a DTO select rows differently, because the data itself differs:
+
+- **`updateByArray($data)`** — the array is arbitrary and need not carry `id` (and if it does, `id` is dropped), so rows are selected by the **accumulated `where`**: the patch is applied to every matching record. **Without `where`, every record of the table is updated.** `updateByIdByArray($id, $data)` is `where('id', '=', $id)->updateByArray($data)`.
+- **`update($dto)`** — a DTO always carries `id`, and it selects the row: exactly the record with that `id` is updated, the accumulated `where` is ignored (and reset, as after any terminal operation). The other columns are overwritten with the DTO's values — see [DTO mapping](21-dto-mapping.md#the-object-methods).
+
 The number of affected rows is available from `affectedRows()` — see [below](#affected-rows).
 
 ## Delete
@@ -62,9 +69,9 @@ The whole multi-table effect of a delete/update is planned **before the first by
 $written = $db->importRecords('products', $rows);   // int — records written
 ```
 
-Replaces the whole content of a table in one rewrite — the bulk counterpart of `insert()`, for seeding, imports and restores. Every record goes through the same normalization and validation `insert()` uses, then the data file is atomically replaced, indexes are rebuilt, meta counters (`lineCount`/`byteSize`) are committed and the cache is republished. The table ends up in exactly the state a sequence of `insert()` calls would leave, at a fraction of the cost.
+Replaces the whole content of a table in one rewrite — the bulk counterpart of `insert()`, for seeding, imports and restores. Every record goes through the same normalization and validation `insert()` uses, unique constraints are checked across the whole batch (a duplicate raises `UniqueViolation`), then the data file is atomically replaced, indexes are rebuilt, meta counters (`lineCount`/`byteSize`) are committed and the cache is republished. The table ends up in exactly the state a sequence of `insert()` calls would leave, at a fraction of the cost.
 
-Ids are required on every record and must be unique within the batch: this is a load of known records, not a sequence of appends. Violations raise `RecordImportIdInvalid` and `RecordImportIdDuplicate`. The auto-increment counter is set to the largest supplied id, so the next `insert()` continues past the imported rows.
+Ids are required on every record and must be unique within the batch: this is a load of known records, not a sequence of appends. Violations raise `RecordImportIdInvalid` and `RecordImportIdDuplicate`. The auto-increment counter is raised to the largest supplied id and never lowered: the next `insert()` continues past the imported rows, and ids of the replaced rows are never reissued.
 
 Validation completes before anything is written: a bad row in the middle of the batch aborts the import with the table untouched rather than half-replaced.
 

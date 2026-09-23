@@ -248,7 +248,7 @@ final class LoadBenchArray
         return \count(
             LoadFixture::db()
                 ->table(LoadFixture::tableName(0))
-                ->isDistinct('val')
+                ->distinct('val')
                 ->selectAllByArray(),
         );
     }

@@ -9,7 +9,7 @@ use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Tests\Support\Dto\BadYearDto;
 use AV\JsonProvider\Tests\Support\Dto\EventDto;
-use AV\JsonProvider\Tests\Support\Dto\EventStatus;
+use AV\JsonProvider\Tests\Support\Dto\EventStatusEnum;
 use AV\JsonProvider\Tests\Support\Dto\LabelDto;
 use AV\JsonProvider\Tests\Support\Dto\UnboundDto;
 use AV\JsonProvider\Tests\Support\TempDir;
@@ -55,7 +55,7 @@ final class DtoMappingTest
         $db = self::db();
 
         $id = $db->table('dto_events')->insert(self::newEvent(
-            priority: EventStatus::Done,
+            priority: EventStatusEnum::Done,
             endsAt: '2026-07-05 14:00:00',
         ));
 
@@ -65,8 +65,8 @@ final class DtoMappingTest
 
         Assert::same($dto->id, $id);
         Assert::same($dto->title, 'Event');
-        Assert::true($dto->status === EventStatus::Active);
-        Assert::true($dto->priority === EventStatus::Done);
+        Assert::true($dto->status === EventStatusEnum::Active);
+        Assert::true($dto->priority === EventStatusEnum::Done);
         Assert::same(
             $dto->happensAt->format('Y-m-d H:i:s'),
             '2026-07-05 12:30:00',
@@ -115,7 +115,7 @@ final class DtoMappingTest
         $db->table('dto_events')->update(self::newEvent(
             id: $id,
             title: 'After',
-            status: EventStatus::Done,
+            status: EventStatusEnum::Done,
             year: 2030,
         ));
 
@@ -123,7 +123,7 @@ final class DtoMappingTest
         Assert::notNull($dto);
         \assert($dto instanceof EventDto);
         Assert::same($dto->title, 'After');
-        Assert::true($dto->status === EventStatus::Done);
+        Assert::true($dto->status === EventStatusEnum::Done);
         Assert::same($dto->year, 2030);
 
         $db->table('dto_events')->deleteById($id);
@@ -238,8 +238,8 @@ final class DtoMappingTest
     private static function newEvent(
         int $id = 0,
         string $title = 'Event',
-        EventStatus $status = EventStatus::Active,
-        EventStatus | null $priority = null,
+        EventStatusEnum $status = EventStatusEnum::Active,
+        EventStatusEnum | null $priority = null,
         string $happensAt = '2026-07-05 12:30:00',
         string | null $endsAt = null,
         string $onDate = '2026-07-05',

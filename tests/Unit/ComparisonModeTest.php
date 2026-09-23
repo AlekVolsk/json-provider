@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\JsonDataProvider;
-use AV\JsonProvider\Query\ComparisonMode;
+use AV\JsonProvider\Query\ComparisonModeEnum;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Query\ValueComparator;
 use AV\JsonProvider\Schema\IndexFieldSchema;
@@ -67,7 +67,7 @@ final class ComparisonModeTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->db->setComparisonMode(ComparisonMode::Binary);
+        $this->db->setComparisonMode(ComparisonModeEnum::Binary);
         $this->removeDir(self::dbPathRoot());
     }
 
@@ -98,7 +98,11 @@ final class ComparisonModeTest
     #[Test]
     public function localeModeUsesCollatorOrFallsBack(): void
     {
-        $result = ValueComparator::compare('B', 'a', ComparisonMode::Locale);
+        $result = ValueComparator::compare(
+            'B',
+            'a',
+            ComparisonModeEnum::Locale,
+        );
 
         if (\extension_loaded('intl')) {
             $collator = new \Collator(\Locale::getDefault());
@@ -168,7 +172,7 @@ final class ComparisonModeTest
     #[Test]
     public function localeModeStaysConsistentWithFullScan(): void
     {
-        $this->db->setComparisonMode(ComparisonMode::Locale);
+        $this->db->setComparisonMode(ComparisonModeEnum::Locale);
 
         $viaQuery = array_column(
             $this->db->table('strs')
@@ -187,7 +191,7 @@ final class ComparisonModeTest
                 && ValueComparator::compare(
                     $s,
                     '10',
-                    ComparisonMode::Locale,
+                    ComparisonModeEnum::Locale,
                 ) > 0,
         ));
         sort($expected, SORT_STRING);
@@ -198,7 +202,7 @@ final class ComparisonModeTest
     #[Test]
     public function localeModeKeepsEqualityExactAndIndexed(): void
     {
-        $this->db->setComparisonMode(ComparisonMode::Locale);
+        $this->db->setComparisonMode(ComparisonModeEnum::Locale);
 
         $rows = $this->db->table('strs')
             ->where('s', '=', '10')->selectAllByArray();
@@ -215,7 +219,7 @@ final class ComparisonModeTest
     #[Test]
     public function localeOrderingViaConditionPickedIndexUsesComparator(): void
     {
-        $this->db->setComparisonMode(ComparisonMode::Locale);
+        $this->db->setComparisonMode(ComparisonModeEnum::Locale);
 
         $rows = $this->db->table('strs')
             ->where('s', 'IN', ['9', '10', '100'])
@@ -231,7 +235,7 @@ final class ComparisonModeTest
             ): int => ValueComparator::compare(
                 $a,
                 $b,
-                ComparisonMode::Locale,
+                ComparisonModeEnum::Locale,
             ),
         );
 
@@ -241,7 +245,7 @@ final class ComparisonModeTest
     #[Test]
     public function localeModeOrderByAgreesWithComparator(): void
     {
-        $this->db->setComparisonMode(ComparisonMode::Locale);
+        $this->db->setComparisonMode(ComparisonModeEnum::Locale);
 
         $ordered = array_column(
             $this->db->table('strs')->orderBy('s')->selectAllByArray(),
@@ -254,7 +258,7 @@ final class ComparisonModeTest
             static fn (string $a, string $b): int => ValueComparator::compare(
                 $a,
                 $b,
-                ComparisonMode::Locale,
+                ComparisonModeEnum::Locale,
             ),
         );
 

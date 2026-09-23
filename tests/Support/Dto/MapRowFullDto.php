@@ -19,7 +19,7 @@ final class MapRowFullDto
         public int $id,
         public string $sku,
         public int $categoryId,
-        public MapStatus $status,
+        public MapStatusEnum $status,
         public int $bucket,
         public int $decile,
         public float $price,

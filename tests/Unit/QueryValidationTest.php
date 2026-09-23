@@ -391,7 +391,7 @@ final class QueryValidationTest
         });
         $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)
-                ->isDistinct('typo')->selectAllByArray();
+                ->distinct('typo')->selectAllByArray();
         });
         $this->expectKey('QueryUnknownColumn', function (): void {
             $this->db->table(self::TABLE)->selectColumn('typo');

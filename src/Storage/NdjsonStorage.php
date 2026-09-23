@@ -9,6 +9,7 @@ use AV\JsonProvider\Exception\JsonProviderIoException;
 use AV\JsonProvider\Exception\JsonProviderLockException;
 use AV\JsonProvider\Exception\JsonProviderTableException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
+use AV\JsonProvider\Schema\IdentifierRules;
 
 /**
  * Storage for NDJSON files — the single point of physical I/O for table and
@@ -658,7 +659,7 @@ final class NdjsonStorage
         $this->ensureFileExists($path);
 
         clearstatcache(true, $path);
-        $stat = @stat($path);
+        $stat = stat($path);
 
         if ($stat === false) {
             throw new JsonProviderIoException(
@@ -822,7 +823,7 @@ final class NdjsonStorage
     {
         self::assertSegment($tableName);
 
-        return is_dir($this->dbPath . '/' . $tableName);
+        return is_dir($this->tableDir($tableName));
     }
 
     /**
@@ -836,7 +837,7 @@ final class NdjsonStorage
     {
         self::assertSegment($tableName);
 
-        $dir = $this->dbPath . '/' . $tableName;
+        $dir = $this->tableDir($tableName);
 
         if (!is_dir($dir)) {
             return [];
@@ -910,8 +911,8 @@ final class NdjsonStorage
         self::assertSegment($from);
         self::assertSegment($to);
 
-        $src = $this->dbPath . '/' . $from;
-        $dst = $this->dbPath . '/' . $to;
+        $src = $this->tableDir($from);
+        $dst = $this->tableDir($to);
 
         if (!is_dir($src)) {
             if (is_dir($dst)) {
@@ -938,7 +939,7 @@ final class NdjsonStorage
             );
         }
 
-        self::fsyncDir($this->dbPath);
+        AtomicFileWriter::syncDirectory($this->dbPath);
     }
 
     /**
@@ -980,7 +981,7 @@ final class NdjsonStorage
             );
         }
 
-        self::fsyncDir($this->dbPath . '/' . $tableName);
+        AtomicFileWriter::syncDirectory($this->tableDir($tableName));
     }
 
     /**
@@ -990,7 +991,7 @@ final class NdjsonStorage
     {
         self::assertSegment($tableName);
 
-        $dir = $this->dbPath . '/' . $tableName;
+        $dir = $this->tableDir($tableName);
 
         if (!is_dir($dir)) {
             return;
@@ -1005,34 +1006,20 @@ final class NdjsonStorage
     }
 
     /**
-     * Best-effort directory fsync so a metadata operation (rename) is
-     * durable before the caller proceeds. On filesystems or PHP builds
-     * where a directory cannot be opened or synced the call degrades
-     * silently — the rename itself is still atomic, only its durability
-     * window widens.
-     */
-    private static function fsyncDir(string $dir): void
-    {
-        $handle = @fopen($dir, 'r');
-
-        if ($handle === false) {
-            return;
-        }
-
-        @fsync($handle);
-        fclose($handle);
-    }
-
-    /**
      * Resolves the absolute path: dbPath/<tableName>/<fileName>.
      * Path-traversal guard: neither segment may contain separators.
      */
+    private function tableDir(string $tableName): string
+    {
+        return $this->dbPath . '/' . IdentifierRules::physicalName($tableName);
+    }
+
     private function resolvePath(string $tableName, string $fileName): string
     {
         self::assertSegment($tableName);
         self::assertSegment($fileName);
 
-        return $this->dbPath . '/' . $tableName . '/' . $fileName;
+        return $this->tableDir($tableName) . '/' . $fileName;
     }
 
     /**
@@ -1077,7 +1064,7 @@ final class NdjsonStorage
     {
         self::assertSegment($tableName);
 
-        $dir = $this->dbPath . '/' . $tableName;
+        $dir = $this->tableDir($tableName);
 
         if (is_dir($dir)) {
             return;

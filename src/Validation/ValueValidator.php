@@ -402,8 +402,8 @@ final class ValueValidator
         $kind = $info->temporalKind();
 
         if (
-            $kind === TemporalKind::DateTime
-            || $kind === TemporalKind::DateTimeZ
+            $kind === TemporalKindEnum::DateTime
+            || $kind === TemporalKindEnum::DateTimeZ
         ) {
             throw new JsonProviderQueryException(
                 JsonProviderErrorEn::LikeOnInstantUnsupported,
@@ -650,7 +650,7 @@ final class ValueValidator
     private function encodeTemporal(
         string $table,
         string $column,
-        TemporalKind $kind,
+        TemporalKindEnum $kind,
         string $value,
     ): string {
         try {

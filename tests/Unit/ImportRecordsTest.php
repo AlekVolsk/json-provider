@@ -7,9 +7,13 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\SortDirectionEnum;
+use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
+use AV\JsonProvider\Schema\RelationSchema;
+use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -195,6 +199,97 @@ final class ImportRecordsTest
         } catch (JsonProviderException $e) {
             Assert::true($e->getMessage() !== '');
         }
+    }
+
+    #[Test]
+    public function duplicateUniqueKeyInBatchIsRejectedTableUntouched(): void
+    {
+        $this->db->createTable(TableSchema::create(
+            name: 'imp_codes',
+            columns: ['code' => 'string'],
+            uniqueConstraints: [new UniqueConstraint('uq_code', ['code'])],
+        ));
+        $this->db->insert('imp_codes', ['code' => 'kept']);
+
+        try {
+            $this->db->importRecords('imp_codes', [
+                ['id' => 1, 'code' => 'X'],
+                ['id' => 2, 'code' => 'X'],
+            ]);
+            Assert::fail('a duplicate unique key must abort the import');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
+        }
+
+        Assert::same(
+            $this->db->table('imp_codes')->selectColumn('code'),
+            ['kept'],
+        );
+    }
+
+    #[Test]
+    public function cascadeFromOneParentLeavesAnotherParentsChildren(): void
+    {
+        $this->db->createTable(TableSchema::create(
+            name: 'imp_parents',
+            columns: ['code' => 'string'],
+            uniqueConstraints: [new UniqueConstraint('uq_code', ['code'])],
+        ));
+        $this->db->createTable(TableSchema::create(
+            name: 'imp_children',
+            columns: ['pcode' => 'string'],
+        ));
+        $this->db->addRelation(new RelationSchema(
+            fromTable: 'imp_children',
+            foreignKey: 'pcode',
+            toTable: 'imp_parents',
+            references: 'code',
+            type: RelationTypeEnum::BELONGS_TO,
+            onDelete: ForeignKeyActionEnum::CASCADE,
+        ));
+
+        try {
+            $this->db->importRecords('imp_parents', [
+                ['id' => 1, 'code' => 'X'],
+                ['id' => 2, 'code' => 'X'],
+            ]);
+            Assert::fail('two parents sharing a unique key must be rejected');
+        } catch (JsonProviderException $e) {
+            Assert::same($e->getErrorKey(), 'UniqueViolation');
+        }
+
+        $this->db->importRecords('imp_parents', [
+            ['id' => 1, 'code' => 'X'],
+            ['id' => 2, 'code' => 'Y'],
+        ]);
+        $this->db->importRecords('imp_children', [['id' => 1, 'pcode' => 'X']]);
+        $this->db->table('imp_parents')->deleteById(2);
+
+        Assert::same($this->db->table('imp_children')->count(), 1);
+    }
+
+    #[Test]
+    public function autoIncrementIsRaisedButNeverLowered(): void
+    {
+        foreach ([1, 2, 3, 4, 5] as $n) {
+            $this->db->insert('imp_items', ['title' => 't' . $n, 'qty' => $n]);
+        }
+
+        $this->db->importRecords('imp_items', [
+            ['id' => 1, 'title' => 'only', 'qty' => 1],
+        ]);
+        Assert::same(
+            $this->db->insert('imp_items', ['title' => 'next', 'qty' => 0]),
+            6,
+        );
+
+        $this->db->importRecords('imp_items', [
+            ['id' => 40, 'title' => 'far', 'qty' => 1],
+        ]);
+        Assert::same(
+            $this->db->insert('imp_items', ['title' => 'next', 'qty' => 0]),
+            41,
+        );
     }
 
     /**

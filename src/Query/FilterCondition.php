@@ -37,7 +37,7 @@ final class FilterCondition
      */
     public function matches(
         array $record,
-        ComparisonMode $mode = ComparisonMode::Binary,
+        ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
     ): bool {
         $result = $this->operator->matches(
             $record[$this->field] ?? null,
