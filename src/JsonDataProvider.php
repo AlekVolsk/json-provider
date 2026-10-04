@@ -17,6 +17,8 @@ use AV\JsonProvider\Exception\JsonProviderServiceException;
 use AV\JsonProvider\Exception\JsonProviderTableException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Exception\Locale\LocaleInterface;
+use AV\JsonProvider\Index\IndexEntryList;
+use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
@@ -33,6 +35,7 @@ use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Relations\FkEngine;
 use AV\JsonProvider\Schema\ColumnDefaults;
 use AV\JsonProvider\Schema\ColumnTypes;
+use AV\JsonProvider\Schema\FkBackingPolicyEnum;
 use AV\JsonProvider\Schema\IdentifierRules;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
@@ -49,6 +52,7 @@ use AV\JsonProvider\Services\Integrity\IntegrityRepairer;
 use AV\JsonProvider\Services\Integrity\IntegrityReport;
 use AV\JsonProvider\Services\Integrity\IntegrityValidator;
 use AV\JsonProvider\Storage\BrokenRecordPolicyEnum;
+use AV\JsonProvider\Storage\DerivedFiles;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Storage\StorageManifest;
@@ -86,6 +90,12 @@ final class JsonDataProvider
      */
     private const int PARTIAL_SORT_MARGIN = 4;
 
+    /**
+     * Data lines are read through their offsets while at most one line in
+     * OFFSET_READ_SHARE is wanted.
+     */
+    private const int OFFSET_READ_SHARE = 8;
+
     private const string SCHEMA_FILE = 'information_schema.json';
 
     private const string LEGACY_FORMAT_NOTICE = 'database "%s" is stored in '
@@ -120,6 +130,7 @@ final class JsonDataProvider
     private readonly DtoRegistry $dtoRegistry;
     private readonly DtoMapper $dtoMapper;
     private readonly TableFreshness $freshness;
+    private readonly DerivedFiles $derived;
 
     /**
      * True while a storage migration runs: it rewrites or re-stamps the
@@ -145,6 +156,15 @@ final class JsonDataProvider
     private ComparisonModeEnum $comparisonMode = ComparisonModeEnum::Binary;
     private BrokenRecordPolicyEnum $brokenRecordPolicy
         = BrokenRecordPolicyEnum::Drop;
+    private FkBackingPolicyEnum $fkBackingPolicy
+        = FkBackingPolicyEnum::SingleColumn;
+
+    /**
+     * Entries an index may hold past its sorted head before an append
+     * rewrites it sorted: every lookup reads the tail whole, a merge
+     * rewrites the whole index file.
+     */
+    private int $indexTailLimit = 1024;
 
     /**
      * Under BrokenRecordPolicyEnum::Refuse, the lines the latest write-path
@@ -185,7 +205,8 @@ final class JsonDataProvider
         $this->json = new JsonStorage($dbPath, $this->locks);
         $this->schema = new SchemaRegistry($this->json);
         $this->cache = $cache ?? new NullCache();
-        $this->indexManager = new IndexManager($this->ndjson);
+        $this->derived = new DerivedFiles($dbPath);
+        $this->indexManager = new IndexManager($this->ndjson, $this->derived);
         $this->meta = new MetaRegistry($this->json);
         $this->values = new ValueValidator();
         $this->dtoRegistry = new DtoRegistry();
@@ -309,6 +330,20 @@ final class JsonDataProvider
     }
 
     /**
+     * Sets which user index addRelation(), dropIndex() and repair() may
+     * pick as the backing index of a probing relation on this instance.
+     * SingleColumn (default) takes only an index on exactly the FK column;
+     * LeadingColumn also takes one led by it (see FkBackingPolicyEnum for
+     * what engines before 1.2 make of such a relation).
+     */
+    public function setFkBackingPolicy(FkBackingPolicyEnum $policy): self
+    {
+        $this->fkBackingPolicy = $policy;
+
+        return $this;
+    }
+
+    /**
      * Binds one or more DTO classes to their tables (read from the
      * #[JsonProviderRecord] attribute). Each class is compiled and validated
      * against the table schema now, so a DTO/schema mismatch fails here rather
@@ -418,6 +453,16 @@ final class JsonDataProvider
                         $tableSchema->name,
                         $index->getFileName(),
                     );
+                    $this->derived->setIndexBoundary(
+                        $tableSchema->name,
+                        $index->getFileName(),
+                        $this->ndjson->pathOf(
+                            $tableSchema->name,
+                            $index->getFileName(),
+                        ),
+                        0,
+                        0,
+                    );
                 }
 
                 if ($this->freshness->stampsEnabled()) {
@@ -500,6 +545,7 @@ final class JsonDataProvider
 
                 $this->meta->dropEntry($tableName);
                 $this->ndjson->deleteTable($tableName);
+                $this->derived->dropTable($tableName);
                 $this->dtoRegistry->unregister($tableName);
                 $this->locks->deleteTableLock($tableName);
             },
@@ -619,6 +665,7 @@ final class JsonDataProvider
                 $this->meta->moveEntry($from, $to);
 
                 $this->ndjson->renameTableDir($from, $to);
+                $this->derived->renameTable($from, $to);
                 $this->ndjson->renameFile(
                     $to,
                     $tableSchema->getFileName(),
@@ -832,16 +879,7 @@ final class JsonDataProvider
                     true,
                 );
                 $this->ensureTableConsistent($tableSchema);
-
-                if ($tableSchema->uniqueConstraints !== []) {
-                    $records = $this->readAllForWrite($tableName);
-                    $this->checkUniqueConstraints(
-                        $tableSchema,
-                        $records,
-                        $record,
-                        null,
-                    );
-                }
+                $this->checkUniqueOnInsert($tableSchema, $record);
 
                 $probe = $this->normalizeRecord(
                     $tableSchema,
@@ -896,6 +934,7 @@ final class JsonDataProvider
                     $lineNumber + 1,
                     $byteSize,
                 );
+                $this->mergeIndexTails($tableSchema, $lineNumber + 1);
                 $this->invalidateCache($tableName);
 
                 return $id;
@@ -947,9 +986,10 @@ final class JsonDataProvider
                 );
 
                 $targetIndexes = [];
+                $matches = $this->conditionFilter($conditions);
 
                 foreach ($records as $index => $existing) {
-                    if ($this->matchesAll($existing, $conditions)) {
+                    if ($matches($existing)) {
                         $targetIndexes[] = $index;
                     }
                 }
@@ -998,9 +1038,10 @@ final class JsonDataProvider
                 $records = $this->readAllForWrite($tableName);
 
                 $deleteIndexes = [];
+                $matches = $this->conditionFilter($conditions);
 
                 foreach ($records as $index => $record) {
-                    if ($this->matchesAll($record, $conditions)) {
+                    if ($matches($record)) {
                         $deleteIndexes[] = $index;
                     }
                 }
@@ -1820,7 +1861,7 @@ final class JsonDataProvider
                     $found,
                 );
 
-                if ($replacement !== null) {
+                if ($replacement !== null && $replacement->isService) {
                     $this->provisionServiceIndexFile(
                         $tableName,
                         $replacement,
@@ -2041,8 +2082,9 @@ final class JsonDataProvider
      * probing (cascade/restrict) actions, and persists. The relation is
      * active immediately — no restart or migration step.
      *
-     * Backing resolution: an existing single-column USER index on the FK
-     * column is reused; otherwise a service index "_fk_<column>" is built
+     * Backing resolution: a USER index the backing policy accepts is
+     * reused (see setFkBackingPolicy()); otherwise a service index
+     * "_fk_<column>" is built
      * (file first, then the schema RMW that also records the relation, so
      * a crash in between leaves only an orphan index file for repair to
      * sweep). Any backingIndex preset on the passed descriptor is
@@ -2364,7 +2406,8 @@ final class JsonDataProvider
             if (
                 $manifest->isLegacy()
                 || $this->freshness->verdict($tableSchema, true)
-                    !== FreshnessEnum::FRESH
+                !== FreshnessEnum::FRESH
+                || !$this->derivedCurrent($tableSchema)
             ) {
                 $pendingTables[] = $name;
             }
@@ -2389,6 +2432,9 @@ final class JsonDataProvider
             readOnly: $manifest->unknownRoCompat() !== [],
             pendingSteps: $pendingSteps,
             pendingTables: $pendingTables,
+            pendingFeatures: $manifest->isLegacy()
+                ? []
+                : $manifest->missingFeatures(),
         );
     }
 
@@ -2448,7 +2494,7 @@ final class JsonDataProvider
      * index lookup and the row reads — the pair is always coherent. The SH
      * section covers only the I/O and is released before decoding.
      *
-     * The index is used only when trusted (indexTrustworthy: committed
+     * The index is used only when trusted (indexTrustedLineCount: committed
      * byteSize matches the data file, indexFormat >= 2); an untrusted
      * index silently degrades to a full scan, structural corruption of a
      * trusted index throws INDEX_UNRELIABLE. An empty index result is
@@ -2644,7 +2690,10 @@ final class JsonDataProvider
      *
      * An unconditional count needs no row data, so it is answered from the
      * meta counter when that counter is provably current — see
-     * countFromMeta(). Everything else reads and filters the rows.
+     * countFromMeta(). A count with conditions is answered from the data
+     * cache when it holds the table's current version, otherwise through
+     * an index that serves the conditions (countViaIndex()); everything
+     * else reads and filters the rows.
      *
      * @param array<int,FilterCondition> $conditions
      */
@@ -2664,7 +2713,22 @@ final class JsonDataProvider
             }
         }
 
-        $records = $this->readAllRaw($tableName);
+        $records = $conditions === []
+            ? null
+            : $this->cache->get($this->cacheKey(
+                $tableName,
+                $this->tableVersionTag($tableName),
+            ));
+
+        if ($records === null && $conditions !== []) {
+            $viaIndex = $this->countViaIndex($tableName, $conditions);
+
+            if ($viaIndex !== null) {
+                return $viaIndex;
+            }
+        }
+
+        $records ??= $this->readAllRaw($tableName);
 
         if ($conditions === []) {
             return \count($records);
@@ -2672,7 +2736,7 @@ final class JsonDataProvider
 
         return \count(array_filter(
             $records,
-            fn (array $r): bool => $this->matchesAll($r, $conditions),
+            $this->conditionFilter($conditions),
         ));
     }
 
@@ -2698,6 +2762,56 @@ final class JsonDataProvider
     public function flushDb(): void
     {
         $this->cache->flushDb($this->cacheNs);
+    }
+
+    /**
+     * Counts the rows matching the conditions through an index, the way a
+     * select with the same conditions reads them — the two cannot answer
+     * differently. Null when no index serves the conditions or the index
+     * is not trusted; the caller then counts a full read. Used only when
+     * the data cache holds no entry for the table's current version: a
+     * cached table is counted from memory.
+     *
+     * @param array<int,FilterCondition> $conditions
+     */
+    private function countViaIndex(
+        string $tableName,
+        array $conditions,
+    ): int | null {
+        if (
+            $this->resolveIndex(
+                $this->schema->getTable($tableName),
+                [],
+                $conditions,
+            ) === null
+        ) {
+            return null;
+        }
+
+        /** @var null|array<int,array<string,null|scalar>> $records */
+        $records = $this->locks->withLocks(
+            [$tableName => 'sh'],
+            null,
+            function () use ($tableName, $conditions): array | null {
+                $freshSchema = $this->schema->getTable($tableName);
+                $freshIndex = $this->resolveIndex(
+                    $freshSchema,
+                    [],
+                    $conditions,
+                );
+
+                return $freshIndex === null
+                    ? null
+                    : $this->selectViaIndex(
+                        $freshIndex,
+                        $freshSchema,
+                        $conditions,
+                        [],
+                    );
+            },
+        );
+
+        return $records === null ? null : \count($records);
     }
 
     /**
@@ -2914,9 +3028,11 @@ final class JsonDataProvider
 
     /**
      * When the index being dropped is the backing of at least one probing
-     * relation on this child table, returns the service index descriptor
-     * that must replace it (or an already existing service index on the
-     * same column); null when no relation depends on it.
+     * relation on this child table, returns the index that must replace
+     * it: under LeadingColumn another user index the policy accepts,
+     * otherwise the service index descriptor (or an already existing
+     * service index on the same column); null when no relation depends on
+     * it.
      */
     private function backingReplacementFor(
         string $tableName,
@@ -2941,6 +3057,21 @@ final class JsonDataProvider
         }
 
         $column = $dropped->fields[0]->field;
+
+        if ($this->fkBackingPolicy === FkBackingPolicyEnum::LeadingColumn) {
+            $user = $this->fkBackingPolicy->userBacking(
+                array_values(array_filter(
+                    $this->schema->getTable($tableName)->indexes,
+                    static fn (IndexSchema $i): bool => $i
+                        ->name !== $dropped->name,
+                )),
+                $column,
+            );
+
+            if ($user !== null) {
+                return $user;
+            }
+        }
 
         return new IndexSchema(
             name: IdentifierRules::serviceIndexNameFor($column),
@@ -2983,26 +3114,22 @@ final class JsonDataProvider
 
     /**
      * Picks the backing index for a probing relation on the child column:
-     * an existing single-column USER index on that column is reused;
-     * otherwise the service descriptor "_fk_<column>" is returned (which
-     * may itself already be declared by another relation on the same
-     * column and is then shared).
+     * a USER index the backing policy accepts is reused
+     * (FkBackingPolicyEnum::userBacking); otherwise the service descriptor
+     * "_fk_<column>" is returned (which may itself already be declared by
+     * another relation on the same column and is then shared).
      */
     private function resolveBackingIndex(
         string $childTable,
         string $column,
     ): IndexSchema {
-        $tableSchema = $this->schema->getTable($childTable);
+        $user = $this->fkBackingPolicy->userBacking(
+            $this->schema->getTable($childTable)->indexes,
+            $column,
+        );
 
-        foreach ($tableSchema->indexes as $index) {
-            if (
-                !$index->isService
-                && !$index->isPrimary
-                && \count($index->fields) === 1
-                && $index->fields[0]->field === $column
-            ) {
-                return $index;
-            }
+        if ($user !== null) {
+            return $user;
         }
 
         return new IndexSchema(
@@ -3644,10 +3771,10 @@ final class JsonDataProvider
 
         $this->createMissingIndexFiles($tableSchema);
 
-        $metaInitialized = false;
+        $committed = null;
 
         try {
-            $this->meta->getByteSize($tableSchema->name);
+            $committed = $this->meta->getCommittedFile($tableSchema->name);
         } catch (JsonProviderException $e) {
             /*
              * Both a missing and a corrupt entry self-heal the same way:
@@ -3666,11 +3793,13 @@ final class JsonDataProvider
             }
 
             $this->meta->initTable($tableSchema->name);
-            $metaInitialized = true;
         }
 
-        if (!$metaInitialized && $this->trustedNow($tableSchema)) {
-            if ($this->meta->getIndexFormat($tableSchema->name) >= 2) {
+        if (
+            $committed !== null
+            && $this->trustedNow($tableSchema, $committed)
+        ) {
+            if ($committed['indexFormat'] >= 2) {
                 return;
             }
 
@@ -3686,7 +3815,7 @@ final class JsonDataProvider
         $records = $this->readAllForWrite($tableSchema->name);
         $this->assertRewritable($tableSchema->name);
 
-        if ($metaInitialized) {
+        if ($committed === null) {
             $maxId = self::maxStoredId($records);
 
             if ($maxId > 0) {
@@ -3850,26 +3979,36 @@ final class JsonDataProvider
         int | null $limit = null,
         int $offset = 0,
     ): array | null {
-        if (!$this->indexTrustworthy($tableSchema)) {
+        $lineCount = $this->indexTrustedLineCount($tableSchema);
+
+        if ($lineCount === null) {
             return null;
         }
 
-        $entries = $this->indexManager->readIndexValidated(
-            $tableSchema->name,
-            $index,
-            $this->meta->getLineCount($tableSchema->name),
-            true,
-        );
+        $orderedByIndex = $ordering !== []
+            && $index->matchesOrdering($ordering)
+            && $this->orderingIndexable($tableSchema, $ordering);
+        $sorted = $orderedByIndex
+            ? null
+            : $this->indexManager->openSorted(
+                $tableSchema->name,
+                $index,
+                $lineCount,
+            );
+        $entries = $sorted !== null
+            ? []
+            : $this->indexManager->readIndexValidated(
+                $tableSchema->name,
+                $index,
+                $lineCount,
+                true,
+            );
 
         if ($entries === null) {
             return null;
         }
 
-        if (
-            $ordering !== []
-            && $index->matchesOrdering($ordering)
-            && $this->orderingIndexable($tableSchema, $ordering)
-        ) {
+        if ($orderedByIndex) {
             $lineNumbers = array_column($entries, 'line');
 
             if ($conditions === []) {
@@ -3879,10 +4018,10 @@ final class JsonDataProvider
 
                 $records = $this->values->widenFloats(
                     $tableSchema,
-                    $this->ndjson->readLines(
-                        $tableSchema->name,
-                        $tableSchema->getFileName(),
+                    $this->readDataLines(
+                        $tableSchema,
                         $lineNumbers,
+                        $lineCount
                     ),
                 );
 
@@ -3903,22 +4042,48 @@ final class JsonDataProvider
                 $conditions,
                 $offset,
                 $limit,
+                $lineCount,
             );
         }
 
         $lineNumbers = null;
+        $prefix = $this->indexPrefix($tableSchema, $index, $conditions);
 
-        foreach ($conditions as $condition) {
+        if ($prefix['fields'] >= 2) {
+            $lineNumbers = $sorted !== null
+                ? $this->indexManager->searchSortedPrefix(
+                    $tableSchema->name,
+                    $sorted,
+                    $index,
+                    $prefix['values'],
+                    $prefix['range'],
+                )
+                : $this->indexManager->searchPrefixIn(
+                    new IndexEntryList($entries),
+                    $index,
+                    $prefix['values'],
+                    $prefix['range'],
+                );
+        }
+
+        foreach ($lineNumbers === null ? $conditions : [] as $condition) {
             if (!$this->conditionIndexServable($tableSchema, $condition)) {
                 continue;
             }
 
-            $lines = $this->indexManager->searchLines(
-                $tableSchema,
-                $entries,
-                $index,
-                $condition,
-            );
+            $lines = $sorted !== null
+                ? $this->indexManager->searchSorted(
+                    $tableSchema->name,
+                    $sorted,
+                    $index,
+                    $condition,
+                )
+                : $this->indexManager->searchLines(
+                    $tableSchema,
+                    $entries,
+                    $index,
+                    $condition,
+                );
 
             if ($lines !== null) {
                 $lineNumbers = $lines;
@@ -3933,21 +4098,27 @@ final class JsonDataProvider
         $records = $this->values->widenFloats(
             $tableSchema,
             $lineNumbers !== null
-                ? $this->ndjson->readLines(
-                    $tableSchema->name,
-                    $tableSchema->getFileName(),
-                    $lineNumbers,
-                )
+                ? $this->readDataLines($tableSchema, $lineNumbers, $lineCount)
                 : $this->ndjson->read(
                     $tableSchema->name,
                     $tableSchema->getFileName(),
                 ),
         );
 
+        if ($sorted !== null && $lineNumbers !== null) {
+            $this->indexManager->verifyRecords(
+                $tableSchema->name,
+                $sorted,
+                $index,
+                $lineNumbers,
+                $records,
+            );
+        }
+
         if ($conditions !== []) {
             $records = array_values(array_filter(
                 $records,
-                fn (array $r): bool => $this->matchesAll($r, $conditions),
+                $this->conditionFilter($conditions),
             ));
         }
 
@@ -3978,7 +4149,7 @@ final class JsonDataProvider
         if ($conditions !== []) {
             $records = array_values(array_filter(
                 $records,
-                fn (array $r): bool => $this->matchesAll($r, $conditions),
+                $this->conditionFilter($conditions),
             ));
         }
 
@@ -3990,34 +4161,35 @@ final class JsonDataProvider
     }
 
     /**
-     * O(1) read-side trust gate for the table's indexes: they are used
-     * only when the committed byteSize matches the actual data file (the
-     * indexes describe exactly the committed state) and the on-disk key
-     * format is current. Any doubt — missing meta, unknown byteSize,
-     * foreign append, legacy format — degrades reads to a full scan; the
-     * next write heals and stamps under the table EX lock.
+     * O(1) read-side trust gate for the table's indexes, from one read of
+     * meta.json: they are used only when the committed byteSize matches
+     * the actual data file (the indexes describe exactly the committed
+     * state) and the on-disk key format is current. Returns the committed
+     * line count the indexes describe, or null on any doubt — missing
+     * meta, unknown byteSize, foreign append, legacy format — which
+     * degrades reads to a full scan; the next write heals and stamps under
+     * the table EX lock.
      */
-    private function indexTrustworthy(TableSchema $tableSchema): bool
+    private function indexTrustedLineCount(TableSchema $tableSchema): int | null
     {
         try {
-            $byteSize = $this->meta->getByteSize($tableSchema->name);
-            $format = $this->meta->getIndexFormat($tableSchema->name);
+            $committed = $this->meta->getCommittedFile($tableSchema->name);
         } catch (JsonProviderException) {
-            return false;
+            return null;
         }
 
-        if ($format < 2) {
+        if ($committed['indexFormat'] < 2) {
             $this->logger?->info(
                 'table "' . $tableSchema->name . '": pre-v2 index format, '
                     . 'queries fall back to full scans until the next '
                     . 'write rebuilds and stamps the indexes',
             );
 
-            return false;
+            return null;
         }
 
-        if ($byteSize === null) {
-            return false;
+        if ($committed['byteSize'] === null) {
+            return null;
         }
 
         if (
@@ -4026,10 +4198,13 @@ final class JsonDataProvider
                 $tableSchema->getFileName(),
             )
         ) {
-            return false;
+            return null;
         }
 
-        $freshness = $this->freshness->check($tableSchema);
+        $freshness = $this->freshness->checkCommitted(
+            $tableSchema,
+            $committed,
+        );
         $this->noteFreshness($tableSchema->name, $freshness);
 
         if ($freshness === FreshnessEnum::DRIFT) {
@@ -4040,10 +4215,10 @@ final class JsonDataProvider
                     . 'next write heals the drift',
             );
 
-            return false;
+            return null;
         }
 
-        return $freshness->trusted();
+        return $freshness->trusted() ? $committed['lineCount'] : null;
     }
 
     /**
@@ -4061,6 +4236,7 @@ final class JsonDataProvider
         array $conditions,
         int $offset,
         int | null $limit,
+        int $lineCount,
     ): array {
         if ($limit === 0) {
             return [];
@@ -4068,17 +4244,14 @@ final class JsonDataProvider
 
         $records = $this->values->widenFloats(
             $tableSchema,
-            $this->ndjson->readLines(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-                $lineNumbers,
-            ),
+            $this->readDataLines($tableSchema, $lineNumbers, $lineCount),
         );
         $result = [];
         $skipped = 0;
+        $matches = $this->conditionFilter($conditions);
 
         foreach ($records as $record) {
-            if (!$this->matchesAll($record, $conditions)) {
+            if (!$matches($record)) {
                 continue;
             }
 
@@ -4154,10 +4327,12 @@ final class JsonDataProvider
 
     /**
      * Picks an index for the query: first one matching the requested
-     * ordering, then one whose first field is filtered by an indexable
-     * condition. Service (FK backing) indexes are invisible here — they
-     * exist for FK probes only, and a select over the FK column behaves
-     * exactly as if the column were unindexed.
+     * ordering, then the first one whose leading fields the conditions
+     * narrow the most when that is two fields or more (indexPrefix), then
+     * one whose first field is filtered by an indexable condition.
+     * Service (FK backing) indexes take part like user ones; one goes away
+     * with its relation, and a select over the column then falls back to
+     * a full scan.
      *
      * In Locale comparison mode the byte-ordered index disagrees with the
      * collator, so string columns are excluded from index-driven ordering
@@ -4199,14 +4374,27 @@ final class JsonDataProvider
             && $this->orderingIndexable($tableSchema, $ordering)
         ) {
             foreach ($tableSchema->indexes as $index) {
-                if ($index->isService) {
-                    continue;
-                }
-
                 if ($index->matchesOrdering($ordering)) {
                     return $index;
                 }
             }
+        }
+
+        $widest = null;
+        $widestFields = 1;
+
+        foreach ($tableSchema->indexes as $index) {
+            $prefix = $this->indexPrefix($tableSchema, $index, $conditions);
+            $fields = $prefix['fields'];
+
+            if ($fields > $widestFields) {
+                $widest = $index;
+                $widestFields = $fields;
+            }
+        }
+
+        if ($widest !== null) {
+            return $widest;
         }
 
         foreach ($conditions as $condition) {
@@ -4215,10 +4403,6 @@ final class JsonDataProvider
             }
 
             foreach ($tableSchema->indexes as $index) {
-                if ($index->isService) {
-                    continue;
-                }
-
                 $firstField = $index->fields[0] ?? null;
 
                 if (
@@ -4231,6 +4415,83 @@ final class JsonDataProvider
         }
 
         return null;
+    }
+
+    /**
+     * How far the conditions narrow a lookup in the index: the values that
+     * `=` conditions fix for its leading fields, in index order, and a
+     * range condition on the field right after them. $fields counts the
+     * fields used. Only conditions an index may serve take part
+     * (conditionIndexServable), and only values a key can encode.
+     *
+     * @param array<int,FilterCondition> $conditions
+     *
+     * @return array{
+     *     values: array<int,null|bool|float|int|string>,
+     *     range: null|FilterCondition,
+     *     fields: int,
+     * }
+     */
+    private function indexPrefix(
+        TableSchema $tableSchema,
+        IndexSchema $index,
+        array $conditions,
+    ): array {
+        $values = [];
+        $range = null;
+
+        foreach ($index->fields as $field) {
+            $equal = null;
+            $bounded = null;
+
+            foreach ($conditions as $condition) {
+                if (
+                    $condition->not
+                    || $condition->field !== $field->field
+                    || !$this->conditionIndexServable($tableSchema, $condition)
+                ) {
+                    continue;
+                }
+
+                $value = $condition->value;
+
+                if ($condition->operator === FilterOperatorEnum::EQ) {
+                    $encodable = $value === null
+                        || (\is_scalar($value)
+                            && (!\is_float($value) || is_finite($value)));
+
+                    if ($encodable && $equal === null) {
+                        $equal = [$value];
+                    }
+                } elseif (
+                    \in_array($condition->operator, [
+                        FilterOperatorEnum::GT,
+                        FilterOperatorEnum::GTE,
+                        FilterOperatorEnum::LT,
+                        FilterOperatorEnum::LTE,
+                        FilterOperatorEnum::BETWEEN,
+                    ], true)
+                ) {
+                    $bounded ??= $condition;
+                }
+            }
+
+            if ($equal !== null) {
+                $values[] = $equal[0];
+
+                continue;
+            }
+
+            $range = $bounded;
+
+            break;
+        }
+
+        return [
+            'values' => $values,
+            'range'  => $range,
+            'fields' => \count($values) + ($range !== null ? 1 : 0),
+        ];
     }
 
     /**
@@ -4346,27 +4607,114 @@ final class JsonDataProvider
     }
 
     /**
-     * Checks all unique constraints; $excludeId is the id of the record
-     * being updated.
+     * Checks the unique constraints for a record about to be inserted. A
+     * constraint with an index on its fields (UniqueConstraint::indexIn)
+     * is checked through it: only the records whose index key equals the
+     * incoming one are read, then compared by the constraint's type-strict
+     * key — the index key merges 1 and 1.0, so it can only widen the
+     * candidates. Without such an index, or when the index cannot be
+     * searched in place, the whole table is read once for all the
+     * constraints that need it. A record with a null key part passes
+     * without a read.
      *
-     * @param array<int,array<string,null|scalar>> $existing
-     * @param array<string,null|scalar>            $incoming
+     * @param array<string,null|scalar> $record
      */
-    private function checkUniqueConstraints(
+    private function checkUniqueOnInsert(
         TableSchema $tableSchema,
-        array $existing,
-        array $incoming,
-        int | null $excludeId,
+        array $record,
     ): void {
+        $all = null;
+        $lineCount = false;
+
         foreach ($tableSchema->uniqueConstraints as $constraint) {
+            if ($constraint->keyOf($record) === null) {
+                continue;
+            }
+
+            $index = $constraint->indexIn($tableSchema->indexes);
+            $candidates = null;
+
+            if ($index !== null) {
+                if ($lineCount === false) {
+                    $lineCount = $this->indexTrustedLineCount($tableSchema);
+                }
+
+                $candidates = $lineCount === null
+                    ? null
+                    : $this->uniqueCandidates(
+                        $tableSchema,
+                        $index,
+                        $record,
+                        $lineCount,
+                    );
+            }
+
+            if ($candidates === null) {
+                $all ??= $this->readAllForWrite($tableSchema->name);
+                $candidates = $all;
+            }
+
             $this->checkOneConstraint(
                 $tableSchema,
                 $constraint,
-                $existing,
-                $incoming,
-                $excludeId,
+                $candidates,
+                $record,
+                null,
             );
         }
+    }
+
+    /**
+     * The records whose key in $index equals the key of $record, read
+     * through the sorted head and the tail of the index file and checked
+     * against the entries that pointed at them; null when the index
+     * cannot be searched in place.
+     *
+     * @param array<string,null|scalar> $record
+     *
+     * @return null|array<int,array<string,null|scalar>>
+     */
+    private function uniqueCandidates(
+        TableSchema $tableSchema,
+        IndexSchema $index,
+        array $record,
+        int $lineCount,
+    ): array | null {
+        $sorted = $this->indexManager->openSorted(
+            $tableSchema->name,
+            $index,
+            $lineCount,
+        );
+
+        if ($sorted === null) {
+            return null;
+        }
+
+        $lines = $this->indexManager->searchSortedKey(
+            $tableSchema->name,
+            $sorted,
+            $index,
+            IndexKey::build($record, $index),
+        );
+
+        if ($lines === []) {
+            return [];
+        }
+
+        sort($lines);
+        $records = $this->values->widenFloats(
+            $tableSchema,
+            $this->readDataLines($tableSchema, $lines, $lineCount),
+        );
+        $this->indexManager->verifyRecords(
+            $tableSchema->name,
+            $sorted,
+            $index,
+            $lines,
+            $records,
+        );
+
+        return $records;
     }
 
     /**
@@ -4564,18 +4912,34 @@ final class JsonDataProvider
     }
 
     /**
-     * @param array<string,null|scalar>  $record
+     * One test of a record against all the conditions, built once per
+     * query (FilterCondition::predicate) and run per row.
+     *
      * @param array<int,FilterCondition> $conditions
+     *
+     * @return \Closure(array<mixed>): bool
      */
-    private function matchesAll(array $record, array $conditions): bool
+    private function conditionFilter(array $conditions): \Closure
     {
+        $tests = [];
+
         foreach ($conditions as $condition) {
-            if (!$condition->matches($record, $this->comparisonMode)) {
-                return false;
-            }
+            $tests[] = $condition->predicate($this->comparisonMode);
         }
 
-        return true;
+        if (\count($tests) === 1) {
+            return $tests[0];
+        }
+
+        return static function (array $record) use ($tests): bool {
+            foreach ($tests as $test) {
+                if (!$test($record)) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
     }
 
     private function compareValues(
@@ -4671,7 +5035,7 @@ final class JsonDataProvider
             return [];
         }
 
-        $this->freshness->enableStamps();
+        $this->enableGeneration2();
         $readOnly = $manifest->unknownRoCompat();
 
         if ($readOnly !== []) {
@@ -4732,6 +5096,11 @@ final class JsonDataProvider
 
             if ($steps === [] && $from >= StorageManifest::GENERATION) {
                 $this->refreshAllTables($refreshed, $skipped);
+                $manifest = StorageManifest::read($this->dbPath);
+
+                if ($manifest->missingFeatures() !== []) {
+                    $manifest->withFeatures()->write($this->dbPath);
+                }
             }
         } finally {
             $this->migrating = false;
@@ -4785,7 +5154,7 @@ final class JsonDataProvider
         array &$refreshed,
         array &$skipped,
     ): void {
-        $this->freshness->enableStamps();
+        $this->enableGeneration2();
         $this->refreshAllTables($refreshed, $skipped);
         StorageManifest::current()->write($this->dbPath);
     }
@@ -4821,7 +5190,13 @@ final class JsonDataProvider
         $freshness = $this->freshness->check($tableSchema);
 
         if ($freshness === FreshnessEnum::FRESH) {
-            return null;
+            if ($this->derivedCurrent($tableSchema)) {
+                return null;
+            }
+
+            $this->rebuildDerived($tableSchema);
+
+            return true;
         }
 
         if ($this->freshness->holdsBrokenRecords($tableSchema)) {
@@ -4843,12 +5218,24 @@ final class JsonDataProvider
     }
 
     /**
-     * The write-path gate: true when the committed meta still describes
-     * the data file, so the indexes may be trusted as they are.
+     * The write-path gate: true when the committed snapshot still
+     * describes the data file, so the indexes may be trusted as they are.
+     *
+     * @param array{
+     *     lineCount: int,
+     *     byteSize: null|int,
+     *     dataIno: null|int,
+     *     indexFormat: int,
+     * } $committed
      */
-    private function trustedNow(TableSchema $tableSchema): bool
-    {
-        $freshness = $this->freshness->check($tableSchema);
+    private function trustedNow(
+        TableSchema $tableSchema,
+        array $committed,
+    ): bool {
+        $freshness = $this->freshness->checkCommitted(
+            $tableSchema,
+            $committed,
+        );
         $this->noteFreshness($tableSchema->name, $freshness);
 
         return $freshness->trusted();
@@ -4877,6 +5264,139 @@ final class JsonDataProvider
 
         $this->freshnessNoted[$tableName] = true;
         $this->warn(\sprintf($notice, $tableName), false);
+    }
+
+    /**
+     * Turns on what a generation-2 database maintains: the table stamps and
+     * the derived lookup files, which follow every committed rewrite and
+     * append.
+     */
+    private function enableGeneration2(): void
+    {
+        $this->freshness->enableStamps();
+        $this->derived->enable();
+        $this->derived->prepare();
+        $this->meta->onCommit(
+            function (string $table): void {
+                $this->derived->rebuildLineOffsets(
+                    $table,
+                    $this->dataPath($table),
+                );
+            },
+            function (string $table, int $lineCount, int $byteSize): void {
+                $this->derived->appendLineOffset(
+                    $table,
+                    $this->dataPath($table),
+                    $lineCount,
+                    $byteSize,
+                );
+            },
+        );
+    }
+
+    /**
+     * Whether the table's derived lookup files describe its files as they
+     * are now.
+     */
+    private function derivedCurrent(TableSchema $tableSchema): bool
+    {
+        try {
+            $lineCount = $this->meta->getLineCount($tableSchema->name);
+        } catch (JsonProviderException) {
+            return false;
+        }
+
+        $indexFiles = [];
+
+        foreach ($tableSchema->indexes as $index) {
+            $indexFiles[$index->getFileName()] = $this->ndjson->pathOf(
+                $tableSchema->name,
+                $index->getFileName(),
+            );
+        }
+
+        return $this->derived->tableCurrent(
+            $tableSchema->name,
+            $this->dataPath($tableSchema->name),
+            $lineCount,
+            $indexFiles,
+        );
+    }
+
+    /**
+     * Builds the derived lookup files of a fresh table: the line offsets
+     * from the data file, a sorted head for every index file (rewriting it
+     * sorted when no head is recorded).
+     */
+    private function rebuildDerived(TableSchema $tableSchema): void
+    {
+        $lineCount = $this->meta->getLineCount($tableSchema->name);
+        $this->derived->rebuildLineOffsets(
+            $tableSchema->name,
+            $this->dataPath($tableSchema->name),
+        );
+
+        foreach ($tableSchema->indexes as $index) {
+            $this->indexManager->mergeTail(
+                $tableSchema->name,
+                $index,
+                $lineCount,
+                $lineCount,
+            );
+        }
+    }
+
+    private function dataPath(string $table): string
+    {
+        return $this->ndjson->pathOf($table, TableSchema::dataFileName($table));
+    }
+
+    /**
+     * Rewrites sorted every index of the table whose appended tail grew
+     * past $indexTailLimit entries.
+     */
+    private function mergeIndexTails(
+        TableSchema $tableSchema,
+        int $lineCount,
+    ): void {
+        foreach ($tableSchema->indexes as $index) {
+            $this->indexManager->mergeTail(
+                $tableSchema->name,
+                $index,
+                $lineCount,
+                $this->indexTailLimit,
+            );
+        }
+    }
+
+    /**
+     * The data lines by number: through the line offsets when few lines are
+     * wanted and the offsets describe the data file as it is, by walking
+     * the file otherwise — one seek per line costs more than a walk once a
+     * large share of the file is wanted.
+     *
+     * @param array<int,int> $lineNumbers
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    private function readDataLines(
+        TableSchema $tableSchema,
+        array $lineNumbers,
+        int $lineCount,
+    ): array {
+        $file = $tableSchema->getFileName();
+        $offsets = \count($lineNumbers) * self::OFFSET_READ_SHARE > $lineCount
+            ? null
+            : $this->derived->lineOffsets(
+                $tableSchema->name,
+                $this->ndjson->pathOf($tableSchema->name, $file),
+                $lineCount,
+                $lineNumbers,
+            );
+
+        return $offsets === null
+            ? $this->ndjson->readLines($tableSchema->name, $file, $lineNumbers)
+            : $this->ndjson->readLinesAt($tableSchema->name, $file, $offsets);
     }
 
     /**
@@ -4925,6 +5445,7 @@ final class JsonDataProvider
                 $this->indexManager,
                 $this->values,
                 $this->freshness,
+                fn (): FkBackingPolicyEnum => $this->fkBackingPolicy,
             );
         }
 

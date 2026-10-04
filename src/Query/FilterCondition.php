@@ -16,6 +16,9 @@ final class FilterCondition
      *                      otherwise scalar|null
      * @param bool   $not   true = invert (NOT =, NOT IN, ...)
      */
+    /** @var array<string,\Closure(array<mixed>): bool> */
+    private array $predicates = [];
+
     public function __construct(
         public readonly string $field,
         public readonly FilterOperatorEnum $operator,
@@ -39,12 +42,52 @@ final class FilterCondition
         array $record,
         ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
     ): bool {
-        $result = $this->operator->matches(
-            $record[$this->field] ?? null,
-            $this->value,
-            $mode,
+        return ($this->predicates[$mode->name] ??= $this->predicate($mode))(
+            $record,
         );
+    }
 
-        return $this->not ? !$result : $result;
+    /**
+     * The condition as one test of a record, built once and run per row of
+     * a scan: equality and LIKE are specialised (the LIKE pattern is parsed
+     * here, see LikePattern), every other operator goes through
+     * FilterOperatorEnum::matches().
+     *
+     * @return \Closure(array<mixed>): bool
+     */
+    public function predicate(
+        ComparisonModeEnum $mode = ComparisonModeEnum::Binary,
+    ): \Closure {
+        $field = $this->field;
+        $value = $this->value;
+        $operator = $this->operator;
+
+        if ($operator === FilterOperatorEnum::EQ) {
+            return $this->not
+                ? static fn (array $r): bool => ($r[$field] ?? null) !== $value
+                : static fn (array $r): bool => ($r[$field] ?? null) === $value;
+        }
+
+        if ($operator === FilterOperatorEnum::LIKE) {
+            $test = \is_string($value)
+                ? LikePattern::compile($value)->predicate($field)
+                : static fn (array $r): bool => false;
+        } else {
+            $test = static function (array $r) use (
+                $field,
+                $operator,
+                $value,
+                $mode,
+            ): bool {
+                $recordValue = $r[$field] ?? null;
+
+                return (\is_scalar($recordValue) || $recordValue === null)
+                    && $operator->matches($recordValue, $value, $mode);
+            };
+        }
+
+        return $this->not
+            ? static fn (array $r): bool => !$test($r)
+            : $test;
     }
 }

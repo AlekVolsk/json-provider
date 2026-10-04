@@ -105,7 +105,7 @@ A taken name → `UniqueConstraintAlreadyExists`; a field outside the columns �
 
 ## addRelation / dropRelation — relations
 
-`addRelation()` declares an FK relation (declaration validation is described in [the schema model](04-schema-model.md)); for probing actions (`cascade`/`restrict`) the same operation provisions the child-table backing index — a single-column user index on the FK column is reused, otherwise a service `_fk_<column>` is built. `dropRelation()` removes the relation by its declared `(from, foreignKey, to)` triple; a service backing with no other probing relations is dropped with it, a user one stays. Both are DDL under the database + child table EX locks; the relation is active immediately.
+`addRelation()` declares an FK relation (declaration validation is described in [the schema model](04-schema-model.md)); for probing actions (`cascade`/`restrict`) the same operation provisions the child-table backing index — a user index on the FK column is reused (by default only a single-column one, see [the backing policy](06-indexes.md#service-fk-backing-indexes)), otherwise a service `_fk_<column>` is built. `dropRelation()` removes the relation by its declared `(from, foreignKey, to)` triple; a service backing with no other probing relations is dropped with it, a user one stays. Both are DDL under the database + child table EX locks; the relation is active immediately.
 
 ```php
 $db->addRelation(new RelationSchema(

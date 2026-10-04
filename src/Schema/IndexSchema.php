@@ -75,6 +75,16 @@ final class IndexSchema
     }
 
     /**
+     * Whether the first field of the index is $column — what an FK probe
+     * on that column needs: it compares the first key part only, so the
+     * index answers "is the value referenced" whatever fields follow.
+     */
+    public function ledBy(string $column): bool
+    {
+        return ($this->fields[0] ?? null)?->field === $column;
+    }
+
+    /**
      * Returns the physical file name for this index inside the table
      * subdirectory. Format: `<index-name>.index.ndjson`. The table subdirectory
      * is added by NdjsonStorage.

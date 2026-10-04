@@ -48,6 +48,7 @@ final class StorageFormatTest
         'resetLocale',
         'setComparisonMode',
         'setBrokenRecordPolicy',
+        'setFkBackingPolicy',
         'registerDto',
         'unregisterDto',
         'table',
@@ -100,7 +101,7 @@ final class StorageFormatTest
 
         Assert::same($this->manifestOnDisk(), [
             'generation' => StorageManifest::GENERATION,
-            'compat'     => [],
+            'compat'     => ['lineOffsets', 'sortedIndexHeads'],
             'roCompat'   => [],
             'incompat'   => [],
         ]);

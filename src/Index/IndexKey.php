@@ -120,6 +120,100 @@ final class IndexKey
         return bin2hex($raw);
     }
 
+    /**
+     * Validates the structural shape of one v2 key against the index's
+     * field list: every part parses with its type tag, string parts
+     * terminate, escapes are complete, and no bytes trail the last part.
+     */
+    public static function wellFormed(string $key, IndexSchema $index): bool
+    {
+        if (
+            \strlen($key) % 2 !== 0
+            || preg_match('/^[0-9a-f]*$/D', $key) !== 1
+        ) {
+            return false;
+        }
+
+        $binary = hex2bin($key);
+
+        if ($binary === false) {
+            return false;
+        }
+
+        $pos = 0;
+        $len = \strlen($binary);
+
+        foreach ($index->fields as $fieldSchema) {
+            $desc = $fieldSchema->direction === SortDirectionEnum::DESC;
+
+            if ($pos >= $len) {
+                return false;
+            }
+
+            $tag = \ord($binary[$pos]);
+
+            if ($desc) {
+                $tag = 255 - $tag;
+            }
+
+            $pos++;
+
+            if ($tag <= 0x02) {
+                continue;
+            }
+
+            if ($tag === 0x03) {
+                $pos += 16;
+
+                if ($pos > $len) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if ($tag !== 0x04) {
+                return false;
+            }
+
+            $terminator = $desc ? 0xFF : 0x00;
+            $escape = $desc ? 0xFE : 0x01;
+            $terminated = false;
+
+            while ($pos < $len) {
+                $byte = \ord($binary[$pos]);
+                $pos++;
+
+                if ($byte === $terminator) {
+                    $terminated = true;
+
+                    break;
+                }
+
+                if ($byte === $escape) {
+                    if ($pos >= $len) {
+                        return false;
+                    }
+
+                    $next = \ord($binary[$pos]);
+                    $decoded = $desc ? 255 - $next : $next;
+
+                    if ($decoded !== 0x01 && $decoded !== 0x02) {
+                        return false;
+                    }
+
+                    $pos++;
+                }
+            }
+
+            if (!$terminated) {
+                return false;
+            }
+        }
+
+        return $pos === $len;
+    }
+
     private static function encodePart(
         bool | float | int | string | null $value,
         IndexFieldSchema $fieldSchema,

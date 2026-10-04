@@ -26,7 +26,9 @@ use Testo\Test;
  *    bounds) — queries stay correct, no exception;
  *  - loud INDEX_UNRELIABLE when a trusted v2 index is structurally
  *    corrupt (entry count drift, broken line permutation, malformed key)
- *    — wrong rows are never served silently;
+ *    — wrong rows are never served silently. A lookup that reads the whole
+ *    file checks all of it; one that searches the recorded sorted head in
+ *    place checks what it reads (see IndexSortedLookupTest);
  *  - lazy upgrade: the first write on a pre-v2 table rebuilds every index
  *    and stamps indexFormat 2; rebuildAllIndexes/rebuildIndex stamp too,
  *    a single-index rebuild escalating to all on a v1 table;
@@ -114,6 +116,7 @@ final class IndexTrustTest
         $second['line'] = $first['line'];
         $lines[1] = (string)json_encode($second);
         file_put_contents($path, implode("\n", $lines) . "\n");
+        $this->forgetSortedHeads();
 
         try {
             $this->db->table(self::TABLE)
@@ -138,6 +141,7 @@ final class IndexTrustTest
         $first['key'] = 'zz';
         $lines[0] = (string)json_encode($first);
         file_put_contents($path, implode("\n", $lines) . "\n");
+        $this->forgetSortedHeads();
 
         try {
             $this->db->table(self::TABLE)
@@ -286,6 +290,20 @@ final class IndexTrustTest
         $fresh = $manager->readIndexValidated(self::TABLE, $index, 5, true);
         Assert::notNull($fresh);
         Assert::true($manager->eqExists($index, $fresh, 99));
+    }
+
+    /**
+     * Drops the recorded sorted heads of the table's index files, so a
+     * lookup reads and checks each file whole — the path every lookup takes
+     * when no valid head is recorded.
+     */
+    private function forgetSortedHeads(): void
+    {
+        $path = $this->dbDir . '/.jdp/table.' . self::TABLE . '.indexes.json';
+
+        if (is_file($path)) {
+            unlink($path);
+        }
     }
 
     private function indexPath(string $indexName): string

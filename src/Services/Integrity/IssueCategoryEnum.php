@@ -27,6 +27,7 @@ enum IssueCategoryEnum: string
     case PK_DUPLICATE = 'pk_duplicate';
     case FK_ORPHAN = 'fk_orphan';
     case UNIQUE_DUPLICATE = 'unique_duplicate';
+    case UNIQUE_INDEX_MISSING = 'unique_index_missing';
     case META_ENTRY_MISSING = 'meta_entry_missing';
     case META_ENTRY_CORRUPT = 'meta_entry_corrupt';
     case META_LINE_COUNT_DRIFT = 'meta_line_count_drift';

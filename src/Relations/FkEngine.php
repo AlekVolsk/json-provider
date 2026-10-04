@@ -664,8 +664,7 @@ final class FkEngine
         }
 
         $covering = $index !== null
-            && \count($index->fields) === 1
-            && $index->fields[0]->field === $relation->childColumn();
+            && $index->ledBy($relation->childColumn());
 
         if (!$covering) {
             if ($required) {

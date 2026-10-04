@@ -136,7 +136,8 @@ if (!$status->isCurrent()) {
 - the database generation and the engine generation (`generation`, `engineGeneration`);
 - the manifest flags (`compat`, `roCompat`, `incompat`) and the `readOnly` sign;
 - the steps a migration would run (`pendingSteps`, for example `['1->2']`);
-- the tables it would rebuild and stamp (`pendingTables`).
+- the tables it would rebuild and stamp or build derived files for (`pendingTables`);
+- the `compat` flags of the engine's generation the manifest does not set yet (`pendingFeatures`).
 
 The status reads the disk, not the instance's memory, so it sees a migration another process ran.
 
@@ -173,3 +174,11 @@ A 1.0 database works on 1.1 as it did on 1.0; the generation-2 protection — th
 - a table whose stamp still matches is left as it is.
 
 As its last act the step writes the generation-2 manifest `.jdp/format.json`.
+
+### 1.1 → 1.2
+
+The generation does not change. Version 1.2 keeps derived files for index lookups in `.jdp/` (see [storage format](23-storage-format.md#derived-files)) and marks that with the `compat` flags `lineOffsets` and `sortedIndexHeads`. A 1.1 database works on 1.2 right away: a table gets its files with its first write and is searched the previous way until then. `storageStatus()` lists such tables in `pendingTables` and the missing flags in `pendingFeatures`; `migrateStorage()` builds the files of every table — line offsets from the data file, a sorted index file where no head is recorded — and adds the flags to the manifest. Data and indexes stay as they are.
+
+Rolling back to 1.1 or 1.0 takes no manual steps: these versions do not see the derived files and skip the `compat` flags. After going back to 1.2, the tables the older engine rewrote are searched the previous way until their next write; `migrateStorage()` builds their files at once.
+
+The exception is relations that `FkBackingPolicyEnum::LeadingColumn` backed with a composite index (see [Indexes](06-indexes.md#service-fk-backing-indexes)). 1.1 and 1.0 count such a relation as uncovered: a `restrict` delete fails with `FkBackingIndexMissing`, `cascade` and `setNull` read the child table whole. After rolling back, run `repair()`: it builds the service index and re-points the relation to it.

@@ -9,7 +9,7 @@ The generation and the feature flags live in `.jdp/format.json`:
 ```json
 {
     "generation": 2,
-    "compat": [],
+    "compat": ["lineOffsets", "sortedIndexHeads"],
     "roCompat": [],
     "incompat": []
 }
@@ -29,7 +29,7 @@ The three flag lists tell an engine what to do with a format feature it does not
 
 A generation newer than the engine knows is refused as well: `StorageGenerationUnsupported`. A manifest that cannot be trusted (not JSON, not an object, a generation below 2, a flag list that is not made of non-empty strings) is refused with `StorageManifestCorrupt`: a guessed generation could hide a flag the engine must not ignore. Unknown top-level keys are skipped, and a missing flag list counts as an empty one.
 
-The 1.0 engine does not read the manifest at all, so everything generation 2 adds is compatible with it by construction, and generation 2 sets no flags. The flags are there for the generations to come: versions from 1.1 on will refuse a format they do not know instead of misreading it.
+The 1.0 engine does not read the manifest at all, so everything generation 2 adds is compatible with it by construction. Generation 2 uses no `roCompat` or `incompat` flags; `compat` lists the derived files the database keeps (`lineOffsets`, `sortedIndexHeads`, see below), which an engine that does not know them ignores. The `roCompat` and `incompat` flags are there for the generations to come: versions from 1.1 on will refuse a format they do not know instead of misreading it.
 
 ## Table stamp
 
@@ -51,6 +51,21 @@ An append keeps the inode, so the table stays fresh — after a 1.0 `insert` too
 `validate()` lists unstamped and stale tables as `table_unverified` (info; `context.freshness` is `unstamped` or `stale`); `repair()` rebuilds their indexes from the data and stamps them without rewriting the data file. When the file holds lines that are not records, `repair()` does not stamp it: the indexes would skip those lines.
 
 A generation-1 database writes and checks no stamps — trust goes by size alone, exactly as in 1.0.
+
+## Derived files
+
+From version 1.2 on, a generation-2 database keeps files in `.jdp/` that speed up index lookups (see [indexes](06-indexes.md#how-a-lookup-runs)). They are not a source of truth: everything in them is computed anew from the table's files.
+
+| File | `compat` flag | What it holds |
+| - | - | - |
+| `table.<name>.indexes.json` | `sortedIndexHeads` | per index file — the inode, byte length, entry count and mark of its sorted head |
+| `table.<name>.offsets` | `lineOffsets` | a header with the inode, size, line count and mark of the data file, then the offset of every line, 8 bytes each |
+
+The mark is a checksum of the last 64 bytes of the part described: it tells apart a file that got the same inode number back when replaced twice.
+
+A file that does not match the file it describes in inode, size, line count or mark is not used: the lookup takes the previous path, reading the index whole. Every write of the new engine updates the files under the table EX lock: a rewrite builds them anew, an append adds the line's offset and, once the tail is long, rewrites the index sorted. They are not fsynced: a lost update is a stale file, not damage.
+
+The 1.0 and 1.1 engines do not see these files. Their writes leave the files stale, and lookups of such a table take the previous path until the next write of the new engine or a migration. The files do not enter a backup archive; a restore builds them anew.
 
 ## A generation-1 database on the new engine
 

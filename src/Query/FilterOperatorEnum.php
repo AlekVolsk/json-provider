@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Query;
 
-use AV\JsonProvider\Exception\JsonProviderQueryException;
-use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
-
 /**
  * Comparison operators for record filtering.
  * The NOT variant is expressed via the flag in FilterCondition, not a
@@ -78,7 +75,8 @@ enum FilterOperatorEnum: string
      * LIKE: bytewise and case-sensitive. An unescaped `%` is the only
      * wildcard (matches any byte run); a backslash escapes the next
      * character, so `\%` matches a literal percent and `\\` a literal
-     * backslash. `_` is NOT a wildcard — it matches a literal underscore.
+     * backslash. `_` is NOT a wildcard — it matches a literal underscore
+     * (see LikePattern; FilterCondition parses its pattern once).
      */
     private function matchesLike(
         bool | float | int | string | null $recordValue,
@@ -88,41 +86,7 @@ enum FilterOperatorEnum: string
             return false;
         }
 
-        $regex = '';
-        $len = \strlen($conditionValue);
-
-        for ($i = 0; $i < $len; $i++) {
-            $char = $conditionValue[$i];
-
-            if ($char === '\\' && $i + 1 < $len) {
-                $regex .= preg_quote($conditionValue[$i + 1], '/');
-                $i++;
-
-                continue;
-            }
-
-            if ($char === '%') {
-                if (!str_ends_with($regex, '.*')) {
-                    $regex .= '.*';
-                }
-
-                continue;
-            }
-
-            $regex .= preg_quote($char, '/');
-        }
-
-        $result = preg_match('/^' . $regex . '$/sD', $recordValue);
-
-        if ($result === false) {
-            throw new JsonProviderQueryException(
-                JsonProviderErrorEn::LikeEvaluationFailed,
-                $conditionValue,
-                preg_last_error_msg(),
-            );
-        }
-
-        return $result === 1;
+        return LikePattern::compile($conditionValue)->matches($recordValue);
     }
 
     /**

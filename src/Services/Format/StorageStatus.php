@@ -12,13 +12,17 @@ namespace AV\JsonProvider\Services\Format;
 final class StorageStatus
 {
     /**
-     * @param list<string> $compat        compat features the manifest sets
-     * @param list<string> $roCompat      roCompat features the manifest sets
-     * @param list<string> $incompat      incompat features the manifest sets
-     * @param list<string> $pendingSteps  generation steps a migration runs,
-     *                                    as "1->2"
-     * @param list<string> $pendingTables tables a migration would rebuild
-     *                                    and stamp
+     * @param list<string> $compat          compat features the manifest sets
+     * @param list<string> $roCompat        roCompat features the manifest sets
+     * @param list<string> $incompat        incompat features the manifest sets
+     * @param list<string> $pendingSteps    generation steps a migration runs,
+     *                                      as "1->2"
+     * @param list<string> $pendingTables   tables a migration would rebuild
+     *                                      and stamp, or whose derived lookup
+     *                                      files it would build
+     * @param list<string> $pendingFeatures compat features of this
+     *                                      engine's generation the manifest
+     *                                      does not set yet
      */
     public function __construct(
         public readonly int $generation,
@@ -29,15 +33,19 @@ final class StorageStatus
         public readonly bool $readOnly,
         public readonly array $pendingSteps,
         public readonly array $pendingTables,
+        public readonly array $pendingFeatures = [],
     ) {
     }
 
     /**
-     * True when the database is in this engine's generation and every
-     * table is stamped and fresh: a migration would change nothing.
+     * True when the database is in this engine's generation with all its
+     * features and every table is stamped, fresh and has its derived files:
+     * a migration would change nothing.
      */
     public function isCurrent(): bool
     {
-        return $this->pendingSteps === [] && $this->pendingTables === [];
+        return $this->pendingSteps === []
+            && $this->pendingTables === []
+            && $this->pendingFeatures === [];
     }
 }

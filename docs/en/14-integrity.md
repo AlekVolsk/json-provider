@@ -52,6 +52,7 @@ $report = $db->validate();   // whole DB
 | `fk_backing_index_orphaned` | warning | a service `_fk_` index is not the backing of any probing relation (dead weight) |
 | `index_format_outdated` | info | indexes use the pre-v2 format; reads degrade to full scans until the next write/repair |
 | `table_unverified` | info | a generation-2 database whose table has no stamp (`context.freshness` = `unstamped`: a 1.0 engine created or restored it) or a stale one (`stale`: the data file was replaced after the last stamped commit); see [storage format](23-storage-format.md) |
+| `unique_index_missing` | info | a unique constraint has no user index on the same fields: every insert reads the whole table (constraint name and fields in the context); see [Indexes](06-indexes.md#unique-check-on-insert); report-only |
 | `table_optimized` | info | the table was sorted by id and reindexed (repair only) |
 
 The `fk_orphan` checks are database-level (they need both sides' data) and run only in `validate()`; `unique_duplicate`, `present_null` and `broken_record` are per-table and visible to `validateTable()` as well. FK value comparison is type-strict — the same canonical `keyPart` encoding the unique checks and the cascade engine use.
@@ -96,8 +97,9 @@ What gets repaired:
 | `table_file_missing` | provision an empty data file, missing index files and the meta entry (the `createTable` crash window); lost data is not invented |
 | `pk_duplicate` | **not repaired**: marked with `repairError` — duplicate PKs are resolved manually |
 | `rename_incomplete` | roll the `renameTable` forward/back by the actual schema state (see below) |
-| `fk_backing_index_missing` | reuse a covering single-column user index or build the service `_fk_<column>` from current data and point the relation's `backingIndex` at it (structural repair, data untouched) |
+| `fk_backing_index_missing` | reuse a user index the backing policy accepts (by default a single-column one on the FK column, see [Indexes](06-indexes.md#service-fk-backing-indexes)) or build the service `_fk_<column>` from current data and point the relation's `backingIndex` at it (structural repair, data untouched) |
 | `fk_backing_index_orphaned` | drop the service index from the schema and delete its file |
+| `unique_index_missing` | **not repaired**: which indexes to keep is the schema owner's call |
 | `broken_record`, `present_null`, `fk_orphan`, `unique_duplicate` | **report-only, untouched**: repair fixes structures, not data — it never quarantines, rewrites or deletes user records to make a finding go away |
 
 The `rename_incomplete` reconciliation runs **before** per-issue repair (otherwise the half-renamed table would be "healed" as `table_file_missing` with fresh empty files under the new name): when the schema already holds the new name, the meta entry and the filesystem are rolled forward under it (directory and data-file renames are idempotent); when the schema still holds the old name, the rename never committed, the filesystem was never touched and only the marker is dropped. Only the full `repair()` reconciles: a single-table `repairTable()` holds one name's lock and honestly refuses (`repairError`) — as does any write into an affected table (`RenameIncomplete` exception) while the marker lives. The `orphan_index_file` repair deletes only `*.index.ndjson`-shaped or empty files: a non-empty file under any other name may be stranded data of a rename crash and needs a manual (or reconcile) decision.

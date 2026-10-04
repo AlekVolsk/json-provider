@@ -39,13 +39,20 @@ final class StorageManifest
     public const string DIR = '.jdp';
     public const string FILE = 'format.json';
 
+    /**
+     * Derived lookup files a generation-2 database keeps (see
+     * DerivedFiles): sorted heads of the index files and line offsets of
+     * the data files. An engine that does not know them ignores them.
+     */
+    public const array FEATURES = ['lineOffsets', 'sortedIndexHeads'];
+
     private const int LEGACY_GENERATION = 1;
     private const string KEY_GENERATION = 'generation';
     private const string KEY_COMPAT = 'compat';
     private const string KEY_RO_COMPAT = 'roCompat';
     private const string KEY_INCOMPAT = 'incompat';
 
-    private const array KNOWN_COMPAT = [];
+    private const array KNOWN_COMPAT = self::FEATURES;
     private const array KNOWN_RO_COMPAT = [];
     private const array KNOWN_INCOMPAT = [];
 
@@ -75,7 +82,31 @@ final class StorageManifest
      */
     public static function current(): self
     {
-        return new self(self::GENERATION);
+        return new self(self::GENERATION, self::FEATURES);
+    }
+
+    /**
+     * This manifest with this engine's compat features added to the ones it
+     * sets — flags of a newer engine of the same generation are kept.
+     */
+    public function withFeatures(): self
+    {
+        return new self(
+            $this->generation,
+            array_values(array_unique([...$this->compat, ...self::FEATURES])),
+            $this->roCompat,
+            $this->incompat,
+        );
+    }
+
+    /**
+     * This engine's compat features the manifest does not set.
+     *
+     * @return list<string>
+     */
+    public function missingFeatures(): array
+    {
+        return array_values(array_diff(self::FEATURES, $this->compat));
     }
 
     /**

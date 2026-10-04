@@ -58,6 +58,29 @@ final class TableFreshness
     }
 
     /**
+     * The verdict against a committed snapshot the caller has already
+     * read with MetaRegistry::getCommittedFile() — a gate that also needs
+     * the index format or the line count reads meta.json once.
+     *
+     * @param array{
+     *     lineCount: int,
+     *     byteSize: null|int,
+     *     dataIno: null|int,
+     *     indexFormat: int,
+     * } $committed
+     */
+    public function checkCommitted(
+        TableSchema $tableSchema,
+        array $committed,
+    ): FreshnessEnum {
+        return $this->judgeCommitted(
+            $tableSchema,
+            $this->stampsEnabled(),
+            $committed,
+        )[0];
+    }
+
+    /**
      * The verdict with the stamp comparison forced on or off — for a
      * status report that must see stamps even when this instance opened
      * the database before it was migrated.
@@ -138,19 +161,41 @@ final class TableFreshness
      */
     private function judge(TableSchema $tableSchema, bool $stamped): array
     {
-        $table = $tableSchema->name;
-
         try {
-            $committed = $this->meta->getCommittedFile($table);
-            $stat = $this->ndjson->fileStat(
-                $table,
-                $tableSchema->getFileName(),
-            );
+            $committed = $this->meta->getCommittedFile($tableSchema->name);
         } catch (JsonProviderException) {
             return [FreshnessEnum::DRIFT, 0];
         }
 
+        return $this->judgeCommitted($tableSchema, $stamped, $committed);
+    }
+
+    /**
+     * @param array{
+     *     lineCount: int,
+     *     byteSize: null|int,
+     *     dataIno: null|int,
+     *     indexFormat: int,
+     * } $committed
+     *
+     * @return array{FreshnessEnum, int} the verdict and the committed
+     *                                   line count
+     */
+    private function judgeCommitted(
+        TableSchema $tableSchema,
+        bool $stamped,
+        array $committed,
+    ): array {
         $lineCount = $committed['lineCount'];
+
+        try {
+            $stat = $this->ndjson->fileStat(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            );
+        } catch (JsonProviderException) {
+            return [FreshnessEnum::DRIFT, $lineCount];
+        }
 
         if (
             $committed['byteSize'] === null

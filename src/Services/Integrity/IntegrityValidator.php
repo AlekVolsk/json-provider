@@ -237,6 +237,10 @@ final class IntegrityValidator
             $issues[] = $i;
         }
 
+        foreach ($this->checkUniqueIndexes($tableSchema) as $i) {
+            $issues[] = $i;
+        }
+
         foreach ($this->checkPrimaryKeys($tableSchema, $records) as $i) {
             $issues[] = $i;
         }
@@ -262,8 +266,8 @@ final class IntegrityValidator
 
     /**
      * Every relation with a probing action (cascade/restrict on delete or
-     * update) whose child is this table must point to a declared
-     * single-column index covering the FK column. A missing, dangling or
+     * update) whose child is this table must point to a declared index
+     * led by the FK column (IndexSchema::ledBy). A missing, dangling or
      * non-covering backing leaves restrict probes dead-ended in a
      * configuration error — repair provisions the service index.
      *
@@ -287,9 +291,7 @@ final class IntegrityValidator
                 foreach ($tableSchema->indexes as $index) {
                     if (
                         $index->name === $relation->backingIndex
-                        && \count($index->fields) === 1
-                        && $index->fields[0]
-                            ->field === $relation->childColumn()
+                        && $index->ledBy($relation->childColumn())
                     ) {
                         $covering = true;
 
@@ -484,6 +486,44 @@ final class IntegrityValidator
                     ],
                 );
             }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * A unique constraint without an index on its fields is checked on
+     * every insert by reading the whole table; one with such an index
+     * (UniqueConstraint::indexIn) reads only the matching records.
+     *
+     * @return array<int,IntegrityIssue>
+     */
+    private function checkUniqueIndexes(TableSchema $tableSchema): array
+    {
+        $issues = [];
+
+        foreach ($tableSchema->uniqueConstraints as $constraint) {
+            if ($constraint->indexIn($tableSchema->indexes) !== null) {
+                continue;
+            }
+
+            $issues[] = new IntegrityIssue(
+                IssueSeverityEnum::INFO,
+                IssueCategoryEnum::UNIQUE_INDEX_MISSING,
+                $tableSchema->name,
+                \sprintf(
+                    'unique "%s" has no index on (%s): every insert reads '
+                        . 'the whole table to check it; an index on the '
+                        . 'same fields, in any order, lets it read only '
+                        . 'the matching records',
+                    $constraint->name,
+                    implode(', ', $constraint->fields),
+                ),
+                context: [
+                    'constraint' => $constraint->name,
+                    'fields'     => implode(',', $constraint->fields),
+                ],
+            );
         }
 
         return $issues;

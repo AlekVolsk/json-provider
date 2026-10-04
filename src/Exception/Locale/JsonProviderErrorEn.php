@@ -416,6 +416,11 @@ enum JsonProviderErrorEn: string implements LocaleInterface
         . 'permutation of the data lines';
     case IndexKeyMalformed = 'Index "%s" of table "%s" is structurally '
         . 'corrupt and cannot be trusted: a truncated or malformed key';
+    case IndexOrderBroken = 'Index "%s" of table "%s" is structurally '
+        . 'corrupt and cannot be trusted: its entries are out of key order';
+    case IndexRecordMismatch = 'Index "%s" of table "%s" is structurally '
+        . 'corrupt and cannot be trusted: an entry does not match the record '
+        . 'it points to';
     case IndexLinesMissing = 'Index "%s" of table "%s" is structurally '
         . 'corrupt and cannot be trusted: indexed lines are missing from the '
         . 'data file';

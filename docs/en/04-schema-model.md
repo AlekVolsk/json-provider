@@ -148,6 +148,8 @@ Constraints from `uniqueConstraints` are checked on `insert` and `update` before
 
 `UniqueConstraint::keyPart()` canonicalizes a single key value; `UniqueConstraint::keyOf()` returns `null` for records that do not participate.
 
+How `insert` checks a constraint and when an index on the same fields helps it — see [Indexes](06-indexes.md#unique-check-on-insert).
+
 ## Temporal types and timezones
 
 Temporal columns exist so that a moment written by a process in one timezone reads back as the same moment for a process in another. An absolute moment (`datetime`/`datetimez`) is always stored in UTC on disk and converted to the current PHP timezone (`date_default_timezone_get()`) on the way out. Wall-clock values with no moment (`date`, `time`, `timez`) are stored **verbatim** — as-is, never timezone-shifted. All arithmetic goes through `DateTimeImmutable`.

@@ -12,6 +12,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Registry\MetaRegistry;
 use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ColumnDefaults;
+use AV\JsonProvider\Schema\FkBackingPolicyEnum;
 use AV\JsonProvider\Schema\IdentifierRules;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
@@ -52,7 +53,8 @@ use AV\JsonProvider\Validation\ValueValidator;
  * Report-only categories (BROKEN_RECORD, PRESENT_NULL, FK_ORPHAN,
  * UNIQUE_DUPLICATE) are returned untouched: repair fixes STRUCTURES, not
  * data — it never quarantines, rewrites or deletes user records to make a
- * finding go away.
+ * finding go away. UNIQUE_INDEX_MISSING is returned untouched too: which
+ * indexes a table has is the schema owner's call.
  *
  * After per-issue repair, an explicit "table optimize" pass is run for every
  * touched table (sort records by id ASC + rebuild every index), recorded as
@@ -64,6 +66,10 @@ use AV\JsonProvider\Validation\ValueValidator;
  */
 final class IntegrityRepairer
 {
+    /**
+     * @param \Closure(): FkBackingPolicyEnum $backingPolicy the provider's
+     *                                                       current policy
+     */
     public function __construct(
         private readonly IntegrityValidator $validator,
         private readonly SchemaRegistry $schema,
@@ -73,6 +79,7 @@ final class IntegrityRepairer
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
         private readonly TableFreshness $freshness,
+        private readonly \Closure $backingPolicy,
     ) {
     }
 
@@ -269,14 +276,15 @@ final class IntegrityRepairer
                 IssueCategoryEnum::PK_DUPLICATE => $issue->withRepairError(
                     'duplicate primary keys require manual resolution',
                 ),
-                IssueCategoryEnum::BROKEN_RECORD,
-                IssueCategoryEnum::PRESENT_NULL,
-                IssueCategoryEnum::FK_ORPHAN,
-                IssueCategoryEnum::UNIQUE_DUPLICATE  => $issue,
                 IssueCategoryEnum::RENAME_INCOMPLETE => $issue->withRepairError(
                     'a pending rename spans two tables and the meta file; '
                         . 'run the database-level repair() to reconcile it',
                 ),
+                IssueCategoryEnum::BROKEN_RECORD,
+                IssueCategoryEnum::PRESENT_NULL,
+                IssueCategoryEnum::FK_ORPHAN,
+                IssueCategoryEnum::UNIQUE_DUPLICATE,
+                IssueCategoryEnum::UNIQUE_INDEX_MISSING     => $issue,
                 IssueCategoryEnum::FK_BACKING_INDEX_MISSING => $this
                     ->repairFkBackingIndex($issue),
                 IssueCategoryEnum::FK_BACKING_INDEX_ORPHANED => $this
@@ -368,9 +376,10 @@ final class IntegrityRepairer
     /**
      * Structural FK repair: builds the service index "_fk_<column>" on
      * the child table from the current data and points the relation's
-     * backingIndex at it in one schema RMW. A covering single-column USER
-     * index on the FK column is reused instead (mirroring the addRelation
-     * provisioning), so repair never plants a duplicate index. File
+     * backingIndex at it in one schema RMW. A USER index the backing
+     * policy accepts is reused instead (FkBackingPolicyEnum::userBacking,
+     * mirroring the addRelation provisioning), so repair never plants a
+     * duplicate index. File
      * first, schema second — a crash in between leaves an orphan
      * *.index.ndjson swept by the orphan repair. Data is never touched.
      */
@@ -403,20 +412,10 @@ final class IntegrityRepairer
             );
         }
 
-        $backing = null;
-
-        foreach ($tableSchema->indexes as $index) {
-            if (
-                !$index->isService
-                && !$index->isPrimary
-                && \count($index->fields) === 1
-                && $index->fields[0]->field === $column
-            ) {
-                $backing = $index;
-
-                break;
-            }
-        }
+        $backing = ($this->backingPolicy)()->userBacking(
+            $tableSchema->indexes,
+            $column,
+        );
 
         if ($backing === null) {
             $backing = new IndexSchema(

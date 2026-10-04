@@ -14,6 +14,7 @@ use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Storage\DerivedFiles;
 use AV\JsonProvider\Storage\NdjsonStorage;
 
 /**
@@ -38,6 +39,7 @@ final class IndexManager
 {
     public function __construct(
         private readonly NdjsonStorage $storage,
+        private readonly DerivedFiles | null $derived = null,
     ) {
     }
 
@@ -214,7 +216,7 @@ final class IndexManager
 
             $covered[$line] = true;
 
-            if (!$this->keyWellFormed($key, $index)) {
+            if (!IndexKey::wellFormed($key, $index)) {
                 return $fail(JsonProviderErrorEn::IndexKeyMalformed);
             }
 
@@ -261,6 +263,24 @@ final class IndexManager
         IndexSchema $index,
         FilterCondition $condition,
     ): array | null {
+        return $this->searchLinesIn(
+            new IndexEntryList($entries),
+            $index,
+            $condition,
+        );
+    }
+
+    /**
+     * searchLines() over any sorted entries — in memory or the sorted head
+     * of an index file.
+     *
+     * @return null|array<int,int>
+     */
+    public function searchLinesIn(
+        SortedIndexEntries $entries,
+        IndexSchema $index,
+        FilterCondition $condition,
+    ): array | null {
         if ($condition->not) {
             return null;
         }
@@ -271,7 +291,7 @@ final class IndexManager
             return null;
         }
 
-        if ($entries === []) {
+        if ($entries->start() === $entries->end()) {
             return [];
         }
 
@@ -354,9 +374,9 @@ final class IndexManager
         }
 
         $target = IndexKey::buildFromValue($value, $firstField);
+        $list = new IndexEntryList($entries);
 
-        return self::lowerBound($entries, $target)
-            < self::upperBound($entries, $target);
+        return $list->lowerBound($target) < $list->upperBound($target);
     }
 
     /**
@@ -385,119 +405,396 @@ final class IndexManager
             static fn (array $a, array $b): int => strcmp($a['key'], $b['key']),
         );
 
-        $this->storage->write($tableName, $index->getFileName(), $entries);
+        $this->writeSorted($tableName, $index, $entries);
     }
 
     /**
-     * Validates the structural shape of one v2 key against the index's
-     * field list: every part parses with its type tag, string parts
-     * terminate, escapes are complete, and no bytes trail the last part.
+     * The index searchable in place: the sorted head of its file and the
+     * appended tail read into memory. Null when no valid boundary is
+     * recorded for the file as it is now — the caller then reads the whole
+     * file. Tail entries are checked like every entry read, and head and
+     * tail together must hold exactly $lineCount entries; a violation
+     * raises INDEX_UNRELIABLE.
+     *
+     * @return null|array{IndexFileRegion, IndexEntryList}
      */
-    private function keyWellFormed(string $key, IndexSchema $index): bool
-    {
-        if (
-            \strlen($key) % 2 !== 0
-            || preg_match('/^[0-9a-f]*$/D', $key) !== 1
-        ) {
-            return false;
+    public function openSorted(
+        string $tableName,
+        IndexSchema $index,
+        int $lineCount,
+    ): array | null {
+        if ($this->derived === null) {
+            return null;
         }
 
-        $binary = hex2bin($key);
+        $path = $this->storage->pathOf($tableName, $index->getFileName());
+        $boundary = $this->derived->indexBoundary(
+            $tableName,
+            $index->getFileName(),
+            $path,
+        );
 
-        if ($binary === false) {
-            return false;
+        if ($boundary === null) {
+            return null;
         }
 
-        $pos = 0;
-        $len = \strlen($binary);
+        $fail = static function (
+            LocaleInterface $reason,
+            string ...$details,
+        ) use (
+            $tableName,
+            $index,
+        ): never {
+            throw new JsonProviderServiceException(
+                $reason,
+                $index->name,
+                $tableName,
+                ...$details,
+            );
+        };
+        $tail = self::readTail(
+            $path,
+            $boundary['bytes'],
+            $index,
+            $lineCount,
+            $fail,
+        );
 
-        foreach ($index->fields as $fieldSchema) {
-            $desc = $fieldSchema->direction === SortDirectionEnum::DESC;
-
-            if ($pos >= $len) {
-                return false;
-            }
-
-            $tag = \ord($binary[$pos]);
-
-            if ($desc) {
-                $tag = 255 - $tag;
-            }
-
-            $pos++;
-
-            if ($tag <= 0x02) {
-                continue;
-            }
-
-            if ($tag === 0x03) {
-                $pos += 16;
-
-                if ($pos > $len) {
-                    return false;
-                }
-
-                continue;
-            }
-
-            if ($tag !== 0x04) {
-                return false;
-            }
-
-            $terminator = $desc ? 0xFF : 0x00;
-            $escape = $desc ? 0xFE : 0x01;
-            $terminated = false;
-
-            while ($pos < $len) {
-                $byte = \ord($binary[$pos]);
-                $pos++;
-
-                if ($byte === $terminator) {
-                    $terminated = true;
-
-                    break;
-                }
-
-                if ($byte === $escape) {
-                    if ($pos >= $len) {
-                        return false;
-                    }
-
-                    $next = \ord($binary[$pos]);
-                    $decoded = $desc ? 255 - $next : $next;
-
-                    if ($decoded !== 0x01 && $decoded !== 0x02) {
-                        return false;
-                    }
-
-                    $pos++;
-                }
-            }
-
-            if (!$terminated) {
-                return false;
-            }
+        if ($boundary['count'] + \count($tail) !== $lineCount) {
+            $fail(
+                JsonProviderErrorEn::IndexCountMismatch,
+                (string)($boundary['count'] + \count($tail)),
+                (string)$lineCount,
+            );
         }
 
-        return $pos === $len;
+        return [
+            new IndexFileRegion(
+                $path,
+                $boundary['bytes'],
+                $index,
+                $lineCount,
+                $fail,
+            ),
+            new IndexEntryList($tail),
+        ];
     }
 
     /**
-     * @param array<int,array{key:string,line:int}> $entries
+     * searchLines() over an index opened with openSorted(): head and tail
+     * are searched apart and their lines merged. Null when the index cannot
+     * answer the condition. A data line found twice breaks the permutation
+     * and raises INDEX_UNRELIABLE.
+     *
+     * @param array{IndexFileRegion, IndexEntryList} $sorted
+     *
+     * @return null|array<int,int>
+     */
+    public function searchSorted(
+        string $tableName,
+        array $sorted,
+        IndexSchema $index,
+        FilterCondition $condition,
+    ): array | null {
+        [$head, $tail] = $sorted;
+        $headLines = $this->searchLinesIn($head, $index, $condition);
+        $tailLines = $this->searchLinesIn($tail, $index, $condition);
+
+        if ($headLines === null || $tailLines === null) {
+            return null;
+        }
+
+        return self::mergeSorted($tableName, $index, $headLines, $tailLines);
+    }
+
+    /**
+     * The lines whose entry holds exactly $key, a full key of the index,
+     * over an index opened with openSorted(). Every key of one index has
+     * the same prefix-free parts, so no full key is a prefix of another
+     * and the bounds of $key enclose exactly the entries equal to it.
+     *
+     * @param array{IndexFileRegion, IndexEntryList} $sorted
      *
      * @return array<int,int>
      */
-    private function searchExact(
+    public function searchSortedKey(
+        string $tableName,
+        array $sorted,
+        IndexSchema $index,
+        string $key,
+    ): array {
+        [$head, $tail] = $sorted;
+
+        return self::mergeSorted(
+            $tableName,
+            $index,
+            $head->lines($head->lowerBound($key), $head->upperBound($key)),
+            $tail->lines($tail->lowerBound($key), $tail->upperBound($key)),
+        );
+    }
+
+    /**
+     * The lines whose entries start with $values — the values of the
+     * index's leading fields, in index order — narrowed by $range, a range
+     * condition on the field right after them. A superset of the matching
+     * rows, like every lookup: the caller filters the rows it reads. A
+     * range the index cannot encode leaves the prefix alone to narrow.
+     *
+     * @param array<int,null|bool|float|int|string> $values
+     *
+     * @return array<int,int>
+     */
+    public function searchPrefixIn(
+        SortedIndexEntries $entries,
+        IndexSchema $index,
+        array $values,
+        FilterCondition | null $range,
+    ): array {
+        $prefix = '';
+        $values = array_values($values);
+
+        foreach ($values as $i => $value) {
+            $field = $index->fields[$i] ?? null;
+
+            if ($field === null) {
+                break;
+            }
+
+            $prefix .= IndexKey::buildFromValue($value, $field);
+        }
+
+        $next = $index->fields[\count($values)] ?? null;
+        $lines = $range !== null && $next !== null
+            ? $this->searchRangeAfter($entries, $next, $range, $prefix)
+            : null;
+
+        return $lines ?? $entries->lines(
+            $entries->lowerBound($prefix),
+            $entries->upperBound($prefix),
+        );
+    }
+
+    /**
+     * searchPrefixIn() over an index opened with openSorted(): head and
+     * tail are searched apart and their lines merged.
+     *
+     * @param array{IndexFileRegion, IndexEntryList} $sorted
+     * @param array<int,null|bool|float|int|string>  $values
+     *
+     * @return array<int,int>
+     */
+    public function searchSortedPrefix(
+        string $tableName,
+        array $sorted,
+        IndexSchema $index,
+        array $values,
+        FilterCondition | null $range,
+    ): array {
+        [$head, $tail] = $sorted;
+
+        return self::mergeSorted(
+            $tableName,
+            $index,
+            $this->searchPrefixIn($head, $index, $values, $range),
+            $this->searchPrefixIn($tail, $index, $values, $range),
+        );
+    }
+
+    /**
+     * Checks the records read for lines a searchSorted() returned against
+     * the entries that pointed at them: every line must yield a record, and
+     * the key built from the record must be the entry's key. A mismatch
+     * means the index no longer describes the data and raises
+     * INDEX_UNRELIABLE — the lookup would otherwise return wrong rows.
+     *
+     * @param array{IndexFileRegion, IndexEntryList} $sorted
+     * @param array<int,int>                         $lines
+     * @param array<int,array<string,null|scalar>>   $records
+     */
+    public function verifyRecords(
+        string $tableName,
+        array $sorted,
+        IndexSchema $index,
+        array $lines,
+        array $records,
+    ): void {
+        if (\count($records) !== \count($lines)) {
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::IndexLinesMissing,
+                $index->name,
+                $tableName,
+            );
+        }
+
+        [$head, $tail] = $sorted;
+
+        foreach (array_values($lines) as $i => $line) {
+            $key = $head->keyOf($line) ?? $tail->keyOf($line);
+
+            if (
+                $key === null
+                || IndexKey::build($records[$i], $index) !== $key
+            ) {
+                throw new JsonProviderServiceException(
+                    JsonProviderErrorEn::IndexRecordMismatch,
+                    $index->name,
+                    $tableName,
+                );
+            }
+        }
+    }
+
+    /**
+     * Rewrites the index file sorted once its unsorted tail holds more than
+     * $limit entries, or when no boundary is recorded for it yet, so a
+     * lookup keeps reading O(log n) lines. Runs after an append, under the
+     * table EX lock; a file that fails the structural check is left as it
+     * is — the append already succeeded, and the lookup that meets the
+     * damage reports it.
+     */
+    public function mergeTail(
+        string $tableName,
+        IndexSchema $index,
+        int $lineCount,
+        int $limit,
+    ): void {
+        if ($this->derived === null || !$this->derived->enabled()) {
+            return;
+        }
+
+        $boundary = $this->derived->indexBoundary(
+            $tableName,
+            $index->getFileName(),
+            $this->storage->pathOf($tableName, $index->getFileName()),
+        );
+
+        if ($boundary !== null && $lineCount - $boundary['count'] <= $limit) {
+            return;
+        }
+
+        $entries = $this->readIndexValidated(
+            $tableName,
+            $index,
+            $lineCount,
+            false,
+        );
+
+        if ($entries !== null) {
+            $this->writeSorted($tableName, $index, $entries);
+        }
+    }
+
+    /**
+     * Writes sorted entries as the whole index file and records them as
+     * its sorted head.
+     *
+     * @param array<int,array{key:string,line:int}> $entries
+     */
+    private function writeSorted(
+        string $tableName,
+        IndexSchema $index,
         array $entries,
+    ): void {
+        $bytes = $this->storage->write(
+            $tableName,
+            $index->getFileName(),
+            $entries,
+        );
+        $this->derived?->setIndexBoundary(
+            $tableName,
+            $index->getFileName(),
+            $this->storage->pathOf($tableName, $index->getFileName()),
+            $bytes,
+            \count($entries),
+        );
+    }
+
+    /**
+     * The head and tail lines of one lookup merged; a data line found
+     * twice breaks the permutation and raises INDEX_UNRELIABLE.
+     *
+     * @param array<int,int> $headLines
+     * @param array<int,int> $tailLines
+     *
+     * @return array<int,int>
+     */
+    private static function mergeSorted(
+        string $tableName,
+        IndexSchema $index,
+        array $headLines,
+        array $tailLines,
+    ): array {
+        $lines = array_merge($headLines, $tailLines);
+
+        if (\count(array_flip($lines)) !== \count($lines)) {
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::IndexBrokenPermutation,
+                $index->name,
+                $tableName,
+            );
+        }
+
+        return $lines;
+    }
+
+    /**
+     * The checked entries after the sorted head, sorted by key.
+     *
+     * @param \Closure(LocaleInterface, string...): never $fail
+     *
+     * @return array<int,array{key:string,line:int}>
+     */
+    private static function readTail(
+        string $path,
+        int $from,
+        IndexSchema $index,
+        int $lineCount,
+        \Closure $fail,
+    ): array {
+        $handle = is_file($path) ? fopen($path, 'r') : false;
+
+        if ($handle === false) {
+            $fail(JsonProviderErrorEn::IndexFileMissing);
+        }
+
+        $tail = [];
+
+        try {
+            fseek($handle, $from);
+
+            while (($raw = fgets($handle)) !== false) {
+                $tail[] = IndexFileRegion::parse(
+                    $raw,
+                    $index,
+                    $lineCount,
+                    $fail,
+                );
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        usort(
+            $tail,
+            static fn (array $a, array $b): int => strcmp($a['key'], $b['key']),
+        );
+
+        return $tail;
+    }
+
+    /**
+     * @return array<int,int>
+     */
+    private function searchExact(
+        SortedIndexEntries $entries,
         IndexFieldSchema $fieldSchema,
         bool | float | int | string | null $value,
     ): array {
         $target = IndexKey::buildFromValue($value, $fieldSchema);
 
-        return $this->sliceLines(
-            $entries,
-            self::lowerBound($entries, $target),
-            self::upperBound($entries, $target),
+        return $entries->lines(
+            $entries->lowerBound($target),
+            $entries->upperBound($target),
         );
     }
 
@@ -505,12 +802,10 @@ final class IndexManager
      * IN: one binary lookup per distinct value, results merged in entry
      * order per value.
      *
-     * @param array<int,array{key:string,line:int}> $entries
-     *
      * @return null|array<int,int>
      */
     private function searchIn(
-        array $entries,
+        SortedIndexEntries $entries,
         IndexFieldSchema $fieldSchema,
         mixed $values,
     ): array | null {
@@ -533,21 +828,92 @@ final class IndexManager
         $lines = [];
 
         foreach (array_keys($targets) as $target) {
-            $lo = self::lowerBound($entries, $target);
-            $hi = self::upperBound($entries, $target);
-
-            for ($i = $lo; $i < $hi; $i++) {
-                $lines[] = $entries[$i]['line'];
-            }
+            array_push(
+                $lines,
+                ...$entries->lines(
+                    $entries->lowerBound($target),
+                    $entries->upperBound($target),
+                ),
+            );
         }
 
         return $lines;
     }
 
     /**
-     * Range search over the first component: from $from to $to (both bounds
-     * optional). On a DESC field the logical bounds are mirrored BEFORE key
-     * encoding: the encoded order is inverted, so "value >= from" becomes
+     * A range condition on one component within the entries that start
+     * with $prefix; null when the index cannot encode it.
+     *
+     * @return null|array<int,int>
+     */
+    private function searchRangeAfter(
+        SortedIndexEntries $entries,
+        IndexFieldSchema $field,
+        FilterCondition $range,
+        string $prefix,
+    ): array | null {
+        if ($range->not || self::holdsNonFiniteFloat($range->value)) {
+            return null;
+        }
+
+        $raw = $range->value;
+        $value = \is_scalar($raw) ? $raw : null;
+
+        if ($range->operator === FilterOperatorEnum::BETWEEN) {
+            return $this->searchBetween($entries, $field, $raw, $prefix);
+        }
+
+        if ($value === null) {
+            return null;
+        }
+
+        return match ($range->operator) {
+            FilterOperatorEnum::GT => $this->searchRange(
+                $entries,
+                $field,
+                $value,
+                null,
+                false,
+                false,
+                $prefix,
+            ),
+            FilterOperatorEnum::GTE => $this->searchRange(
+                $entries,
+                $field,
+                $value,
+                null,
+                true,
+                false,
+                $prefix,
+            ),
+            FilterOperatorEnum::LT => $this->searchRange(
+                $entries,
+                $field,
+                null,
+                $value,
+                false,
+                false,
+                $prefix,
+            ),
+            FilterOperatorEnum::LTE => $this->searchRange(
+                $entries,
+                $field,
+                null,
+                $value,
+                false,
+                true,
+                $prefix,
+            ),
+            default => null,
+        };
+    }
+
+    /**
+     * Range search over one component: from $from to $to (both bounds
+     * optional), within the entries that start with $prefix — the encoded
+     * values of the components before it, empty for the first one. On a
+     * DESC field the logical bounds are mirrored BEFORE key encoding: the
+     * encoded order is inverted, so "value >= from" becomes
      * "key <= key(from)" — swapping the bounds and their inclusivity maps
      * the logical range onto the physical key order.
      *
@@ -561,55 +927,57 @@ final class IndexManager
      * exact keys that agree with the comparator, so they keep the exact
      * inclusive/exclusive boundary.
      *
-     * @param array<int,array{key:string,line:int}> $entries
-     *
      * @return array<int,int>
      */
     private function searchRange(
-        array $entries,
+        SortedIndexEntries $entries,
         IndexFieldSchema $fieldSchema,
         bool | float | int | string | null $from,
         bool | float | int | string | null $to,
         bool $fromInclusive,
         bool $toInclusive,
+        string $prefix = '',
     ): array {
         if ($fieldSchema->direction === SortDirectionEnum::DESC) {
             [$from, $to] = [$to, $from];
             [$fromInclusive, $toInclusive] = [$toInclusive, $fromInclusive];
         }
 
-        $start = 0;
-        $end = \count($entries);
+        $start = $prefix === ''
+            ? $entries->start()
+            : $entries->lowerBound($prefix);
+        $end = $prefix === ''
+            ? $entries->end()
+            : $entries->upperBound($prefix);
 
         if ($from !== null) {
             if (\is_int($from) || \is_float($from)) {
-                $start = self::lowerBound(
-                    $entries,
-                    IndexKey::numberBoundPrefix($from, $fieldSchema),
+                $start = $entries->lowerBound(
+                    $prefix . IndexKey::numberBoundPrefix($from, $fieldSchema),
                 );
             } else {
-                $fromKey = IndexKey::buildFromValue($from, $fieldSchema);
+                $fromKey = $prefix
+                    . IndexKey::buildFromValue($from, $fieldSchema);
                 $start = $fromInclusive
-                    ? self::lowerBound($entries, $fromKey)
-                    : self::upperBound($entries, $fromKey);
+                    ? $entries->lowerBound($fromKey)
+                    : $entries->upperBound($fromKey);
             }
         }
 
         if ($to !== null) {
             if (\is_int($to) || \is_float($to)) {
-                $end = self::upperBound(
-                    $entries,
-                    IndexKey::numberBoundPrefix($to, $fieldSchema),
+                $end = $entries->upperBound(
+                    $prefix . IndexKey::numberBoundPrefix($to, $fieldSchema),
                 );
             } else {
-                $toKey = IndexKey::buildFromValue($to, $fieldSchema);
+                $toKey = $prefix . IndexKey::buildFromValue($to, $fieldSchema);
                 $end = $toInclusive
-                    ? self::upperBound($entries, $toKey)
-                    : self::lowerBound($entries, $toKey);
+                    ? $entries->upperBound($toKey)
+                    : $entries->lowerBound($toKey);
             }
         }
 
-        return $this->sliceLines($entries, $start, $end);
+        return $start < $end ? $entries->lines($start, $end) : [];
     }
 
     /**
@@ -635,14 +1003,13 @@ final class IndexManager
     }
 
     /**
-     * @param array<int,array{key:string,line:int}> $entries
-     *
      * @return null|array<int,int>
      */
     private function searchBetween(
-        array $entries,
+        SortedIndexEntries $entries,
         IndexFieldSchema $fieldSchema,
         mixed $value,
+        string $prefix = '',
     ): array | null {
         if (
             !\is_array($value)
@@ -670,75 +1037,7 @@ final class IndexManager
             $value[1],
             true,
             true,
+            $prefix,
         );
-    }
-
-    /**
-     * @param array<int,array{key:string,line:int}> $entries
-     *
-     * @return array<int,int>
-     */
-    private function sliceLines(array $entries, int $start, int $end): array
-    {
-        $lines = [];
-
-        for ($i = $start; $i < $end; $i++) {
-            $lines[] = $entries[$i]['line'];
-        }
-
-        return $lines;
-    }
-
-    /**
-     * First entry whose key is >= the part key. Any key whose first part
-     * equals the target starts with it and therefore compares >= to it, so
-     * this is the start of the equal-first-part run.
-     *
-     * @param array<int,array{key:string,line:int}> $entries
-     */
-    private static function lowerBound(array $entries, string $partKey): int
-    {
-        $lo = 0;
-        $hi = \count($entries);
-
-        while ($lo < $hi) {
-            $mid = intdiv($lo + $hi, 2);
-
-            if (strcmp($entries[$mid]['key'], $partKey) < 0) {
-                $lo = $mid + 1;
-            } else {
-                $hi = $mid;
-            }
-        }
-
-        return $lo;
-    }
-
-    /**
-     * First entry past the equal-first-part run: keys prefixed by the part
-     * key compare as equal, everything after them compares greater.
-     *
-     * @param array<int,array{key:string,line:int}> $entries
-     */
-    private static function upperBound(array $entries, string $partKey): int
-    {
-        $lo = 0;
-        $hi = \count($entries);
-
-        while ($lo < $hi) {
-            $mid = intdiv($lo + $hi, 2);
-            $key = $entries[$mid]['key'];
-            $cmp = str_starts_with($key, $partKey)
-                ? 0
-                : strcmp($key, $partKey);
-
-            if ($cmp <= 0) {
-                $lo = $mid + 1;
-            } else {
-                $hi = $mid;
-            }
-        }
-
-        return $lo;
     }
 }

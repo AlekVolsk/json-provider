@@ -64,6 +64,39 @@ final class UniqueConstraint
     }
 
     /**
+     * The first of $indexes that can check this constraint: a user index
+     * on exactly the constraint's fields, in any order and direction — an
+     * equal full key means equal values in every field. Service indexes
+     * are not considered: the engine creates and drops them with
+     * relations.
+     *
+     * @param array<int,IndexSchema> $indexes
+     */
+    public function indexIn(array $indexes): IndexSchema | null
+    {
+        $fields = array_unique($this->fields);
+        sort($fields);
+
+        foreach ($indexes as $index) {
+            if ($index->isService) {
+                continue;
+            }
+
+            $indexFields = array_map(
+                static fn (IndexFieldSchema $f): string => $f->field,
+                $index->fields,
+            );
+            sort($indexFields);
+
+            if ($indexFields === $fields) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Canonical, type-tagged encoding of a single unique-key value.
      *
      * Values of different PHP types never collide: 1, 1.0, '1' and true

@@ -63,6 +63,12 @@ final class MetaRegistry
      */
     private \Closure | null $inodeOf = null;
 
+    /** @var null|\Closure(string): void */
+    private \Closure | null $afterRewrite = null;
+
+    /** @var null|\Closure(string, int, int): void */
+    private \Closure | null $afterAppend = null;
+
     public function __construct(
         private readonly JsonStorage $storage,
     ) {
@@ -81,6 +87,22 @@ final class MetaRegistry
     public function enableDataStamps(\Closure $inodeOf): void
     {
         $this->inodeOf = $inodeOf;
+    }
+
+    /**
+     * Hooks run after a committed full rewrite (table) and a committed
+     * append (table, line count, byte size), so files derived from the
+     * data follow it.
+     *
+     * @param \Closure(string): void           $afterRewrite
+     * @param \Closure(string, int, int): void $afterAppend
+     */
+    public function onCommit(
+        \Closure $afterRewrite,
+        \Closure $afterAppend,
+    ): void {
+        $this->afterRewrite = $afterRewrite;
+        $this->afterAppend = $afterAppend;
     }
 
     public function stampsEnabled(): bool
@@ -130,6 +152,10 @@ final class MetaRegistry
         int $byteSize,
     ): void {
         $this->commit($tableName, $lineCount, $byteSize);
+
+        if ($this->afterAppend !== null) {
+            ($this->afterAppend)($tableName, $lineCount, $byteSize);
+        }
     }
 
     /**
@@ -150,6 +176,10 @@ final class MetaRegistry
             $byteSize,
             $this->inodeOf === null ? null : ($this->inodeOf)($tableName),
         );
+
+        if ($this->afterRewrite !== null) {
+            ($this->afterRewrite)($tableName);
+        }
     }
 
     /**
@@ -166,20 +196,26 @@ final class MetaRegistry
     }
 
     /**
-     * The committed counters and stamp of a table from one read of
-     * meta.json — what the trust gate compares with the data file, plus
-     * the line count it vouches for.
+     * The committed counters, stamp and index format of a table from one
+     * read of meta.json — everything the trust gate compares with the data
+     * file, plus the line count it vouches for.
      *
-     * @return array{lineCount: int, byteSize: null|int, dataIno: null|int}
+     * @return array{
+     *     lineCount: int,
+     *     byteSize: null|int,
+     *     dataIno: null|int,
+     *     indexFormat: int,
+     * }
      */
     public function getCommittedFile(string $tableName): array
     {
         $entry = $this->getEntry($tableName);
 
         return [
-            'lineCount' => $entry['lineCount'],
-            'byteSize'  => $entry['byteSize'],
-            'dataIno'   => $entry['dataIno'],
+            'lineCount'   => $entry['lineCount'],
+            'byteSize'    => $entry['byteSize'],
+            'dataIno'     => $entry['dataIno'],
+            'indexFormat' => $entry['indexFormat'],
         ];
     }
 

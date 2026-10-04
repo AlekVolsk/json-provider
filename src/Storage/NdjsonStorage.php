@@ -294,6 +294,81 @@ final class NdjsonStorage
     }
 
     /**
+     * Reads the lines at the given byte offsets — what readLines() returns
+     * for the same lines, without walking the file from its start. Records
+     * come in the order of $offsets; an offset that does not start a
+     * decodable record yields nothing for it.
+     *
+     * @param array<int,int> $offsets line number => byte offset
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    public function readLinesAt(
+        string $tableName,
+        string $fileName,
+        array $offsets,
+    ): array {
+        if ($offsets === []) {
+            return [];
+        }
+
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+        $handle = fopen($path, 'r');
+
+        if ($handle === false) {
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
+        }
+
+        $records = [];
+
+        try {
+            foreach ($offsets as $offset) {
+                fseek($handle, $offset);
+                $raw = fgets($handle);
+                $item = \is_string($raw)
+                    ? json_decode(rtrim($raw, "\n"), true)
+                    : null;
+
+                if (!\is_array($item)) {
+                    continue;
+                }
+
+                $row = [];
+
+                foreach ($item as $key => $val) {
+                    if (
+                        \is_string($key)
+                        && (\is_scalar($val) || $val === null)
+                    ) {
+                        $row[$key] = $val;
+                    }
+                }
+
+                if ($row !== []) {
+                    $records[] = $row;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return $records;
+    }
+
+    /**
+     * The absolute path of a file of the table, as every other method
+     * resolves it.
+     */
+    public function pathOf(string $tableName, string $fileName): string
+    {
+        return $this->resolvePath($tableName, $fileName);
+    }
+
+    /**
      * Reads and decodes the last non-empty line of an NDJSON file in O(1)
      * relative to the file size: seeks to the end and scans backward in
      * fixed-size chunks until the newline preceding the last non-empty
