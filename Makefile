@@ -136,7 +136,7 @@ test-testo: compat-legacy ##@Testing Testo - unit tests (tests/Unit)
 # them side by side in ~11 min; the groups then share CPU and disk, fsync-bound
 # steps swing by up to 30% and pair ratios by up to 7 points, so reference
 # numbers come from a sequential run.
-BENCH_LOAD    = LoadBenchWrite LoadBenchDto LoadBenchArray LoadBenchMigration
+BENCH_LOAD    = LoadBenchWrite LoadBenchDto LoadBenchArray LoadBenchMigration OpenBench
 BENCH_MAPPING = MappingBenchHydration MappingBenchQuery MappingBenchRelations MappingBenchSort
 BENCH_INDEX   = IndexBench
 

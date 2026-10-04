@@ -96,18 +96,8 @@ final class TableFreshness
         $file = $tableSchema->getFileName();
         $broken = $this->ndjson->readRawLines($table, $file)['broken'];
 
-        if ($broken === []) {
-            return false;
-        }
-
-        if (\count($broken) > 1) {
-            return true;
-        }
-
-        $bytes = $this->ndjson->readRaw($table, $file);
-        $tail = substr($bytes, (int)strrpos("\n" . $bytes, "\n"));
-
-        return str_ends_with($bytes, "\n") || $broken[0]['raw'] !== $tail;
+        return $this->ndjson->brokenBeyondTornTail($table, $file, $broken)
+            !== [];
     }
 
     /**

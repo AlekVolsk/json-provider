@@ -104,6 +104,7 @@ final class FkEngine
     /**
      * @param \Closure(TableSchema): void            $ensureConsistent
      * @param \Closure(string): RecordSet            $readForWrite
+     * @param \Closure(string): void                 $assertRewritable
      * @param \Closure(string): void                 $cacheInvalidate
      * @param \Closure(string, int, RecordSet): void $cacheStore
      */
@@ -116,6 +117,7 @@ final class FkEngine
         private readonly TableFreshness $freshness,
         private readonly \Closure $ensureConsistent,
         private readonly \Closure $readForWrite,
+        private readonly \Closure $assertRewritable,
         private readonly \Closure $cacheInvalidate,
         private readonly \Closure $cacheStore,
     ) {
@@ -1046,7 +1048,9 @@ final class FkEngine
      * Builds the final write set: for every touched table the surviving
      * rows with patches applied, normalized against the schema and float-
      * widened; the write order is the reverse of the discovery order, so
-     * the deepest children flip first and the root last.
+     * the deepest children flip first and the root last. Every table about
+     * to be rewritten passes the provider's broken-record guard first, so a
+     * refusal leaves the disk untouched.
      */
     private function assemblePlan(string $root, int $affected): FkWritePlan
     {
@@ -1065,6 +1069,7 @@ final class FkEngine
                 continue;
             }
 
+            ($this->assertRewritable)($table);
             $tableSchema = $this->ctxSchemas[$table];
             $final = [];
 

@@ -139,6 +139,39 @@ final class NdjsonStorage
     }
 
     /**
+     * The broken lines a full rewrite would lose: every line readRawLines()
+     * reported, except a torn, unterminated last line — the one such line a
+     * crashed append leaves behind, never acknowledged and dropped by any
+     * rewrite. Reads the file again only when there is a broken line.
+     *
+     * @param array<int,array{line:int,raw:string}> $broken
+     *
+     * @return array<int,array{line:int,raw:string}>
+     */
+    public function brokenBeyondTornTail(
+        string $tableName,
+        string $fileName,
+        array $broken,
+    ): array {
+        if ($broken === []) {
+            return [];
+        }
+
+        $bytes = $this->readRaw($tableName, $fileName);
+
+        if (str_ends_with($bytes, "\n")) {
+            return $broken;
+        }
+
+        $tail = substr($bytes, (int)strrpos("\n" . $bytes, "\n"));
+        $last = $broken[array_key_last($broken)];
+
+        return $last['raw'] === $tail
+            ? \array_slice($broken, 0, -1)
+            : $broken;
+    }
+
+    /**
      * Reads a single NDJSON line by 0-based line number.
      * Returns null if the line is missing or its content is invalid.
      *

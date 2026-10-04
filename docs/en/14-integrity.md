@@ -106,6 +106,16 @@ The `rename_incomplete` reconciliation runs **before** per-issue repair (otherwi
 
 An NDJSON line `json_decode` cannot parse is silently skipped by the read layer — but the validator surfaces every such line as a `broken_record` finding (physical line number and raw text in the `context`). Any full "read → write" rewrite of the file would destroy those lines, so `optimizeTable()` and the `record_key_order` repair **refuse** to rewrite a file holding any (`REPAIR_FAILED` / `repairError` with the line count): resolve them manually first — fix the line's text in the file or knowingly delete it.
 
+Writes that rewrite a table from what they read — `update` and `delete` with their cascades, `migrateColumns`, `reorderColumns`, `renameColumn` and the self-healing rewrite of the consistency gate — lose such a line without a trace by default (`BrokenRecordPolicyEnum::Drop`). The strict mode is switched on per provider instance:
+
+```php
+use AV\JsonProvider\Storage\BrokenRecordPolicyEnum;
+
+$db->setBrokenRecordPolicy(BrokenRecordPolicyEnum::Refuse);
+```
+
+In it such a write fails with `JsonProviderDataException`, case `BrokenRecordBlocksRewrite`, before anything changes on disk. The message gives the number of such lines and the physical number of the first, counted from zero as in the `context.line` of a `broken_record` finding. Only the tables the write actually rewrites are checked: deleting a parent with no children in a damaged child table does not trip over it. Reads and appends (`insert`) work as usual — they lose nothing; every rewrite of that table fails until the line is fixed or removed by hand. A torn, never-acknowledged tail left by a crashed append is dropped under either policy; `truncate` and `importRecords`, which replace the whole content, do not check the policy. Before switching the mode on, run `validate()` and resolve the `broken_record` findings.
+
 When records are normalized (`record_key_order`, `optimizeTable`, restore), columns missing from a record are back-filled with the type's default (`''`/`0`/`0.0`/`false`, `null` for nullable) — the same value `migrateColumns` would have written, so repairing a crashed migration converges to the migration's target state instead of planting `null` into a not-null column. The same typed back-fill runs on every write path: `insert`, table self-healing, the schema-level rewrites (`migrateColumns`, `reorderColumns`, `renameColumn`, `truncate`) and the multi-table rewrite of `update`/`delete` by the FK engine. No path ever invents a value for a non-nullable column with no zero default (a temporal one): the operation fails with `JsonProviderDataException` — for the FK engine that happens in the plan phase, with the disk untouched. A `null` PRESENT in a record stays `null` — and stays visible to the validator as `present_null` until the data is fixed.
 
 ## Rendering the report

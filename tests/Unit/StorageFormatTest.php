@@ -47,6 +47,7 @@ final class StorageFormatTest
         'setLocale',
         'resetLocale',
         'setComparisonMode',
+        'setBrokenRecordPolicy',
         'registerDto',
         'unregisterDto',
         'table',

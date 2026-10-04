@@ -434,6 +434,10 @@ enum JsonProviderErrorEn: string implements LocaleInterface
         . 'be migrated to format generation %s: the database is in generation '
         . '%s, and this version of the library migrates only upwards and no '
         . 'further than generation %s';
+    case BrokenRecordBlocksRewrite = 'Table "%s" cannot be rewritten without '
+        . 'losing data: its data file holds lines that are not records (%s '
+        . 'in all), the first of them at physical line %s, counted from zero; '
+        . 'fix or remove them by hand';
     case ExtensionRequired = 'A PHP extension is required to use this cache '
         . 'adapter: %s';
 

@@ -48,6 +48,7 @@ use AV\JsonProvider\Services\Format\TableFreshness;
 use AV\JsonProvider\Services\Integrity\IntegrityRepairer;
 use AV\JsonProvider\Services\Integrity\IntegrityReport;
 use AV\JsonProvider\Services\Integrity\IntegrityValidator;
+use AV\JsonProvider\Storage\BrokenRecordPolicyEnum;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Storage\StorageManifest;
@@ -142,6 +143,19 @@ final class JsonDataProvider
     private readonly string $cacheNs;
     private readonly LoggerInterface | null $logger;
     private ComparisonModeEnum $comparisonMode = ComparisonModeEnum::Binary;
+    private BrokenRecordPolicyEnum $brokenRecordPolicy
+        = BrokenRecordPolicyEnum::Drop;
+
+    /**
+     * Under BrokenRecordPolicyEnum::Refuse, the lines the latest write-path
+     * read of each table skipped (a torn tail excluded): the number of
+     * such lines and the physical number of the first. A rewrite is
+     * always based on a read made in the same critical section, so the
+     * entry describes exactly the records about to be written.
+     *
+     * @var array<string,array{line:int,count:int}>
+     */
+    private array $skippedLines = [];
 
     /**
      * roCompat features of the storage format this engine does not know;
@@ -277,6 +291,19 @@ final class JsonDataProvider
     public function setComparisonMode(ComparisonModeEnum $mode): self
     {
         $this->comparisonMode = $mode;
+
+        return $this;
+    }
+
+    /**
+     * Sets what a write that rewrites a table does with a data-file line
+     * that is not a record on this instance. Drop (default) loses the
+     * line; Refuse fails the write with BrokenRecordBlocksRewrite before
+     * the disk is touched (see BrokenRecordPolicyEnum).
+     */
+    public function setBrokenRecordPolicy(BrokenRecordPolicyEnum $policy): self
+    {
+        $this->brokenRecordPolicy = $policy;
 
         return $this;
     }
@@ -719,6 +746,7 @@ final class JsonDataProvider
                 );
                 $this->ensureTableConsistent($current);
                 $records = $this->readAllForWrite($target->name);
+                $this->assertRewritable($target->name);
 
                 if ($records !== []) {
                     $this->assertAddedColumnsHaveDefault($target, $added);
@@ -1083,6 +1111,7 @@ final class JsonDataProvider
 
                 $this->ensureTableConsistent($tableSchema);
                 $records = $this->readAllForWrite($tableName);
+                $this->assertRewritable($tableName);
 
                 $this->ndjson->encodeRecords($tableName, array_map(
                     fn (array $r): array => $this->normalizeRecord(
@@ -1315,6 +1344,7 @@ final class JsonDataProvider
 
                 $this->ensureTableConsistent($tableSchema);
                 $records = $this->readAllForWrite($tableName);
+                $this->assertRewritable($tableName);
 
                 $renamed = [];
 
@@ -3330,13 +3360,69 @@ final class JsonDataProvider
     private function readAllForWrite(string $tableName): array
     {
         $tableSchema = $this->schema->getTable($tableName);
-        $records = $this->ndjson->read(
-            $tableName,
-            $tableSchema->getFileName(),
-        );
+        $file = $tableSchema->getFileName();
+
+        if ($this->brokenRecordPolicy === BrokenRecordPolicyEnum::Drop) {
+            $records = $this->ndjson->read($tableName, $file);
+        } else {
+            $raw = $this->ndjson->readRawLines($tableName, $file);
+            $records = $raw['records'];
+            $this->noteSkippedLines(
+                $tableName,
+                $this->ndjson->brokenBeyondTornTail(
+                    $tableName,
+                    $file,
+                    $raw['broken'],
+                ),
+            );
+        }
+
         $this->assertStoredColumnNames($records);
 
         return $this->values->widenFloats($tableSchema, $records);
+    }
+
+    /**
+     * Records which lines the latest write-path read of the table skipped.
+     *
+     * @param array<int,array{line:int,raw:string}> $broken
+     */
+    private function noteSkippedLines(string $tableName, array $broken): void
+    {
+        if ($broken === []) {
+            unset($this->skippedLines[$tableName]);
+
+            return;
+        }
+
+        $this->skippedLines[$tableName] = [
+            'line'  => $broken[0]['line'],
+            'count' => \count($broken),
+        ];
+    }
+
+    /**
+     * Under BrokenRecordPolicyEnum::Refuse, fails a rewrite whose base read
+     * skipped lines that are not records: writing that base would lose
+     * them. Called after the read and before anything is written.
+     */
+    private function assertRewritable(string $tableName): void
+    {
+        $skipped = $this->skippedLines[$tableName] ?? null;
+
+        if (
+            $skipped === null
+            || $this->brokenRecordPolicy !== BrokenRecordPolicyEnum::Refuse
+        ) {
+            return;
+        }
+
+        throw new JsonProviderDataException(
+            JsonProviderErrorEn::BrokenRecordBlocksRewrite,
+            $tableName,
+            $skipped['count'],
+            $skipped['line'],
+        );
     }
 
     /**
@@ -3578,6 +3664,7 @@ final class JsonDataProvider
         }
 
         $records = $this->readAllForWrite($tableSchema->name);
+        $this->assertRewritable($tableSchema->name);
 
         if ($metaInitialized) {
             $maxId = self::maxStoredId($records);
@@ -4841,6 +4928,7 @@ final class JsonDataProvider
                 $this->freshness,
                 fn (TableSchema $t) => $this->ensureTableConsistent($t),
                 fn (string $t): array => $this->readAllForWrite($t),
+                fn (string $t) => $this->assertRewritable($t),
                 fn (string $t) => $this->invalidateCache($t),
                 function (
                     string $t,

@@ -10,7 +10,7 @@ JsonProvider/
     ├── JsonTable.php              # билдер запросов
     ├── JsonFilter.php             # иммутабельный набор условий
     ├── Schema/                    # value-объекты: TableSchema, ColumnTypes, IndexSchema, ...
-    ├── Storage/                   # низкоуровневый I/O: NdjsonStorage, JsonStorage, локи, StorageManifest
+    ├── Storage/                   # низкоуровневый I/O: NdjsonStorage, JsonStorage, локи, StorageManifest, BrokenRecordPolicyEnum
     ├── Registry/                  # SchemaRegistry, MetaRegistry
     ├── Index/                     # IndexManager, IndexKey
     ├── Query/                     # FilterCondition, FilterOperatorEnum, OrderBy, ...
