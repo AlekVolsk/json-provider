@@ -6,6 +6,7 @@ namespace AV\JsonProvider\Relations;
 
 use AV\JsonProvider\Exception\JsonProviderDataException;
 use AV\JsonProvider\Exception\JsonProviderException;
+use AV\JsonProvider\Exception\JsonProviderLockException;
 use AV\JsonProvider\Exception\JsonProviderRelationException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Index\IndexManager;
@@ -105,6 +106,7 @@ final class FkEngine
      * @param \Closure(TableSchema): void            $ensureConsistent
      * @param \Closure(string): RecordSet            $readForWrite
      * @param \Closure(string): void                 $assertRewritable
+     * @param \Closure(string, string): bool         $isHeld
      * @param \Closure(string): void                 $cacheInvalidate
      * @param \Closure(string, int, RecordSet): void $cacheStore
      */
@@ -118,72 +120,43 @@ final class FkEngine
         private readonly \Closure $ensureConsistent,
         private readonly \Closure $readForWrite,
         private readonly \Closure $assertRewritable,
+        private readonly \Closure $isHeld,
         private readonly \Closure $cacheInvalidate,
         private readonly \Closure $cacheStore,
     ) {
     }
 
     /**
-     * Lock plan for an update/delete of the given table: the table EX,
-     * transitively every CASCADE/SET_NULL child EX (their rows are
-     * rewritten and their own children may cascade further), every
-     * RESTRICT child SH (their rows are only read), and SH on the parents
-     * of every EX table. Derived from the relations graph of the schema,
-     * not from data; cycles terminate via the visited set.
+     * Lock plan for a delete from the given table (see lockPlan()).
      *
      * @return array<string,string>
      */
-    public function mutationLockPlan(TableSchema $tableSchema): array
+    public function deleteLockPlan(TableSchema $tableSchema): array
     {
-        $plan = [$tableSchema->name => 'ex'];
-        $queue = [$tableSchema->name];
-        $visited = [$tableSchema->name => true];
-
-        while ($queue !== []) {
-            $table = array_shift($queue);
-            $plan = $this->addParentShLocks($table, $plan);
-
-            foreach ($this->schema->getChildRelations($table) as $relation) {
-                $child = $relation->childTable();
-                $actions = [$relation->onDelete, $relation->onUpdate];
-
-                if (
-                    \in_array(ForeignKeyActionEnum::CASCADE, $actions, true)
-                    || \in_array(
-                        ForeignKeyActionEnum::SET_NULL,
-                        $actions,
-                        true,
-                    )
-                ) {
-                    $plan[$child] = 'ex';
-
-                    if (!isset($visited[$child])) {
-                        $visited[$child] = true;
-                        $queue[] = $child;
-                    }
-                } elseif (
-                    \in_array(ForeignKeyActionEnum::RESTRICT, $actions, true)
-                ) {
-                    $plan[$child] ??= 'sh';
-                }
-            }
-        }
-
-        return $plan;
+        return $this->lockPlan($tableSchema->name, true);
     }
 
     /**
-     * Lock plan for an insert: the table itself EX plus SH on parents of
-     * its enforced relations (rows of the parents provide FK context).
+     * Lock plan for an update of the given table (see lockPlan()).
+     *
+     * @return array<string,string>
+     */
+    public function updateLockPlan(TableSchema $tableSchema): array
+    {
+        return $this->lockPlan($tableSchema->name, false);
+    }
+
+    /**
+     * Lock plan for an insert: the table itself EX. No FK action reads a
+     * parent row (dangling references are allowed), so parents are not
+     * locked; a concurrent delete or key update of a parent serializes
+     * with the insert on the child table, which its own plan locks.
      *
      * @return array<string,string>
      */
     public function insertLockPlan(TableSchema $tableSchema): array
     {
-        return $this->addParentShLocks(
-            $tableSchema->name,
-            [$tableSchema->name => 'ex'],
-        );
+        return [$tableSchema->name => 'ex'];
     }
 
     /**
@@ -200,7 +173,7 @@ final class FkEngine
         array $rootRecords,
         array $deleteIndexes,
     ): FkWritePlan {
-        $this->resetContext($rootSchema, $rootRecords);
+        $this->resetContext($rootSchema, $rootRecords, true);
         $root = $rootSchema->name;
         $queue = [];
         $updateQueue = [];
@@ -280,7 +253,7 @@ final class FkEngine
         array $targetIndexes,
         array $patch,
     ): FkWritePlan {
-        $this->resetContext($rootSchema, $rootRecords);
+        $this->resetContext($rootSchema, $rootRecords, false);
         $root = $rootSchema->name;
         $this->ctxForceWrite[$root] = true;
         $queue = [];
@@ -428,6 +401,7 @@ final class FkEngine
     private function resetContext(
         TableSchema $rootSchema,
         array $rootRecords,
+        bool $delete,
     ): void {
         $root = $rootSchema->name;
         $this->ctxSchemas = [$root => $rootSchema];
@@ -441,7 +415,7 @@ final class FkEngine
         $this->ctxProbeEntries = [];
         $this->ctxWriteSet = [];
 
-        foreach ($this->mutationLockPlan($rootSchema) as $table => $mode) {
+        foreach ($this->lockPlan($root, $delete) as $table => $mode) {
             if ($mode === 'ex') {
                 $this->ctxWriteSet[$table] = true;
             }
@@ -462,6 +436,7 @@ final class FkEngine
         }
 
         $tableSchema = $this->tableSchema($table);
+        $this->assertHeld($table, 'sh');
 
         if (isset($this->ctxWriteSet[$table])) {
             ($this->ensureConsistent)($tableSchema);
@@ -715,6 +690,7 @@ final class FkEngine
         }
 
         $entries = null;
+        $this->assertHeld($child, 'sh');
 
         if ($this->indexTrustworthy($childSchema)) {
             $entries = $this->indexManager->readIndexValidated(
@@ -1069,6 +1045,7 @@ final class FkEngine
                 continue;
             }
 
+            $this->assertHeld($table, 'ex');
             ($this->assertRewritable)($table);
             $tableSchema = $this->ctxSchemas[$table];
             $final = [];
@@ -1153,36 +1130,72 @@ final class FkEngine
     }
 
     /**
-     * Returns the plan extended with SH locks for the parents of the
-     * table's enforced relations (never downgrading an already planned
-     * EX).
-     *
-     * @param array<string,string> $plan
+     * Lock plan of a delete ($delete) or an update of the given table: the
+     * table EX, then every child an executable edge reaches — CASCADE and
+     * SET_NULL children EX (their rows are deleted or patched), RESTRICT
+     * children SH (only probed). A delete follows onDelete edges, an update
+     * onUpdate edges; a cascade-deleted child goes on along its own
+     * onDelete edges, while a patched child — set-null or cascaded update —
+     * goes on along its onUpdate edges, since a patch is a value change.
+     * Derived from the relations graph, not from data; cycles terminate via
+     * the visited set. Parents are not locked: no FK action reads a parent
+     * row.
      *
      * @return array<string,string>
      */
-    private function addParentShLocks(string $tableName, array $plan): array
+    private function lockPlan(string $root, bool $delete): array
     {
-        foreach ($this->schema->getRelations($tableName) as $relation) {
-            if ($relation->childTable() !== $tableName) {
-                continue;
-            }
+        $plan = [$root => 'ex'];
+        $queue = [[$root, $delete]];
+        $visited = [$root . ($delete ? ':delete' : ':update') => true];
 
-            $parent = $relation->parentTable();
+        while (($next = array_shift($queue)) !== null) {
+            [$table, $deleting] = $next;
 
-            if ($parent === $tableName) {
-                continue;
-            }
+            foreach ($this->schema->getChildRelations($table) as $relation) {
+                $child = $relation->childTable();
+                $action = $deleting ? $relation->onDelete : $relation->onUpdate;
 
-            $enforced = $relation
-                ->onDelete !== ForeignKeyActionEnum::NO_ACTION
-                || $relation->onUpdate !== ForeignKeyActionEnum::NO_ACTION;
+                if ($action === ForeignKeyActionEnum::RESTRICT) {
+                    $plan[$child] ??= 'sh';
 
-            if ($enforced) {
-                $plan[$parent] ??= 'sh';
+                    continue;
+                }
+
+                if (
+                    $action !== ForeignKeyActionEnum::CASCADE
+                    && $action !== ForeignKeyActionEnum::SET_NULL
+                ) {
+                    continue;
+                }
+
+                $plan[$child] = 'ex';
+                $childDeleted = $deleting
+                    && $action === ForeignKeyActionEnum::CASCADE;
+                $key = $child . ($childDeleted ? ':delete' : ':update');
+
+                if (!isset($visited[$key])) {
+                    $visited[$key] = true;
+                    $queue[] = [$child, $childDeleted];
+                }
             }
         }
 
         return $plan;
+    }
+
+    /**
+     * Fails when the engine is about to read or write a table its frame
+     * does not hold in the mode the access needs — a lock plan narrower
+     * than the walk it serves surfaces here instead of as a race.
+     */
+    private function assertHeld(string $table, string $mode): void
+    {
+        if (!($this->isHeld)($table, $mode)) {
+            throw new JsonProviderLockException(
+                JsonProviderErrorEn::LockOrderTableOutsideHeldSet,
+                $table,
+            );
+        }
     }
 }

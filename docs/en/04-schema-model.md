@@ -237,6 +237,7 @@ Which side is the **child** (physically holds the FK column) depends on the rela
 
 - `onDelete` fires when a parent row is deleted: `cascade` deletes the referencing children (transitively), `setNull` nulls their FK, `restrict` refuses the delete while at least one reference exists (MySQL-immediate semantics: a reference counts even when the referencing child is deleted by the same statement — a self-referential restrict table cannot be emptied by one delete-all; delete leaves before roots).
 - `onUpdate` fires when the referenced column value of the parent changes. It cannot be declared on the primary key `id` (`RelationOnUpdateOnPk`): `id` is immutable, so the action could never fire. It works only for relations referencing a non-PK unique column — there `cascade` really rewrites the children's FK values.
+- A foreign key is enforced from the parent side only. An `insert` or `update` of a child does not check that the parent row exists: a reference to a missing parent is allowed, and `validate()` reports it as an `fk_orphan` finding.
 
 ### Declaring relations — API only
 

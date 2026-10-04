@@ -926,6 +926,7 @@ final class JsonDataProvider
 
         return $this->withMutationLocks(
             $tableName,
+            false,
             function (TableSchema $tableSchema) use (
                 $conditions,
                 $data,
@@ -986,6 +987,7 @@ final class JsonDataProvider
 
         return $this->withMutationLocks(
             $tableName,
+            true,
             function (TableSchema $tableSchema) use ($conditions): int {
                 $tableName = $tableSchema->name;
                 $conditions = $this->values->encodeConditions(
@@ -2835,9 +2837,11 @@ final class JsonDataProvider
     }
 
     /**
-     * Runs a mutation body under the FK-aware lock plan of the table,
-     * closing the plan-staleness window: the plan is computed from the
-     * pre-lock schema snapshot, and a relation added by a concurrent
+     * Runs a mutation body under the FK-aware lock plan of the table — the
+     * plan of a delete ($delete) or of an update, which differ in the
+     * relation actions they follow — closing the plan-staleness window:
+     * the plan is computed from the pre-lock schema snapshot, and a
+     * relation added by a concurrent
      * addRelation (db EX) between planning and the db SH acquisition
      * could make the engine cascade into a table the frame never locked.
      * The body therefore re-derives the plan from the fresh in-section
@@ -2851,23 +2855,25 @@ final class JsonDataProvider
      *
      * @return T
      */
-    private function withMutationLocks(string $tableName, callable $body)
-    {
+    private function withMutationLocks(
+        string $tableName,
+        bool $delete,
+        callable $body,
+    ) {
         $attempts = 0;
 
         while (true) {
-            $plan = $this->fkEngine()->mutationLockPlan(
+            $plan = $this->mutationLockPlan(
                 $this->schema->getTable($tableName),
+                $delete,
             );
 
             $outcome = $this->locks->withLocks(
                 $plan,
                 'sh',
-                function () use ($tableName, $body): array | null {
+                function () use ($tableName, $delete, $body): array | null {
                     $tableSchema = $this->schema->getTable($tableName);
-                    $freshPlan = $this->fkEngine()->mutationLockPlan(
-                        $tableSchema,
-                    );
+                    $freshPlan = $this->mutationLockPlan($tableSchema, $delete);
 
                     foreach ($freshPlan as $table => $mode) {
                         if (!$this->locks->isHeld($table, $mode)) {
@@ -2890,6 +2896,20 @@ final class JsonDataProvider
                 );
             }
         }
+    }
+
+    /**
+     * The FK engine's lock plan of a delete ($delete) or an update.
+     *
+     * @return array<string,string>
+     */
+    private function mutationLockPlan(
+        TableSchema $tableSchema,
+        bool $delete,
+    ): array {
+        return $delete
+            ? $this->fkEngine()->deleteLockPlan($tableSchema)
+            : $this->fkEngine()->updateLockPlan($tableSchema);
     }
 
     /**
@@ -4929,6 +4949,10 @@ final class JsonDataProvider
                 fn (TableSchema $t) => $this->ensureTableConsistent($t),
                 fn (string $t): array => $this->readAllForWrite($t),
                 fn (string $t) => $this->assertRewritable($t),
+                fn (string $t, string $mode): bool => $this->locks->isHeld(
+                    $t,
+                    $mode,
+                ),
                 fn (string $t) => $this->invalidateCache($t),
                 function (
                     string $t,

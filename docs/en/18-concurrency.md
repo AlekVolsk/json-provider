@@ -3,12 +3,12 @@
 The provider uses a three-level hierarchy of inter-process locks (flock on persistent empty files in the service directory `db/.locks/`):
 
 1. **Database** — `db.lock`. SH is taken by any DML write (insert/update/delete); EX by DDL (createTable, dropTable, migrateColumns, reorderColumns), restore, backup and whole-database repair.
-2. **Tables** — `table.<name>.lock`. EX for tables being written, SH for tables only read inside the critical section (FK parents, restrict children). Acquired strictly in ascending name order.
+2. **Tables** — `table.<name>.lock`. EX for tables being written, SH for tables only read inside the critical section (restrict children). Acquired strictly in ascending name order.
 3. **Service files** — `svc.<name>.lock`, short "leaf" sidecars for `meta.json` and `information_schema.json`. Taken last and non-composable: level 1–2 locks must not be acquired while holding a leaf.
 
 The acquisition order is total: database → tables by name → leaves. Mode upgrades (SH→EX) and out-of-order acquisition are forbidden and raise `JsonProviderLockException`. Waiting is capped at 30 seconds, then `JsonProviderLockException`. Locks die with the process: a crashed holder leaves nothing locked.
 
-The set of tables to lock for a write is derived from the schema's relations graph: the mutated table EX, transitively all CASCADE/SET_NULL children EX, RESTRICT children SH, parents of enforced relations SH. Graph cycles are safe.
+The set of tables to lock for a write is derived from the schema's relations graph. An `insert` takes EX on its own table only. A `delete` takes EX on its table and follows the `onDelete` actions: `cascade` and `setNull` children EX, `restrict` children SH; children deleted by a cascade go on along their own `onDelete` actions, nulled ones along their `onUpdate` actions, since nulling is a value change. An `update` follows the `onUpdate` actions only: relations on `id` have none, so an `update` of such a table locks only the table itself, not the tree of descendants. Parents are never locked: no FK action reads a parent row, and a delete or key update of the parent locks the child table, so it serializes with an insert there. Graph cycles are safe. An engine access to a table outside the held set is a `JsonProviderLockException`, case `LockOrderTableOutsideHeldSet`, not a race.
 
 ## Reads
 

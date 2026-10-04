@@ -135,10 +135,12 @@ test-testo: compat-legacy ##@Testing Testo - unit tests (tests/Unit)
 # ratios included. Groups use separate databases, so `make -j3 test-bench` runs
 # them side by side in ~11 min; the groups then share CPU and disk, fsync-bound
 # steps swing by up to 30% and pair ratios by up to 7 points, so reference
-# numbers come from a sequential run.
+# numbers come from a sequential run. The concurrency suite measures lock waits
+# against background processes and runs alone, after the groups.
 BENCH_LOAD    = LoadBenchWrite LoadBenchDto LoadBenchArray LoadBenchMigration OpenBench
 BENCH_MAPPING = MappingBenchHydration MappingBenchQuery MappingBenchRelations MappingBenchSort
 BENCH_INDEX   = IndexBench
+BENCH_CONCURRENCY = ConcurrencyBench
 
 # Run benchmark files one process each, report per file, fail if any file fails
 define bench_files
@@ -154,6 +156,8 @@ endef
 
 
 test-bench: test-bench-load test-bench-mapping test-bench-index ##@Testing Testo - every benchmark, one process per file (~20 min; -j3 ~11 min, rougher numbers)
+	$(call title,"Testo - concurrency benchmarks")
+	$(call bench_files,$(BENCH_CONCURRENCY))
 
 
 test-bench-load: ##@Testing Testo - load benchmarks (10 tables x 100k rows = 1M, ~177 MiB in temp, ~6 min)
@@ -169,6 +173,11 @@ test-bench-mapping: ##@Testing Testo - array vs DTO across filter/sort/relation 
 test-bench-index: ##@Testing Testo - index paths planned to change: unique, FK, composite, size, count, stale stamp (14 tables, ~2.5 min)
 	$(call title,"Testo - index benchmarks")
 	$(call bench_files,$(BENCH_INDEX))
+
+
+test-bench-concurrency: ##@Testing Testo - lock waits of writes behind index reads and back, background processes (~15 s, run alone)
+	$(call title,"Testo - concurrency benchmarks")
+	$(call bench_files,$(BENCH_CONCURRENCY))
 
 
 #### PHP-CS-Fixer #####################################################################
