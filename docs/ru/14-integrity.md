@@ -51,6 +51,7 @@ $report = $db->validate();   // вся БД
 | `orphan_db_entry` | warning | в корне БД лежит файл или каталог вне схемы |
 | `fk_backing_index_orphaned` | warning | служебный `_fk_`-индекс не является backing'ом ни одной пробующей связи (мёртвый вес) |
 | `index_format_outdated` | info | индексы в пре-v2-формате; чтения деградируют в full scan до ближайшей записи/repair |
+| `table_unverified` | info | база поколения 2, у таблицы нет штампа (`context.freshness` = `unstamped`: её создал или восстановил движок 1.0) или штамп устарел (`stale`: файл данных подменён после последнего коммита со штампом); см. [формат хранения](23-storage-format.md) |
 | `table_optimized` | info | таблица отсортирована по id и переиндексирована (только из repair) |
 
 Проверки `fk_orphan` — уровня всей БД (нужны данные обеих сторон связи), выполняются только в `validate()`; `unique_duplicate`, `present_null` и `broken_record` — потабличные, их видит и `validateTable()`. Сравнение FK-значений типострогое — той же канонической кодировкой `keyPart`, которой пользуются unique-проверки и каскадный движок.
@@ -83,6 +84,7 @@ foreach ($report->issuesByCategory(IssueCategoryEnum::INDEX_DRIFT) as $i) {
 | `index_drift` | перестроить из данных |
 | `index_unreliable` | перестроить из данных, проштамповать формат v2 |
 | `index_format_outdated` | перестроить все индексы таблицы, проштамповать v2 |
+| `table_unverified` | перестроить все индексы таблицы из данных и поставить штамп, файл данных не переписывается; отказ (`repairError`), если в файле есть непарсимые строки |
 | `orphan_index_file` | удалить файл |
 | `record_key_order` | перезаписать записи в каноническом порядке, переиндекс (отказ при непарсимых строках — см. ниже) |
 | `meta_entry_missing` | заново завести запись, вычислить lineCount/lastId |

@@ -33,3 +33,11 @@ A heavy-weight maintenance pass:
 Use it occasionally — after long delete-heavy sessions, or right before a backup, to keep the on-disk layout tidy. The provider's normal runtime does not require it.
 
 When the file holds unparseable NDJSON lines, `optimizeTable()` refuses to rewrite it (the rewrite would silently destroy them): resolve the lines `validate()` reports as `broken_record` findings first — see [Integrity](14-integrity.md).
+
+## Storage format migration
+
+```php
+$report = $db->migrateStorage();
+```
+
+Brings the database to the storage format generation the engine knows and stamps every table: indexes are rebuilt from the data, not taken on faith. It runs under the EX lock of the database and of every table — run it when deploying a new library version, not on live traffic. `storageStatus()` shows in advance what a migration would do. Details are in [Versioned migrations](07-migrations.md#versioned-migrations).

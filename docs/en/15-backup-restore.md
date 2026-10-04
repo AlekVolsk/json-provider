@@ -26,7 +26,7 @@ The whole export runs **under the exclusive database lock**: no writer is in fli
 Archive layout:
 
 ```text
-manifest.json                 # {format, version, createdAt, tables, counters, checksums}
+manifest.json                 # {format, version, createdAt, tables, counters, checksums, storageFormat}
 information_schema.json
 tables/<table>.ndjson
 ```
@@ -35,6 +35,8 @@ The manifest carries two validation fields (the format version stays `1`, the fi
 
 - `counters` — `table → lastInsertedId` at export time, taken from meta and **not** derived from data: a deleted high-water id is never re-minted after a restore;
 - `checksums` — `archive member name → sha256` of its bytes, computed from the very bytes put into the archive. `manifest.json` itself is not covered: swapping the manifest **together** with the members it describes stays undetectable — when that matters, store the archives under an external integrity layer (signatures, immutable storage).
+
+The informational `storageFormat` field is the storage format generation of the database at export time (see [storage format](23-storage-format.md)). The archive layout does not depend on it, a restore does not need it, and the 1.0 engine, which does not know the field, restores such an archive as any other. Neither `.jdp/` nor the stamps enter the archive: a restore builds them anew.
 
 ## Restore
 
@@ -48,7 +50,7 @@ Behaviour:
 2. the table set is matched against the current schema (in the default mode — see adopt below);
 3. under db EX plus EX locks on every involved table: a safety snapshot of the current DB state is taken into a temporary archive — `<temp>/jp-snapshot-<hex>/snapshot.tar.gz`, where `<temp>` is `sys_get_temp_dir()` and the directory is created with mode `0700` (the nested export re-enters the held lock and skips the integrity check — restoring a broken database is exactly what restore is for);
 4. per table: records are read from the archive, normalized against the schema, sorted by `id`, the data file is written, indexes are rebuilt and stamped format v2, `lastInsertedId` is restored as `max(manifest counter, max(id))` — an archive without `counters` falls back to `max(id)` alone; then files the schema does not declare are swept from the table subdirectory (stray indexes of dropped indexes, abandoned `*.tmp`) — after a restore `validate()` is clean of `orphan_index_file`;
-5. on success the safety snapshot is deleted;
+5. on success the safety snapshot is deleted and the [storage format is migrated](07-migrations.md#versioned-migrations) to the engine's generation: an archive of any version leaves the database in the current generation, with every table stamped;
 6. on failure the DB is rolled back from the safety snapshot (schema, data and counters come from the snapshot, including the counters of **its** manifest) and `JsonProviderServiceException` is thrown. When the rollback fails too, both messages plus the snapshot path are present in the exception message so you can recover manually.
 
 Restore serializes against every writer: concurrent inserts/updates either fully complete before the snapshot or start after the restore.

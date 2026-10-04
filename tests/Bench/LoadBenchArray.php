@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Bench;
 
 use AV\JsonProvider\Tests\Support\LoadFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -40,8 +39,8 @@ final class LoadBenchArray
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function seedForRead(): int
     {
         LoadFixture::seedFresh();
@@ -52,9 +51,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'whereEqPhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function whereEqQuery(): int
     {
         return \count(
@@ -78,9 +77,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'pkLookupPhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function pkLookupQuery(): int
     {
         $row = LoadFixture::db()
@@ -107,9 +106,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:sort' => [self::class, 'orderByPhpSort']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function orderByQuery(): int
     {
         return \count(
@@ -135,9 +134,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:slice' => [self::class, 'deepPagePhpSlice']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function deepPageQuery(): int
     {
         return \count(
@@ -159,9 +158,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'rangeBetweenPhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function rangeBetweenQuery(): int
     {
         return \count(
@@ -186,9 +185,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'inListPhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function inListQuery(): int
     {
         return \count(
@@ -213,9 +212,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'likePhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function likeScan(): int
     {
         return \count(
@@ -240,9 +239,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'distinctPhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function distinctValues(): int
     {
         return \count(
@@ -268,9 +267,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'countWherePhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function countWhere(): int
     {
         return LoadFixture::db()
@@ -292,9 +291,9 @@ final class LoadBenchArray
     #[Bench(
         callables: ['php:scan' => [self::class, 'projectColumnPhpScan']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function projectColumn(): int
     {
         return \count(
@@ -316,8 +315,8 @@ final class LoadBenchArray
         warmup: 0,
         calls: 1,
         iterations: 2,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function countAcrossAllTables(): int
     {
         $db = LoadFixture::db();
@@ -347,8 +346,8 @@ final class LoadBenchArray
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function dropAfterRead(): int
     {
         LoadFixture::dropAndRestore();

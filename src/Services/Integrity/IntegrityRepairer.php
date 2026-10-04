@@ -18,6 +18,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Services\Format\TableFreshness;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Validation\ValueValidator;
@@ -39,7 +40,7 @@ use AV\JsonProvider\Validation\ValueValidator;
  *    rebuilt).
  *  - META_ENTRY_MISSING: re-init meta entry, then re-derive lineCount and
  *      lastInsertedId from data.
- *  - META_LINE_COUNT_DRIFT: commitRewrite with the actual count and size.
+ *  - META_LINE_COUNT_DRIFT: commitCounters with the actual count and size.
  *  - META_LAST_ID_DRIFT: setLastInsertedId to max(id).
  *  - META_ORPHAN_ENTRY: drop entry from meta.
  *  - ORPHAN_DB_ENTRY: delete the file; a directory is removed only when
@@ -71,6 +72,7 @@ final class IntegrityRepairer
         private readonly JsonStorage $json,
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
+        private readonly TableFreshness $freshness,
     ) {
     }
 
@@ -244,6 +246,8 @@ final class IntegrityRepairer
                     ->repairIndex($issue),
                 IssueCategoryEnum::INDEX_FORMAT_OUTDATED => $this
                     ->repairIndexFormat($issue),
+                IssueCategoryEnum::TABLE_UNVERIFIED => $this
+                    ->repairUnverified($issue),
                 IssueCategoryEnum::ORPHAN_INDEX_FILE => $this
                     ->repairOrphanIndexFile($issue),
                 IssueCategoryEnum::RECORD_KEY_ORDER => $this
@@ -538,6 +542,22 @@ final class IntegrityRepairer
      * current encoder in one pass, then the format is stamped. Rebuilding
      * a single file would leave the rest v1 under a v2 marker.
      */
+    /**
+     * Rebuilds the indexes of an unstamped or stale table from its data
+     * file and stamps it; the data file itself is left as it is.
+     */
+    private function repairUnverified(IntegrityIssue $issue): IntegrityIssue
+    {
+        $tableSchema = $this->schema->getTable((string)$issue->tableName);
+
+        return $this->freshness->refresh($tableSchema)
+            ? $issue->withRepaired()
+            : $issue->withRepairError(
+                'the data file holds lines that are not records; resolve '
+                    . 'them before the indexes can be verified',
+            );
+    }
+
     private function repairIndexFormat(IntegrityIssue $issue): IntegrityIssue
     {
         $tableName = (string)$issue->tableName;
@@ -653,7 +673,11 @@ final class IntegrityRepairer
 
         $this->meta->initTable($tableName);
         $this->meta->setLastInsertedId($tableName, $this->maxId($records));
-        $this->meta->commitRewrite($tableName, \count($records), $tail['size']);
+        $this->meta->commitCounters(
+            $tableName,
+            \count($records),
+            $tail['size'],
+        );
 
         return $issue->withRepaired();
     }
@@ -682,7 +706,11 @@ final class IntegrityRepairer
         );
         $records = $this->ndjson->read($tableName, $tableSchema->getFileName());
 
-        $this->meta->commitRewrite($tableName, \count($records), $tail['size']);
+        $this->meta->commitCounters(
+            $tableName,
+            \count($records),
+            $tail['size'],
+        );
 
         return $issue->withRepaired();
     }
@@ -772,7 +800,7 @@ final class IntegrityRepairer
             $this->meta->setLastInsertedId($tableName, $this->maxId($records));
         }
 
-        $this->meta->commitRewrite(
+        $this->meta->commitCounters(
             $tableName,
             \count($records),
             $tail['size'],

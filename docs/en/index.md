@@ -18,7 +18,7 @@ This document is the working reference for an engineer integrating JsonProvider 
 04. [Schema model](04-schema-model.md)
 05. [Primary key contract](05-primary-key.md)
 06. [Indexes](06-indexes.md)
-07. [Migrations — defining the schema](07-migrations.md)
+07. [Migrations — defining the schema and versioned migrations](07-migrations.md)
 08. [Query builder — JsonTable](08-query-builder.md)
 09. [Reusable filters — JsonFilter](09-reusable-filters.md)
 10. [Mutations — insert / update / delete](10-mutations.md)
@@ -34,3 +34,4 @@ This document is the working reference for an engineer integrating JsonProvider 
 20. [Requirements and dependencies](20-requirements-dependencies.md)
 21. [DTO mapping — typed objects](21-dto-mapping.md)
 22. [Direct provider methods — select / count / readAll / insert / update / delete](22-direct-provider-api.md)
+23. [Storage format and version compatibility](23-storage-format.md)

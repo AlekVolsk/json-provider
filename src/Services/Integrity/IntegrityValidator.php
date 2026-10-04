@@ -15,6 +15,8 @@ use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Services\Format\FreshnessEnum;
+use AV\JsonProvider\Services\Format\TableFreshness;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Validation\ColumnTypeInfo;
@@ -71,6 +73,7 @@ final class IntegrityValidator
         private readonly JsonStorage $json,
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
+        private readonly TableFreshness $freshness,
         private readonly LoggerInterface | null $logger = null,
     ) {
     }
@@ -577,6 +580,30 @@ final class IntegrityValidator
         $issues = [];
         $maxLine = \count($records) - 1;
         $formatCurrent = $this->indexFormatCurrent($tableSchema->name);
+        $freshness = $this->freshness->check($tableSchema);
+
+        if ($freshness === FreshnessEnum::UNSTAMPED) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverityEnum::INFO,
+                IssueCategoryEnum::TABLE_UNVERIFIED,
+                $tableSchema->name,
+                'the table carries no generation-2 stamp (an older engine '
+                    . 'created or restored it); it is trusted by size alone '
+                    . 'until a full rewrite or repair stamps it',
+                context: ['freshness' => $freshness->value],
+            );
+        } elseif ($freshness === FreshnessEnum::STALE) {
+            $issues[] = new IntegrityIssue(
+                IssueSeverityEnum::INFO,
+                IssueCategoryEnum::TABLE_UNVERIFIED,
+                $tableSchema->name,
+                'the data file was replaced after its last stamped commit '
+                    . '(an older engine rewrote it, or a rewrite was '
+                    . 'interrupted); queries fall back to full scans until '
+                    . 'the next write or repair re-verifies the indexes',
+                context: ['freshness' => $freshness->value],
+            );
+        }
 
         if (!$formatCurrent && $tableSchema->indexes !== []) {
             $issues[] = new IntegrityIssue(

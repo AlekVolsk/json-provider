@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Bench;
 
 use AV\JsonProvider\Tests\Support\LoadFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -23,7 +22,7 @@ use Testo\Bench;
  * backup and restore span the whole DB (TABLES * ROWS). They run as an ordered
  * flow — seed → mutate load_0 → whole-DB maintenance → restore → drop — with
  * the execution-time limit lifted by seedFresh(). State evolves across steps by
- * design; nothing is asserted (#[ExpectNoAssertions]).
+ * design; each step is measured, not judged (tolerance: INF).
  */
 final class LoadBenchWrite
 {
@@ -34,8 +33,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function seedForWrite(): int
     {
         LoadFixture::seedFresh();
@@ -48,8 +47,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 2,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function insertRow(): int
     {
         return LoadFixture::db()
@@ -67,8 +66,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 2,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function updateMatching(): int
     {
         LoadFixture::db()
@@ -84,8 +83,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 2,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function deleteMatching(): int
     {
         LoadFixture::db()
@@ -101,8 +100,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 2,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function optimizeTable(): int
     {
         LoadFixture::db()->optimizeTable(LoadFixture::tableName(0));
@@ -115,8 +114,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 2,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function rebuildIndexes(): int
     {
         LoadFixture::db()
@@ -131,8 +130,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function validateDatabase(): int
     {
         return LoadFixture::db()->validate()->hasErrors() ? 1 : 0;
@@ -143,8 +142,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function backupDatabase(): int
     {
         self::$archive = LoadFixture::db()->backup(
@@ -160,8 +159,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function restoreDatabase(): int
     {
         if (self::$archive !== null) {
@@ -176,8 +175,8 @@ final class LoadBenchWrite
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function dropAfterWrite(): int
     {
         if (self::$archive !== null && is_file(self::$archive)) {

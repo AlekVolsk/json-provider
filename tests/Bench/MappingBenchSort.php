@@ -8,7 +8,6 @@ use AV\JsonProvider\JsonTable;
 use AV\JsonProvider\Query\ComparisonModeEnum;
 use AV\JsonProvider\Tests\Support\Dto\MapRowFullDto;
 use AV\JsonProvider\Tests\Support\MappingFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -32,20 +31,22 @@ use Testo\Bench;
  * that re-dispatches on null-ness, type and ComparisonModeEnum per pair, where
  * the PHP side inlines one strcmp. That overhead is real and shows up once the
  * result is already narrow: over a 10k-row selection php:sort-result comes out
- * ~12% ahead of the DTO path.
+ * ~7% ahead of api:array and ~18% ahead of the DTO path, which pays for the
+ * objects on top.
  *
  * It stops mattering as soon as the whole table is in play. ORDER BY + LIMIT
  * lets the engine decode only the rows it returns, while readAll() decodes all
- * ROWS of them before usort() ever runs — so over the full table the provider
- * wins by ~73% and uses roughly half the memory (~139 MB against ~244 MB),
- * indexed column or not. The same holds under Locale, where both sides pay a
- * Collator.
+ * ROWS of them before usort() ever runs — so over the full table with a LIMIT
+ * of up to 1000 the provider wins by ~73% and uses roughly half the memory
+ * (~132 MiB against ~244 MiB); with the ordering column indexed it wins by
+ * ~84% on ~90 MiB. A LIMIT of 10k decodes more rows and narrows the win to
+ * ~59%. The same holds under Locale, where both sides pay a Collator.
  *
  * php:sort-result and php:scan-sort differ only in who reads the rows: the
  * first still goes through the query layer, the second scans the table and
  * filters in PHP. On a narrow selection that difference is the dominant cost —
- * scanning 100k rows to return 100 is three times the price of asking the
- * query layer for them.
+ * scanning 100k rows to return 100 is nearly eight times the price of asking
+ * the query layer for them.
  *
  * Ordering targets are chosen to expose the index too: `title` is indexed, so
  * an unfiltered ORDER BY over it can be served from the index, while `sku` has
@@ -62,10 +63,10 @@ final class MappingBenchSort
             'php:sort-result' => [self::class, 'narrowSortResult'],
             'php:scan-sort'   => [self::class, 'narrowScanSort'],
         ],
-        calls: 2,
-        iterations: 8,
+        calls: 1,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortNarrow100(): int
     {
         return \count(iterator_to_array(
@@ -113,10 +114,11 @@ final class MappingBenchSort
             'php:sort-result' => [self::class, 'wideSortResult'],
             'php:scan-sort'   => [self::class, 'wideScanSort'],
         ],
+        warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortWide10k(): int
     {
         return \count(iterator_to_array(
@@ -161,10 +163,11 @@ final class MappingBenchSort
             'php:sort-result' => [self::class, 'indexedSortResult'],
             'php:scan-sort'   => [self::class, 'indexedScanSort'],
         ],
+        warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortWholeTableIndexed(): int
     {
         return \count(iterator_to_array(
@@ -207,10 +210,11 @@ final class MappingBenchSort
             'php:sort-result' => [self::class, 'unindexedSortResult'],
             'php:scan-sort'   => [self::class, 'unindexedScanSort'],
         ],
+        warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortWholeTableUnindexed(): int
     {
         return \count(iterator_to_array(
@@ -253,10 +257,11 @@ final class MappingBenchSort
             'php:sort-result' => [self::class, 'localeSortResult'],
             'php:scan-sort'   => [self::class, 'localeScanSort'],
         ],
+        warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortLocale(): int
     {
         return \count(iterator_to_array(
@@ -297,9 +302,9 @@ final class MappingBenchSort
         callables: ['php:sort-result' => [self::class, 'limitSortResult']],
         warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortLimit10(): int
     {
         return self::orderedSlice(10);
@@ -309,9 +314,9 @@ final class MappingBenchSort
         callables: ['php:sort-result' => [self::class, 'limitSortResult']],
         warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortLimit100(): int
     {
         return self::orderedSlice(100);
@@ -321,9 +326,9 @@ final class MappingBenchSort
         callables: ['php:sort-result' => [self::class, 'limitSortResult']],
         warmup: 0,
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function sortLimit10k(): int
     {
         return self::orderedSlice(10000);

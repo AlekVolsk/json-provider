@@ -18,6 +18,7 @@ enum IssueCategoryEnum: string
     case INDEX_DRIFT = 'index_drift';
     case INDEX_UNRELIABLE = 'index_unreliable';
     case INDEX_FORMAT_OUTDATED = 'index_format_outdated';
+    case TABLE_UNVERIFIED = 'table_unverified';
     case ORPHAN_INDEX_FILE = 'orphan_index_file';
     case ORPHAN_DB_ENTRY = 'orphan_db_entry';
     case RECORD_KEY_ORDER = 'record_key_order';

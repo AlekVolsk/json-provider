@@ -419,6 +419,21 @@ enum JsonProviderErrorEn: string implements LocaleInterface
     case IndexLinesMissing = 'Index "%s" of table "%s" is structurally '
         . 'corrupt and cannot be trusted: indexed lines are missing from the '
         . 'data file';
+    case StorageManifestCorrupt = 'The storage format description of the '
+        . 'database is corrupt, so the database cannot be opened safely: %s';
+    case StorageGenerationUnsupported = 'The database is stored in format '
+        . 'generation %s, while this version of the library supports '
+        . 'generations up to %s — upgrade the library to open it';
+    case StorageFeatureUnsupported = 'The database uses storage features '
+        . 'this version of the library cannot read: %s — upgrade the library '
+        . 'to open it';
+    case StorageReadOnly = 'The database is open for reading only: it uses '
+        . 'storage features this version of the library cannot write safely: '
+        . '%s';
+    case StorageMigrationTargetInvalid = 'The storage of the database cannot '
+        . 'be migrated to format generation %s: the database is in generation '
+        . '%s, and this version of the library migrates only upwards and no '
+        . 'further than generation %s';
     case ExtensionRequired = 'A PHP extension is required to use this cache '
         . 'adapter: %s';
 

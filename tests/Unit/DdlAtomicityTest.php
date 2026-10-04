@@ -61,6 +61,7 @@ final class DdlAtomicityTest
             'lineCount'      => 0,
             'byteSize'       => 0,
             'indexFormat'    => 2,
+            'dataIno'        => fileinode($this->dbDir . '/users/users.ndjson'),
         ]);
 
         $id = $this->db->insert('users', ['name' => 'first']);

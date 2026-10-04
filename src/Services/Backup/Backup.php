@@ -14,6 +14,7 @@ use AV\JsonProvider\Services\Integrity\IntegrityValidator;
 use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Storage\StorageManifest;
 use AV\JsonProvider\Storage\TableLockManager;
 
 /**
@@ -203,6 +204,7 @@ final class Backup
             tables: $tableNames,
             counters: $counters,
             checksums: $checksums,
+            storageFormat: StorageManifest::read($this->dbPath)->generation,
         );
 
         $manifestJson = json_encode($manifest->toArray(), JSON_PRETTY_PRINT);

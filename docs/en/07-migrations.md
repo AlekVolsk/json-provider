@@ -1,4 +1,6 @@
-# Migrations — defining the schema
+# Migrations — defining the schema and versioned migrations
+
+## Defining the schema
 
 The provider is driven from your own migrations, and changing the structure — creating tables — is just one kind of them. There is no bundled migration runner: how migrations are tracked and what triggers them (a CLI command, a deploy step, a first-request bootstrap) is left to the host project. Below is the shape of such a structural migration.
 
@@ -114,3 +116,60 @@ foreach ((new InitialMigration())->tables() as $schema) {
 ```
 
 Later migrations rarely just create tables. To evolve or remove an existing one — add/drop/reorder columns, or drop the table outright — see [Schema mutations](12-schema-mutations.md); `hasTable()` / `columnNames()` help keep such steps idempotent.
+
+## Versioned migrations
+
+A new library version may bring a new storage format generation (see [Storage format](23-storage-format.md)). A versioned migration touches neither your data nor your schema: it brings the service part of the database — the format manifest, the table stamps, the indexes — to the engine's generation. It runs explicitly, once per database.
+
+### Status and migration
+
+```php
+$status = $db->storageStatus();
+
+if (!$status->isCurrent()) {
+    $report = $db->migrateStorage();
+}
+```
+
+`storageStatus()` only reads and takes no write lock. It reports:
+
+- the database generation and the engine generation (`generation`, `engineGeneration`);
+- the manifest flags (`compat`, `roCompat`, `incompat`) and the `readOnly` sign;
+- the steps a migration would run (`pendingSteps`, for example `['1->2']`);
+- the tables it would rebuild and stamp (`pendingTables`).
+
+The status reads the disk, not the instance's memory, so it sees a migration another process ran.
+
+`migrateStorage(?int $toGeneration = null)` brings the database to the engine's generation (or to the given one, no higher) and makes every table fresh:
+
+- it runs under the database EX lock and EX locks on all tables, like `repair()` — an operation for deploy time, not for live traffic; it costs as much as `rebuildAllIndexes()` over the whole database;
+- generations are climbed one step at a time (`1->2`, later `2->3` and so on); each step is idempotent and writes the manifest as its last act. A crash inside a step leaves the database in the previous generation, and a re-run finishes the step;
+- a table whose data file holds lines that are not records is not touched at all: a rewrite would lose such a line, and indexes built around it cannot be trusted. It is listed in the report's `skippedTables` and keeps working as before. The exception is a torn, never-acknowledged tail left by a crashed append: the repair drops it, as any write does;
+- migration only goes up: a target below the database generation or above the engine generation fails with `StorageMigrationTargetInvalid`. For a database already in the engine's generation, `migrateStorage()` makes unstamped and stale tables fresh.
+
+`MigrationReport` carries `fromGeneration`, `toGeneration`, `steps`, `refreshedTables` and `skippedTables`.
+
+A restore ends with the same migration, so `restore()` of an archive of any version leaves the database in the engine's generation.
+
+### Upgrade order
+
+1. **Check the data before the deploy.** Run `validate()` and resolve `broken_record` findings: the migration skips a table with lines that are not records.
+2. **Deploy the code.** While the deploy rolls out, old and new processes may run side by side — both versions take the same locks. Until the database is migrated, every provider initialization logs a warning that the database is in an older generation (PSR-3 `warning`, `E_USER_DEPRECATED` without a logger); under PHP-FPM that is one warning per request.
+3. **Migrate once** from the deploy script, at a quiet moment — the code above.
+4. **Restart long-lived processes** (CLI workers, queue daemons): the manifest is read once per provider instance, and until restarted such a process behaves as an engine of the previous generation. For compatible generations that is safe; a future step to an incompatible generation will require stopping every process that works with the database before the migration.
+
+### Rolling back and mixed deploys
+
+Rolling back from 1.1 to 1.0 takes no manual steps. The 1.0 engine does not see `.jdp/`, ignores the `dataIno` field in meta and keeps it through its own commits, and restores 1.1 archives as any other (see [backup and restore](15-backup-restore.md)). After going back to 1.1, the tables 1.0 rewrote meanwhile are stale and get repaired by their next write, `repair()` or a migration.
+
+While 1.0 processes are still running, the tables they rewrite are served by full scans until the next write by 1.1.
+
+### 1.0 → 1.1: generation 1 → 2
+
+A 1.0 database works on 1.1 as it did on 1.0; the generation-2 protection — the table stamp — switches on after the migration. Step `1->2` never takes a 1.0 index on faith:
+
+- an unstamped table gets its indexes rebuilt from the data and a stamp — the data file is not rewritten;
+- a table with drifted counters is repaired with the canonical rewrite;
+- a table whose stamp still matches is left as it is.
+
+As its last act the step writes the generation-2 manifest `.jdp/format.json`.

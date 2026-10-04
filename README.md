@@ -21,6 +21,7 @@ Designed for compact, low-traffic workloads where a real RDBMS would be overkill
 - Pluggable cache layer (APCu / Memcached / Redis / in-memory / your own)
 - Built-in integrity validator and repairer
 - Built-in backup / restore as `.tar.gz` archives, no shell required
+- Versioned storage format with an explicit, idempotent migration (`migrateStorage()`), two-way compatible with the previous release
 - A typed exception hierarchy: nine domain classes over a single vocabulary of situations, matched on rather than string-compared
 - Localized error messages (English / Russian, extensible to any locale), with every exception logged through PSR-3 when a logger is attached
 

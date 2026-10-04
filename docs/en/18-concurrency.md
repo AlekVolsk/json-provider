@@ -23,7 +23,7 @@ A two-tier model:
 
 Every write is a read-modify-write strictly from disk: the cache is never the base of a rewrite. A full file rewrite is buffered first (an unencodable record refuses the whole operation, the file is untouched), then published via tmp + fsync + rename. Appends fsync and roll back a short write by truncation — a torn line is never acknowledged.
 
-The first step of every write is an O(1) consistency gate: `meta.byteSize` versus the actual file size. A mismatch (crash, foreign write) is healed by the operation itself — a canonical rewrite of the table with index rebuild and a commit of the true counters. The same is the standard recovery recipe after a crashed multi-table write: desynced tables heal on their next write (or via an explicit `repairTable()`).
+The first step of every write is an O(1) consistency gate: `meta.byteSize` versus the actual file size, and in a generation-2 database also the file's inode versus the `dataIno` stamp in meta. The stamp catches a rewrite interrupted between the file rename and the counter commit even when the size matched (see [storage format](23-storage-format.md)). A mismatch (crash, foreign write) is healed by the operation itself — a canonical rewrite of the table with index rebuild and a commit of the true counters. The same is the standard recovery recipe after a crashed multi-table write: desynced tables heal on their next write (or via an explicit `repairTable()`).
 
 ## Cache
 
@@ -35,4 +35,5 @@ The cache layer serves reads only; keys are versioned by the table state (see [c
 - Lock descriptors are inherited by child processes: a long-lived child spawned from inside a critical section (proc_open, exec) keeps the lock held until it exits. Do not spawn long-lived children while holding locks.
 - There is no wait queue (non-blocking flock with retries): a continuous stream of short SH readers can in theory starve an EX writer up to `JsonProviderLockException` under high load. The provider targets moderate concurrency.
 - Cross-file transactionality (several tables as one atom) is not provided; see the self-healing recipe above.
-- Upgrading the library on a live deployment requires stopping all writing processes: a writer of the old version (taking no locks) and a writer of the new one do not mutually exclude.
+- Versions 1.0 and 1.1 take the same lock files in the same order, so during a deploy old and new processes may run side by side (see [rolling back and mixed deploys](07-migrations.md#rolling-back-and-mixed-deploys)). A writer of a build that takes no locks does not exclude them — stop such processes before upgrading.
+- The storage format manifest is read once per provider instance: a long-lived process sees a format migration run by another process only after a restart.

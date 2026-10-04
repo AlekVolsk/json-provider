@@ -19,13 +19,14 @@ use AV\JsonProvider\Tests\Support\Dto\MapCategoryDto;
  * Fixture for the mapping benchmarks: one wide table plus the tables needed to
  * measure foreign-key work.
  *
- * Where LoadFixture answers "what does this cost at 5M rows", this one answers
- * "what does the object surface cost, and what does a filter/sort/relation mode
- * cost" — so it is deliberately small (ROWS rows in one table) and rich instead
- * of large and flat. Everything the mapper can charge for is present in
- * `map_rows`: plain scalars, a nullable int, a nullable string, a string column
- * that a DTO may bind either as `string` or as a backed enum, and two datetime
- * columns (one nullable) that cost a TemporalCodec parse per row.
+ * Where LoadFixture answers "what does this cost at the row ceiling of a
+ * table", this one answers "what does the object surface cost, and what does
+ * a filter/sort/relation mode cost" — so it is deliberately small (ROWS rows
+ * in one table) and rich instead of large and flat. Everything the mapper can
+ * charge for is present in `map_rows`: plain scalars, a nullable int, a
+ * nullable string, a string column that a DTO may bind either as `string` or
+ * as a backed enum, and two datetime columns (one nullable) that cost a
+ * TemporalCodec parse per row.
  *
  * Columns whose only job is selectivity:
  *   - `bucket`   = id % 1000 → each value matches ROWS/1000 rows (0.1%)

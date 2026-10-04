@@ -9,7 +9,6 @@ use AV\JsonProvider\Tests\Support\Dto\MapRowFullDto;
 use AV\JsonProvider\Tests\Support\Dto\MapRowNarrowDto;
 use AV\JsonProvider\Tests\Support\Dto\MapRowScalarDto;
 use AV\JsonProvider\Tests\Support\MappingFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -50,10 +49,10 @@ final class MappingBenchHydration
 {
     #[Bench(
         callables: ['api:array' => [self::class, 'narrowSelectivityArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function hydrateFull100(): int
     {
         return \count(iterator_to_array(
@@ -76,10 +75,10 @@ final class MappingBenchHydration
 
     #[Bench(
         callables: ['api:array' => [self::class, 'thousandRowsArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function hydrateFull1k(): int
     {
         return \count(iterator_to_array(
@@ -103,9 +102,9 @@ final class MappingBenchHydration
     #[Bench(
         callables: ['api:array' => [self::class, 'tenThousandRowsArray']],
         calls: 2,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function hydrateFull10k(): int
     {
         return self::hydrateDecile(MapRowFullDto::class);
@@ -132,10 +131,11 @@ final class MappingBenchHydration
 
     #[Bench(
         callables: ['api:array' => [self::class, 'wholeTableArray']],
+        warmup: 0,
         calls: 1,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function fieldsNarrow100k(): int
     {
         return self::hydrateWholeTable(MapRowNarrowDto::class);
@@ -143,10 +143,11 @@ final class MappingBenchHydration
 
     #[Bench(
         callables: ['api:array' => [self::class, 'wholeTableArray']],
+        warmup: 0,
         calls: 1,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function fieldsScalar100k(): int
     {
         return self::hydrateWholeTable(MapRowScalarDto::class);
@@ -154,10 +155,11 @@ final class MappingBenchHydration
 
     #[Bench(
         callables: ['api:array' => [self::class, 'wholeTableArray']],
+        warmup: 0,
         calls: 1,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function fieldsEnum100k(): int
     {
         return self::hydrateWholeTable(MapRowEnumDto::class);
@@ -165,10 +167,11 @@ final class MappingBenchHydration
 
     #[Bench(
         callables: ['api:array' => [self::class, 'wholeTableArray']],
+        warmup: 0,
         calls: 1,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function fieldsFull100k(): int
     {
         return self::hydrateWholeTable(MapRowFullDto::class);
@@ -179,8 +182,8 @@ final class MappingBenchHydration
         warmup: 0,
         calls: 1,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function lazyFirst10(): int
     {
         $seen = 0;

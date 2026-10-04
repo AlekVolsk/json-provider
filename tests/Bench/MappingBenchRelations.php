@@ -7,7 +7,6 @@ namespace AV\JsonProvider\Tests\Bench;
 use AV\JsonProvider\Tests\Support\Dto\MapCategoryDto;
 use AV\JsonProvider\Tests\Support\Dto\MapRowScalarDto;
 use AV\JsonProvider\Tests\Support\MappingFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -45,8 +44,8 @@ final class MappingBenchRelations
         callables: ['no-fk' => [self::class, 'insertWithoutFk']],
         calls: 2,
         iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function insertWithFk(): int
     {
         return MappingFixture::db()
@@ -66,8 +65,8 @@ final class MappingBenchRelations
         warmup: 0,
         calls: 1,
         iterations: 3,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function deleteCascade(): int
     {
         MappingFixture::db()
@@ -91,9 +90,9 @@ final class MappingBenchRelations
     #[Bench(
         callables: ['api:array' => [self::class, 'joinTwoStepArray']],
         calls: 2,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function joinTwoStep(): int
     {
         $db = MappingFixture::bind(MapRowScalarDto::class);

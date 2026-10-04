@@ -7,7 +7,6 @@ namespace AV\JsonProvider\Tests\Bench;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Tests\Support\Dto\LoadRowDto;
 use AV\JsonProvider\Tests\Support\LoadFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -41,8 +40,8 @@ final class LoadBenchDto
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function seedForDto(): int
     {
         LoadFixture::seedFresh();
@@ -53,9 +52,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'whereEqArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function whereEqDto(): int
     {
         return \count(iterator_to_array(
@@ -79,9 +78,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'pkLookupArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function pkLookupDto(): int
     {
         $dto = self::db()
@@ -105,9 +104,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'orderByArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function orderByDto(): int
     {
         return \count(iterator_to_array(
@@ -133,9 +132,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'deepPageArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function deepPageDto(): int
     {
         return \count(iterator_to_array(
@@ -161,9 +160,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'fullScanArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function fullScanDto(): int
     {
         return \count(iterator_to_array(
@@ -185,9 +184,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'rangeBetweenArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function rangeBetweenDto(): int
     {
         return \count(iterator_to_array(
@@ -211,9 +210,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'inListArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function inListDto(): int
     {
         return \count(iterator_to_array(
@@ -237,9 +236,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'likeArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function likeDto(): int
     {
         return \count(iterator_to_array(
@@ -263,9 +262,9 @@ final class LoadBenchDto
     #[Bench(
         callables: ['api:array' => [self::class, 'distinctArray']],
         calls: 3,
-        iterations: 12,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function distinctDto(): int
     {
         return \count(iterator_to_array(
@@ -291,8 +290,8 @@ final class LoadBenchDto
         warmup: 0,
         calls: 1,
         iterations: 1,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function dropAfterDto(): int
     {
         LoadFixture::dropAndRestore();

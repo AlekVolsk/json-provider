@@ -24,6 +24,14 @@ namespace AV\JsonProvider\Services\Backup;
  *
  * An archive missing both keys is a legacy (pre-checksum) backup: it
  * restores without verification and with counters derived as max(id).
+ *
+ * Informational field:
+ *
+ *  - storageFormat: the storage format generation of the database at
+ *    export time. The archive layout itself does not depend on it — a
+ *    restore rebuilds the derived parts of the format — so restoring never
+ *    requires it, and the 1.0 engines, which do not know the key, restore
+ *    such an archive as any other.
  */
 final class BackupManifest
 {
@@ -44,6 +52,7 @@ final class BackupManifest
         public readonly array $counters = [],
         public readonly array $checksums = [],
         public readonly bool $legacy = false,
+        public readonly int | null $storageFormat = null,
     ) {
     }
 
@@ -59,7 +68,11 @@ final class BackupManifest
             'tables'    => $this->tables,
             'counters'  => $this->counters,
             'checksums' => $this->checksums,
-        ];
+        ] + (
+            $this->storageFormat === null
+                ? []
+                : ['storageFormat' => $this->storageFormat]
+        );
     }
 
     /**
@@ -114,6 +127,8 @@ final class BackupManifest
             }
         }
 
+        $storageFormat = $raw['storageFormat'] ?? null;
+
         return new self(
             createdAt: $createdAt,
             tables: $tables,
@@ -122,6 +137,9 @@ final class BackupManifest
             counters: $counters,
             checksums: $checksums,
             legacy: $legacy,
+            storageFormat: \is_int($storageFormat) && $storageFormat >= 1
+                ? $storageFormat
+                : null,
         );
     }
 }

@@ -53,10 +53,39 @@ final class MetaRegistry
     public const string PENDING_RENAME_KEY = '_pendingRename';
 
     private const string META_FILE = 'meta.json';
+    private const string DATA_INO = 'dataIno';
+
+    /**
+     * Resolves the inode of a table's data file while generation-2 stamps
+     * are on; null in a generation-1 database, where no stamp is written.
+     *
+     * @var null|\Closure(string): int
+     */
+    private \Closure | null $inodeOf = null;
 
     public function __construct(
         private readonly JsonStorage $storage,
     ) {
+    }
+
+    /**
+     * Turns on the generation-2 stamp: from now on every commitRewrite also
+     * records the inode of the rewritten data file (dataIno). The 1.0
+     * engines keep the extra field untouched by their own commits, and a
+     * full rewrite by them changes the inode, so a stamp that still matches
+     * proves the committed counters (and the indexes rebuilt with them)
+     * describe the very file on disk.
+     *
+     * @param \Closure(string): int $inodeOf
+     */
+    public function enableDataStamps(\Closure $inodeOf): void
+    {
+        $this->inodeOf = $inodeOf;
+    }
+
+    public function stampsEnabled(): bool
+    {
+        return $this->inodeOf !== null;
     }
 
     /**
@@ -105,15 +134,63 @@ final class MetaRegistry
 
     /**
      * Commits the line count and byte size after a successful full rewrite
-     * of the data file. Call only after the rename made the new file
-     * visible.
+     * of the data file, with the table's indexes already rebuilt from the
+     * same records. Call only after the rename made the new file visible.
+     * With stamps on, the inode of that file is recorded in the same
+     * transaction.
      */
     public function commitRewrite(
         string $tableName,
         int $lineCount,
         int $byteSize,
     ): void {
+        $this->commit(
+            $tableName,
+            $lineCount,
+            $byteSize,
+            $this->inodeOf === null ? null : ($this->inodeOf)($tableName),
+        );
+    }
+
+    /**
+     * Commits recounted counters of a data file whose indexes were NOT
+     * rebuilt (a repair trimming a torn tail). The stamp is left as it is:
+     * nothing here proves the indexes match the file.
+     */
+    public function commitCounters(
+        string $tableName,
+        int $lineCount,
+        int $byteSize,
+    ): void {
         $this->commit($tableName, $lineCount, $byteSize);
+    }
+
+    /**
+     * The committed counters and stamp of a table from one read of
+     * meta.json — what the trust gate compares with the data file, plus
+     * the line count it vouches for.
+     *
+     * @return array{lineCount: int, byteSize: null|int, dataIno: null|int}
+     */
+    public function getCommittedFile(string $tableName): array
+    {
+        $entry = $this->getEntry($tableName);
+
+        return [
+            'lineCount' => $entry['lineCount'],
+            'byteSize'  => $entry['byteSize'],
+            'dataIno'   => $entry['dataIno'],
+        ];
+    }
+
+    /**
+     * The inode recorded by the last stamped rewrite, or null when the
+     * entry carries no stamp (a table an older engine created, or any
+     * table of a generation-1 database).
+     */
+    public function getDataIno(string $tableName): int | null
+    {
+        return $this->getEntry($tableName)['dataIno'];
     }
 
     /**
@@ -420,13 +497,15 @@ final class MetaRegistry
     }
 
     /**
-     * Shared body of commitAppend/commitRewrite: stores the post-write line
-     * count and byte size, lazily upgrading a pre-byteSize entry to v2.
+     * Shared body of the commits: stores the post-write line count and
+     * byte size, lazily upgrading a pre-byteSize entry to v2, and the
+     * data-file stamp when one is given.
      */
     private function commit(
         string $tableName,
         int $lineCount,
         int $byteSize,
+        int | null $dataIno = null,
     ): void {
         $this->storage->transaction(
             self::META_FILE,
@@ -437,6 +516,7 @@ final class MetaRegistry
                 $tableName,
                 $lineCount,
                 $byteSize,
+                $dataIno,
             ): void {
                 /** @var array<string, array{lastInsertedId: int, lineCount: int, byteSize?: int}> $data */
                 if (!isset($data[$tableName])) {
@@ -448,6 +528,10 @@ final class MetaRegistry
 
                 $data[$tableName]['lineCount'] = $lineCount;
                 $data[$tableName]['byteSize'] = $byteSize;
+
+                if ($dataIno !== null) {
+                    $data[$tableName][self::DATA_INO] = $dataIno;
+                }
 
                 $h->save($data);
             },
@@ -466,6 +550,7 @@ final class MetaRegistry
      *     lineCount: int,
      *     byteSize: null|int,
      *     indexFormat: int,
+     *     dataIno: null|int,
      * }
      */
     private function getEntry(string $tableName): array
@@ -492,12 +577,14 @@ final class MetaRegistry
         $lineCount = $entry['lineCount'] ?? null;
         $byteSize = $entry['byteSize'] ?? null;
         $indexFormat = $entry['indexFormat'] ?? 1;
+        $dataIno = $entry[self::DATA_INO] ?? null;
 
         if (
             !\is_int($lastInsertedId)
             || !\is_int($lineCount)
             || ($byteSize !== null && !\is_int($byteSize))
             || !\is_int($indexFormat)
+            || ($dataIno !== null && !\is_int($dataIno))
         ) {
             throw new JsonProviderServiceException(
                 JsonProviderErrorEn::MetaCounterNotInt,
@@ -510,6 +597,7 @@ final class MetaRegistry
             'lineCount'      => $lineCount,
             'byteSize'       => $byteSize,
             'indexFormat'    => $indexFormat,
+            'dataIno'        => $dataIno,
         ];
     }
 }

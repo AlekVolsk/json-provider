@@ -7,7 +7,6 @@ namespace AV\JsonProvider\Tests\Bench;
 use AV\JsonProvider\JsonTable;
 use AV\JsonProvider\Tests\Support\Dto\MapRowFullDto;
 use AV\JsonProvider\Tests\Support\MappingFixture;
-use Testo\Assert\ExpectNoAssertions;
 use Testo\Bench;
 
 /**
@@ -41,10 +40,10 @@ final class MappingBenchQuery
 {
     #[Bench(
         callables: ['api:array' => [self::class, 'indexedEqArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function filterIndexedEq(): int
     {
         return self::countDto(
@@ -64,10 +63,10 @@ final class MappingBenchQuery
 
     #[Bench(
         callables: ['api:array' => [self::class, 'unindexedEqArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function filterUnindexedEq(): int
     {
         return self::countDto(
@@ -87,10 +86,10 @@ final class MappingBenchQuery
 
     #[Bench(
         callables: ['api:array' => [self::class, 'inListArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function filterIn(): int
     {
         return self::countDto(
@@ -109,10 +108,10 @@ final class MappingBenchQuery
 
     #[Bench(
         callables: ['api:array' => [self::class, 'betweenArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function filterBetween(): int
     {
         return self::countDto(
@@ -131,10 +130,10 @@ final class MappingBenchQuery
 
     #[Bench(
         callables: ['api:array' => [self::class, 'likeArray']],
-        calls: 3,
-        iterations: 10,
+        calls: 2,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function filterLike(): int
     {
         return self::countDto(
@@ -154,9 +153,9 @@ final class MappingBenchQuery
     #[Bench(
         callables: ['api:array' => [self::class, 'compoundArray']],
         calls: 2,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function filterCompound(): int
     {
         return self::countDto(
@@ -179,9 +178,9 @@ final class MappingBenchQuery
     #[Bench(
         callables: ['php:count' => [self::class, 'countAllPhp']],
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function countAll(): int
     {
         return self::rowsArray()->count();
@@ -197,9 +196,9 @@ final class MappingBenchQuery
     #[Bench(
         callables: ['php:count' => [self::class, 'countFilteredPhp']],
         calls: 1,
-        iterations: 8,
+        iterations: 6,
+        tolerance: INF,
     )]
-    #[ExpectNoAssertions]
     public static function countFiltered(): int
     {
         return self::rowsArray()

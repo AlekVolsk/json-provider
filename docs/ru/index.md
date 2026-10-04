@@ -18,7 +18,7 @@ JsonProvider — это самодостаточный PHP-провайдер д
 04. [Модель схемы](04-schema-model.md)
 05. [Контракт первичного ключа](05-primary-key.md)
 06. [Индексы](06-indexes.md)
-07. [Миграции — определение схемы](07-migrations.md)
+07. [Миграции — определение схемы и версионные миграции](07-migrations.md)
 08. [Билдер запросов — JsonTable](08-query-builder.md)
 09. [Переиспользуемые фильтры — JsonFilter](09-reusable-filters.md)
 10. [Мутации — insert / update / delete](10-mutations.md)
@@ -34,3 +34,4 @@ JsonProvider — это самодостаточный PHP-провайдер д
 20. [Требования и зависимости](20-requirements-dependencies.md)
 21. [Отображение в DTO — типизированные объекты](21-dto-mapping.md)
 22. [Прямые методы провайдера — select / count / readAll / insert / update / delete](22-direct-provider-api.md)
+23. [Формат хранения и совместимость версий](23-storage-format.md)

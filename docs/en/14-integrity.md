@@ -51,6 +51,7 @@ $report = $db->validate();   // whole DB
 | `orphan_db_entry` | warning | a file or directory outside the schema sits in the DB root |
 | `fk_backing_index_orphaned` | warning | a service `_fk_` index is not the backing of any probing relation (dead weight) |
 | `index_format_outdated` | info | indexes use the pre-v2 format; reads degrade to full scans until the next write/repair |
+| `table_unverified` | info | a generation-2 database whose table has no stamp (`context.freshness` = `unstamped`: a 1.0 engine created or restored it) or a stale one (`stale`: the data file was replaced after the last stamped commit); see [storage format](23-storage-format.md) |
 | `table_optimized` | info | the table was sorted by id and reindexed (repair only) |
 
 The `fk_orphan` checks are database-level (they need both sides' data) and run only in `validate()`; `unique_duplicate`, `present_null` and `broken_record` are per-table and visible to `validateTable()` as well. FK value comparison is type-strict — the same canonical `keyPart` encoding the unique checks and the cascade engine use.
@@ -83,6 +84,7 @@ What gets repaired:
 | `index_drift` | rebuild from data |
 | `index_unreliable` | rebuild from data, stamp format v2 |
 | `index_format_outdated` | rebuild every index of the table, stamp v2 |
+| `table_unverified` | rebuild every index of the table from the data and stamp it, without rewriting the data file; refused (`repairError`) when the file holds unparseable lines |
 | `orphan_index_file` | delete the file |
 | `record_key_order` | rewrite records in canonical order, reindex (refuses on unparseable lines — see below) |
 | `meta_entry_missing` | re-init the entry, derive lineCount/lastId |

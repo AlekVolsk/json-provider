@@ -41,11 +41,16 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Services\Backup\Backup;
 use AV\JsonProvider\Services\Backup\Restore;
+use AV\JsonProvider\Services\Format\FreshnessEnum;
+use AV\JsonProvider\Services\Format\MigrationReport;
+use AV\JsonProvider\Services\Format\StorageStatus;
+use AV\JsonProvider\Services\Format\TableFreshness;
 use AV\JsonProvider\Services\Integrity\IntegrityRepairer;
 use AV\JsonProvider\Services\Integrity\IntegrityReport;
 use AV\JsonProvider\Services\Integrity\IntegrityValidator;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Storage\StorageManifest;
 use AV\JsonProvider\Storage\TableLockManager;
 use AV\JsonProvider\Validation\ColumnTypeInfo;
 use AV\JsonProvider\Validation\ValueValidator;
@@ -80,6 +85,26 @@ final class JsonDataProvider
      */
     private const int PARTIAL_SORT_MARGIN = 4;
 
+    private const string SCHEMA_FILE = 'information_schema.json';
+
+    private const string LEGACY_FORMAT_NOTICE = 'database "%s" is stored in '
+        . 'storage format generation 1 (written by json-provider 1.0): it '
+        . 'works as before, without the protections of generation %d; '
+        . 'migrate it with migrateStorage() to switch them on';
+
+    private const string READ_ONLY_NOTICE = 'database is open read-only: it '
+        . 'uses storage features this engine cannot write safely: %s';
+
+    private const string UNSTAMPED_NOTICE = 'table "%s" carries no '
+        . 'generation-2 stamp (an older engine created or restored it): it '
+        . 'is trusted by size alone, as under 1.0, until a full rewrite, a '
+        . 'repair or a storage migration stamps it';
+
+    private const string STALE_NOTICE = 'table "%s" was replaced after its '
+        . 'last stamped commit (an older engine rewrote it, or a rewrite was '
+        . 'interrupted): its indexes are not trusted until the next write, '
+        . 'repair or storage migration re-verifies them';
+
     /** @var array<string,self> */
     private static array $instances = [];
 
@@ -93,6 +118,21 @@ final class JsonDataProvider
     private readonly ValueValidator $values;
     private readonly DtoRegistry $dtoRegistry;
     private readonly DtoMapper $dtoMapper;
+    private readonly TableFreshness $freshness;
+
+    /**
+     * True while a storage migration runs: it rewrites or re-stamps the
+     * very tables the per-table notices would report.
+     */
+    private bool $migrating = false;
+
+    /**
+     * Tables already reported as unstamped or stale by this instance:
+     * each is reported once per process (once per request under FPM).
+     *
+     * @var array<string,true>
+     */
+    private array $freshnessNoted = [];
     private IntegrityValidator | null $validator = null;
     private IntegrityRepairer | null $repairer = null;
     private FkEngine | null $fkEngine = null;
@@ -102,6 +142,14 @@ final class JsonDataProvider
     private readonly string $cacheNs;
     private readonly LoggerInterface | null $logger;
     private ComparisonModeEnum $comparisonMode = ComparisonModeEnum::Binary;
+
+    /**
+     * roCompat features of the storage format this engine does not know;
+     * non-empty means every write is refused.
+     *
+     * @var list<string>
+     */
+    private readonly array $readOnlyFeatures;
 
     private function __construct(
         string $dbPath,
@@ -128,6 +176,13 @@ final class JsonDataProvider
         $this->values = new ValueValidator();
         $this->dtoRegistry = new DtoRegistry();
         $this->dtoMapper = new DtoMapper();
+        $this->freshness = new TableFreshness(
+            $this->meta,
+            $this->ndjson,
+            $this->indexManager,
+            $this->values,
+        );
+        $this->readOnlyFeatures = $this->openStorageFormat();
     }
 
     /**
@@ -163,7 +218,7 @@ final class JsonDataProvider
     public static function exists(string $dbPath): bool
     {
         return (new JsonStorage(self::normalizePath($dbPath)))
-            ->exists('information_schema.json');
+            ->exists(self::SCHEMA_FILE);
     }
 
     /**
@@ -178,10 +233,11 @@ final class JsonDataProvider
         $dbPath = self::normalizePath($dbPath);
         $bootstrap = JsonStorage::createRoot($dbPath);
         $bootstrap->createFile(
-            'information_schema.json',
+            self::SCHEMA_FILE,
             ['tables' => new \stdClass(), 'relations' => []],
         );
         $bootstrap->createObjectFile('meta.json');
+        StorageManifest::current()->write($dbPath);
 
         self::$instances[$dbPath] = new self($dbPath, $cache, $logger);
 
@@ -307,6 +363,8 @@ final class JsonDataProvider
      */
     public function createTable(TableSchema $tableSchema): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableSchema->name => 'ex'],
             'ex',
@@ -334,6 +392,10 @@ final class JsonDataProvider
                         $index->getFileName(),
                     );
                 }
+
+                if ($this->freshness->stampsEnabled()) {
+                    $this->meta->commitRewrite($tableSchema->name, 0, 0);
+                }
             },
         );
     }
@@ -359,6 +421,8 @@ final class JsonDataProvider
      */
     public function dropTable(string $tableName): void
     {
+        $this->assertWritable();
+
         IdentifierRules::assertTableName($tableName);
 
         $lockPlan = [$tableName => 'ex'];
@@ -436,6 +500,8 @@ final class JsonDataProvider
      */
     public function renameTable(string $from, string $to): void
     {
+        $this->assertWritable();
+
         IdentifierRules::assertTableName($from);
         IdentifierRules::assertTableName($to);
 
@@ -610,6 +676,8 @@ final class JsonDataProvider
      */
     public function migrateColumns(TableSchema $desired): array
     {
+        $this->assertWritable();
+
         return $this->locks->withLocks(
             [$desired->name => 'ex'],
             'ex',
@@ -721,6 +789,8 @@ final class JsonDataProvider
      */
     public function insert(string $tableName, array $record): int
     {
+        $this->assertWritable();
+
         return $this->locks->withLocks(
             $this->fkEngine()->insertLockPlan(
                 $this->schema->getTable($tableName),
@@ -824,6 +894,8 @@ final class JsonDataProvider
         array $conditions,
         array $data,
     ): int {
+        $this->assertWritable();
+
         return $this->withMutationLocks(
             $tableName,
             function (TableSchema $tableSchema) use (
@@ -882,6 +954,8 @@ final class JsonDataProvider
      */
     public function delete(string $tableName, array $conditions): int
     {
+        $this->assertWritable();
+
         return $this->withMutationLocks(
             $tableName,
             function (TableSchema $tableSchema) use ($conditions): int {
@@ -966,6 +1040,8 @@ final class JsonDataProvider
      */
     public function reorderColumns(string $tableName, array $newOrder): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1036,6 +1112,8 @@ final class JsonDataProvider
      */
     public function truncate(string $tableName): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1086,6 +1164,8 @@ final class JsonDataProvider
      */
     public function importRecords(string $tableName, array $records): int
     {
+        $this->assertWritable();
+
         // @var int<0, max>
         return $this->locks->withLocks(
             [$tableName => 'ex'],
@@ -1193,6 +1273,8 @@ final class JsonDataProvider
         string $from,
         string $to,
     ): void {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1335,6 +1417,8 @@ final class JsonDataProvider
         string $tableName,
         string | null $comment,
     ): void {
+        $this->assertWritable();
+
         $this->schema->updateTable(
             $tableName,
             static fn (TableSchema $t): TableSchema => $t
@@ -1360,6 +1444,8 @@ final class JsonDataProvider
         string $column,
         string | null $comment,
     ): void {
+        $this->assertWritable();
+
         $this->schema->updateTable(
             $tableName,
             static function (TableSchema $t) use (
@@ -1394,6 +1480,8 @@ final class JsonDataProvider
         array $comments,
         bool $merge = false,
     ): void {
+        $this->assertWritable();
+
         $this->schema->updateTable(
             $tableName,
             static function (TableSchema $t) use (
@@ -1490,6 +1578,8 @@ final class JsonDataProvider
      */
     public function rebuildIndex(string $tableName, string $indexName): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'sh',
@@ -1524,6 +1614,8 @@ final class JsonDataProvider
      */
     public function rebuildAllIndexes(string $tableName): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'sh',
@@ -1551,6 +1643,8 @@ final class JsonDataProvider
      */
     public function addIndex(string $tableName, IndexSchema $index): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1641,6 +1735,8 @@ final class JsonDataProvider
      */
     public function dropIndex(string $tableName, string $indexName): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1784,6 +1880,8 @@ final class JsonDataProvider
         string $tableName,
         UniqueConstraint $constraint,
     ): void {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1851,6 +1949,8 @@ final class JsonDataProvider
         string $tableName,
         string $name,
     ): void {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'ex',
@@ -1918,6 +2018,8 @@ final class JsonDataProvider
      */
     public function addRelation(RelationSchema $relation): void
     {
+        $this->assertWritable();
+
         $child = $relation->childTable();
 
         $this->locks->withLocks(
@@ -1982,6 +2084,8 @@ final class JsonDataProvider
         string $foreignKey,
         string $toTable,
     ): void {
+        $this->assertWritable();
+
         IdentifierRules::assertTableName($fromTable);
         IdentifierRules::assertTableName($toTable);
         IdentifierRules::assertColumnName($foreignKey);
@@ -2065,6 +2169,8 @@ final class JsonDataProvider
      */
     public function optimizeTable(string $tableName): void
     {
+        $this->assertWritable();
+
         $this->locks->withLocks(
             [$tableName => 'ex'],
             'sh',
@@ -2100,6 +2206,8 @@ final class JsonDataProvider
      */
     public function repairTable(string $tableName): IntegrityReport
     {
+        $this->assertWritable();
+
         return $this->locks->withLocks(
             [$tableName => 'ex'],
             'sh',
@@ -2119,6 +2227,8 @@ final class JsonDataProvider
      */
     public function repair(): IntegrityReport
     {
+        $this->assertWritable();
+
         return $this->locks->withDatabase(
             function (): IntegrityReport {
                 $this->schema->reload();
@@ -2186,6 +2296,8 @@ final class JsonDataProvider
         bool $adoptArchivedSchema = false,
         bool $pruneExtraTables = false,
     ): void {
+        $this->assertWritable();
+
         foreach (array_keys($this->schema->getTables()) as $table) {
             $this->invalidateCache($table);
         }
@@ -2200,6 +2312,95 @@ final class JsonDataProvider
         foreach (array_keys($this->schema->getTables()) as $table) {
             $this->invalidateCache($table);
         }
+
+        $this->migrateStorage();
+    }
+
+    /**
+     * Reports the storage format of the database as it is on disk now:
+     * its generation, this engine's generation, the manifest flags, and
+     * what migrateStorage() would do — the generation steps it would run
+     * and the tables it would rebuild and stamp. Reads only; takes no
+     * write lock.
+     */
+    public function storageStatus(): StorageStatus
+    {
+        $manifest = StorageManifest::read($this->dbPath);
+        $pendingTables = [];
+
+        foreach ($this->schema->getTables() as $name => $tableSchema) {
+            if (
+                $manifest->isLegacy()
+                || $this->freshness->verdict($tableSchema, true)
+                    !== FreshnessEnum::FRESH
+            ) {
+                $pendingTables[] = $name;
+            }
+        }
+
+        $pendingSteps = [];
+
+        for (
+            $generation = $manifest->generation;
+            $generation < StorageManifest::GENERATION;
+            $generation++
+        ) {
+            $pendingSteps[] = self::stepName($generation);
+        }
+
+        return new StorageStatus(
+            generation: $manifest->generation,
+            engineGeneration: StorageManifest::GENERATION,
+            compat: $manifest->compat,
+            roCompat: $manifest->roCompat,
+            incompat: $manifest->incompat,
+            readOnly: $manifest->unknownRoCompat() !== [],
+            pendingSteps: $pendingSteps,
+            pendingTables: $pendingTables,
+        );
+    }
+
+    /**
+     * Brings the database to the given storage format generation (this
+     * engine's by default) and makes every table fresh: indexes rebuilt
+     * from the data and stamped. Generations are climbed one step at a
+     * time, each step idempotent, the manifest written as the step's last
+     * act — a crash leaves the database in the previous generation and a
+     * re-run finishes the job. Only upwards: a target below the database's
+     * generation, or above this engine's, is refused.
+     *
+     * Runs under the database EX lock and EX on every table, like
+     * repair(); meant for deploy time, not for live traffic. A table whose
+     * data file holds lines that are not records is left unstamped and
+     * listed in the report; it keeps working as under 1.0.
+     */
+    public function migrateStorage(
+        int | null $toGeneration = null,
+    ): MigrationReport {
+        $this->assertWritable();
+        $target = $toGeneration ?? StorageManifest::GENERATION;
+
+        $report = $this->locks->withDatabase(
+            function () use ($target): MigrationReport {
+                $this->schema->reload();
+                $plan = array_fill_keys(
+                    array_keys($this->schema->getTables()),
+                    'ex',
+                );
+
+                return $this->locks->withLocks(
+                    $plan,
+                    null,
+                    fn (): MigrationReport => $this->migrateLocked($target),
+                );
+            },
+        );
+
+        foreach (array_keys($this->schema->getTables()) as $table) {
+            $this->invalidateCache($table);
+        }
+
+        return $report;
     }
 
     /**
@@ -2471,37 +2672,22 @@ final class JsonDataProvider
      * The committed row count, or null when it cannot be trusted without
      * reading the table.
      *
-     * The gate is the one ensureTableConsistent() runs before a write: meta
-     * byteSize against the actual file size. lineCount and byteSize are
-     * committed together (commitAppend/commitRewrite), so a size that still
-     * matches means the counter describes exactly this file. A mismatch —
-     * crashed append, foreign write, pre-byteSize meta — yields null and the
-     * caller falls back to counting the rows.
+     * The gate is the one ensureTableConsistent() runs before a write
+     * (TableFreshness): meta byteSize against the actual file size, and in a
+     * generation-2 database the inode against the stamp. lineCount and
+     * byteSize are committed together (commitAppend/commitRewrite), so a
+     * trusted table means the counter describes exactly this file. Anything
+     * else — crashed append, foreign write, pre-byteSize meta, a replaced
+     * file — yields null and the caller falls back to counting the rows.
      *
-     * The blind spot is inherited from that gate: a foreign rewrite landing
-     * on the same byte length is invisible here, exactly as it is to the
-     * write path. Readers that must not miss it call validate().
+     * The blind spot is inherited from that gate: an unstamped table, and
+     * any table of a generation-1 database, is trusted by size alone, so a
+     * foreign rewrite landing on the same byte length is invisible here,
+     * exactly as it is to the write path.
      */
     private function countFromMeta(TableSchema $tableSchema): int | null
     {
-        try {
-            $expected = $this->meta->getByteSize($tableSchema->name);
-
-            if ($expected === null) {
-                return null;
-            }
-
-            $actual = $this->ndjson->fileSizeBytes(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-            );
-
-            return $expected === $actual
-                ? $this->meta->getLineCount($tableSchema->name)
-                : null;
-        } catch (JsonProviderException) {
-            return null;
-        }
+        return $this->freshness->trustedLineCount($tableSchema);
     }
 
     /**
@@ -3355,7 +3541,7 @@ final class JsonDataProvider
         $metaInitialized = false;
 
         try {
-            $expected = $this->meta->getByteSize($tableSchema->name);
+            $this->meta->getByteSize($tableSchema->name);
         } catch (JsonProviderException $e) {
             /*
              * Both a missing and a corrupt entry self-heal the same way:
@@ -3375,15 +3561,9 @@ final class JsonDataProvider
 
             $this->meta->initTable($tableSchema->name);
             $metaInitialized = true;
-            $expected = 0;
         }
 
-        $actual = $this->ndjson->fileSizeBytes(
-            $tableSchema->name,
-            $tableSchema->getFileName(),
-        );
-
-        if (!$metaInitialized && $expected === $actual) {
+        if (!$metaInitialized && $this->trustedNow($tableSchema)) {
             if ($this->meta->getIndexFormat($tableSchema->name) >= 2) {
                 return;
             }
@@ -3742,12 +3922,10 @@ final class JsonDataProvider
             return false;
         }
 
-        if (
-            $byteSize !== $this->ndjson->fileSizeBytes(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-            )
-        ) {
+        $freshness = $this->freshness->check($tableSchema);
+        $this->noteFreshness($tableSchema->name, $freshness);
+
+        if ($freshness === FreshnessEnum::DRIFT) {
             $this->logger?->info(
                 'table "' . $tableSchema->name . '": committed byteSize '
                     . 'differs from the data file (foreign append or stale '
@@ -3758,7 +3936,7 @@ final class JsonDataProvider
             return false;
         }
 
-        return true;
+        return $freshness->trusted();
     }
 
     /**
@@ -4355,6 +4533,261 @@ final class JsonDataProvider
         return $lineCount . '-' . $fileState;
     }
 
+    /**
+     * Reads the storage format of the database once per instance — once
+     * per request under PHP-FPM. Refuses a format this engine cannot open,
+     * warns about a generation-1 database (it keeps working exactly as
+     * under 1.0) and about read-only mode. A path that holds no database
+     * yet is left alone.
+     *
+     * @return list<string> the roCompat features this engine does not know
+     */
+    private function openStorageFormat(): array
+    {
+        if (!$this->json->exists(self::SCHEMA_FILE)) {
+            return [];
+        }
+
+        $manifest = StorageManifest::read($this->dbPath);
+        $manifest->assertOpenable($this->dbPath);
+
+        if ($manifest->isLegacy()) {
+            $this->warn(
+                \sprintf(
+                    self::LEGACY_FORMAT_NOTICE,
+                    $this->dbPath,
+                    StorageManifest::GENERATION,
+                ),
+                false,
+            );
+
+            return [];
+        }
+
+        $this->freshness->enableStamps();
+        $readOnly = $manifest->unknownRoCompat();
+
+        if ($readOnly !== []) {
+            $this->warn(
+                \sprintf(
+                    self::READ_ONLY_NOTICE,
+                    StorageManifest::describe($readOnly, $this->dbPath),
+                ),
+                true,
+            );
+        }
+
+        return $readOnly;
+    }
+
+    /**
+     * A warning goes to the PSR-3 logger when one is given; without it,
+     * to the PHP error log as a user deprecation (the format notice) or a
+     * user warning (read-only mode), so it is never silently lost.
+     */
+    private function warn(string $message, bool $severe): void
+    {
+        if ($this->logger !== null) {
+            $this->logger->warning($message);
+
+            return;
+        }
+
+        trigger_error($message, $severe ? E_USER_WARNING : E_USER_DEPRECATED);
+    }
+
+    /**
+     * The body of migrateStorage(), under the database and table locks.
+     */
+    private function migrateLocked(int $target): MigrationReport
+    {
+        $from = StorageManifest::read($this->dbPath)->generation;
+
+        if ($target < $from || $target > StorageManifest::GENERATION) {
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::StorageMigrationTargetInvalid,
+                (string)$target,
+                (string)$from,
+                (string)StorageManifest::GENERATION,
+            );
+        }
+
+        $this->migrating = true;
+        $steps = [];
+        $refreshed = [];
+        $skipped = [];
+
+        try {
+            for ($generation = $from; $generation < $target; $generation++) {
+                $this->migrateStep($generation, $refreshed, $skipped);
+                $steps[] = self::stepName($generation);
+            }
+
+            if ($steps === [] && $from >= StorageManifest::GENERATION) {
+                $this->refreshAllTables($refreshed, $skipped);
+            }
+        } finally {
+            $this->migrating = false;
+        }
+
+        $this->freshnessNoted = [];
+
+        return new MigrationReport(
+            fromGeneration: $from,
+            toGeneration: max($from, $target),
+            steps: $steps,
+            refreshedTables: $refreshed,
+            skippedTables: $skipped,
+        );
+    }
+
+    /**
+     * Runs the one step leading from $generation to the next.
+     *
+     * @param list<string> $refreshed
+     * @param list<string> $skipped
+     */
+    private function migrateStep(
+        int $generation,
+        array &$refreshed,
+        array &$skipped,
+    ): void {
+        if ($generation === 1) {
+            $this->migrateGeneration1To2($refreshed, $skipped);
+
+            return;
+        }
+
+        throw new JsonProviderServiceException(
+            JsonProviderErrorEn::StorageMigrationTargetInvalid,
+            (string)($generation + 1),
+            (string)$generation,
+            (string)StorageManifest::GENERATION,
+        );
+    }
+
+    /**
+     * Generation 1 -> 2: every table gets its indexes rebuilt from the data
+     * (never taken on faith — a stale index would otherwise be stamped as
+     * fresh) and the inode stamp; the manifest comes last.
+     *
+     * @param list<string> $refreshed
+     * @param list<string> $skipped
+     */
+    private function migrateGeneration1To2(
+        array &$refreshed,
+        array &$skipped,
+    ): void {
+        $this->freshness->enableStamps();
+        $this->refreshAllTables($refreshed, $skipped);
+        StorageManifest::current()->write($this->dbPath);
+    }
+
+    /**
+     * @param list<string> $refreshed
+     * @param list<string> $skipped
+     */
+    private function refreshAllTables(array &$refreshed, array &$skipped): void
+    {
+        foreach ($this->schema->getTables() as $name => $tableSchema) {
+            $result = $this->bringTableCurrent($tableSchema);
+
+            if ($result === true) {
+                $refreshed[] = $name;
+            } elseif ($result === false) {
+                $skipped[] = $name;
+            }
+        }
+    }
+
+    /**
+     * Makes one table fresh. Drifted counters are healed by the canonical
+     * full rewrite; a stale or missing stamp only needs the indexes
+     * rebuilt from the data and stamped — the data file stays as it is. A
+     * table holding a line that is not a record is left alone: a rewrite
+     * would drop that line, and indexes built around it cannot be
+     * certified. Returns null when the table was already fresh, false when
+     * it was left alone.
+     */
+    private function bringTableCurrent(TableSchema $tableSchema): bool | null
+    {
+        $freshness = $this->freshness->check($tableSchema);
+
+        if ($freshness === FreshnessEnum::FRESH) {
+            return null;
+        }
+
+        if ($this->freshness->holdsBrokenRecords($tableSchema)) {
+            return false;
+        }
+
+        if ($freshness === FreshnessEnum::DRIFT) {
+            $this->ensureTableConsistent($tableSchema);
+
+            return true;
+        }
+
+        return $this->freshness->refresh($tableSchema);
+    }
+
+    private static function stepName(int $generation): string
+    {
+        return $generation . '->' . ($generation + 1);
+    }
+
+    /**
+     * The write-path gate: true when the committed meta still describes
+     * the data file, so the indexes may be trusted as they are.
+     */
+    private function trustedNow(TableSchema $tableSchema): bool
+    {
+        $freshness = $this->freshness->check($tableSchema);
+        $this->noteFreshness($tableSchema->name, $freshness);
+
+        return $freshness->trusted();
+    }
+
+    /**
+     * Reports a table that is unstamped or stale, once per instance.
+     */
+    private function noteFreshness(
+        string $tableName,
+        FreshnessEnum $freshness,
+    ): void {
+        $notice = match ($freshness) {
+            FreshnessEnum::UNSTAMPED => self::UNSTAMPED_NOTICE,
+            FreshnessEnum::STALE     => self::STALE_NOTICE,
+            default                  => null,
+        };
+
+        if (
+            $notice === null
+            || $this->migrating
+            || isset($this->freshnessNoted[$tableName])
+        ) {
+            return;
+        }
+
+        $this->freshnessNoted[$tableName] = true;
+        $this->warn(\sprintf($notice, $tableName), false);
+    }
+
+    /**
+     * Refuses any write while the storage format carries a roCompat
+     * feature this engine does not know.
+     */
+    private function assertWritable(): void
+    {
+        if ($this->readOnlyFeatures === []) {
+            return;
+        }
+
+        throw new JsonProviderServiceException(
+            JsonProviderErrorEn::StorageReadOnly,
+            StorageManifest::describe($this->readOnlyFeatures, $this->dbPath),
+        );
+    }
+
     private function validator(): IntegrityValidator
     {
         if ($this->validator === null) {
@@ -4365,6 +4798,7 @@ final class JsonDataProvider
                 $this->json,
                 $this->indexManager,
                 $this->values,
+                $this->freshness,
                 $this->logger,
             );
         }
@@ -4383,6 +4817,7 @@ final class JsonDataProvider
                 $this->json,
                 $this->indexManager,
                 $this->values,
+                $this->freshness,
             );
         }
 
@@ -4403,6 +4838,7 @@ final class JsonDataProvider
                 $this->ndjson,
                 $this->indexManager,
                 $this->values,
+                $this->freshness,
                 fn (TableSchema $t) => $this->ensureTableConsistent($t),
                 fn (string $t): array => $this->readAllForWrite($t),
                 fn (string $t) => $this->invalidateCache($t),

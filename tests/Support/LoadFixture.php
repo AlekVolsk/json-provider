@@ -13,8 +13,8 @@ use AV\JsonProvider\Schema\TableSchema;
 /**
  * Bulk load fixture for the benchmark suite.
  *
- * Seeds TABLES tables of ROWS rows each (the stress ceiling: beyond this a
- * real RDBMS is the better tool) through JsonDataProvider::importRecords(),
+ * Seeds TABLES tables of ROWS rows each through
+ * JsonDataProvider::importRecords(),
  * one bulk load per table — orders of magnitude faster than ROWS individual
  * insert() calls, and identical in outcome: records are validated, indexes
  * rebuilt, meta counters committed. Runs once per process (guarded by static
@@ -23,6 +23,14 @@ use AV\JsonProvider\Schema\TableSchema;
  * Each table `load_<n>` has columns id/name/val/price/flag and one lookup
  * index on `val`.
  *
+ * ROWS is the stress ceiling of ONE table — beyond it a real RDBMS is the
+ * better tool — and every query benchmark reads table 0 alone, so its numbers
+ * describe a table at that ceiling. TABLES only scales the whole-database
+ * steps (seed, validate, backup, restore, migration, counting across tables),
+ * whose cost is linear in it: multiply their times by five for the 50-table,
+ * 5M-row database. Ten tables keep the whole benchmark run under twenty
+ * minutes.
+ *
  * The DB lives under a run-unique directory (see TempDir), so two overlapping
  * runs never share — or drop — each other's data, and the tree is removed at
  * process shutdown even if a benchmark aborts before dropDatabase().
@@ -30,7 +38,7 @@ use AV\JsonProvider\Schema\TableSchema;
 final class LoadFixture
 {
     public const string DB_PREFIX = 'jp-bench-load';
-    public const int TABLES = 50;
+    public const int TABLES = 10;
     public const int ROWS = 100000;
 
     private static bool $seeded = false;

@@ -10,7 +10,7 @@ JsonProvider/
     ├── JsonTable.php              # билдер запросов
     ├── JsonFilter.php             # иммутабельный набор условий
     ├── Schema/                    # value-объекты: TableSchema, ColumnTypes, IndexSchema, ...
-    ├── Storage/                   # низкоуровневый I/O: NdjsonStorage, JsonStorage, локи
+    ├── Storage/                   # низкоуровневый I/O: NdjsonStorage, JsonStorage, локи, StorageManifest
     ├── Registry/                  # SchemaRegistry, MetaRegistry
     ├── Index/                     # IndexManager, IndexKey
     ├── Query/                     # FilterCondition, FilterOperatorEnum, OrderBy, ...
@@ -22,7 +22,8 @@ JsonProvider/
     │   └── Locale/                # словарь ситуаций: En, Ru, LocaleInterface
     └── Services/
         ├── Integrity/             # IntegrityValidator, IntegrityRepairer, типы отчёта
-        └── Backup/                # Backup, Restore, BackupManifest
+        ├── Backup/                # Backup, Restore, BackupManifest
+        └── Format/                # TableFreshness — штамп таблицы; StorageStatus, MigrationReport
 ```
 
 В обычной работе вы взаимодействуете только с `JsonDataProvider`, `JsonTable`, `JsonFilter`, value-объектами схемы, атрибутами DTO-отображения и типами исключений. Storage, registry, движок связей и сервисные классы доступны, но не являются повседневной поверхностью.

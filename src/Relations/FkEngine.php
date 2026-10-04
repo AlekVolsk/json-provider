@@ -17,6 +17,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Services\Format\TableFreshness;
 use AV\JsonProvider\Storage\NdjsonStorage;
 use AV\JsonProvider\Storage\PreparedRewrite;
 use AV\JsonProvider\Validation\ColumnTypeInfo;
@@ -112,6 +113,7 @@ final class FkEngine
         private readonly NdjsonStorage $ndjson,
         private readonly IndexManager $indexManager,
         private readonly ValueValidator $values,
+        private readonly TableFreshness $freshness,
         private readonly \Closure $ensureConsistent,
         private readonly \Closure $readForWrite,
         private readonly \Closure $cacheInvalidate,
@@ -732,35 +734,19 @@ final class FkEngine
 
     /**
      * O(1) trust gate mirroring the select path: the backing index is
-     * probed only when the committed byteSize matches the data file and
-     * the key format is current (see JsonDataProvider::indexTrustworthy).
+     * probed only when TableFreshness trusts the table's indexes and the
+     * key format is current (see JsonDataProvider::indexTrustworthy).
      */
     private function indexTrustworthy(TableSchema $tableSchema): bool
     {
         try {
-            $byteSize = $this->meta->getByteSize($tableSchema->name);
             $format = $this->meta->getIndexFormat($tableSchema->name);
         } catch (JsonProviderException) {
             return false;
         }
 
-        if ($format < 2 || $byteSize === null) {
-            return false;
-        }
-
-        if (
-            !$this->ndjson->exists(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-            )
-        ) {
-            return false;
-        }
-
-        return $byteSize === $this->ndjson->fileSizeBytes(
-            $tableSchema->name,
-            $tableSchema->getFileName(),
-        );
+        return $format >= 2
+            && $this->freshness->check($tableSchema)->trusted();
     }
 
     /**

@@ -114,7 +114,15 @@ test-phpcs: ##@Testing Check codebase via PHP_CodeSniffer (src + tests)
 
 
 #### Testo - Testing Framework ########################################################
-test-testo: ##@Testing Testo - unit tests (tests/Unit)
+compat-legacy: ##@Testing Extract the published v1.0.0 sources for the compatibility tests
+	@if [ ! -f "$(PATH_BUILD)/compat/v1.0.0/src/JsonDataProvider.php" ]; then \
+        mkdir -p "$(PATH_BUILD)/compat/v1.0.0" && \
+        git -C "$(PATH_ROOT)" archive v1.0.0 src \
+            | tar -x -C "$(PATH_BUILD)/compat/v1.0.0"; \
+    fi
+
+
+test-testo: compat-legacy ##@Testing Testo - unit tests (tests/Unit)
 	$(call title,"Testo - unit tests")
 	@$(VENDOR_BIN)/testo \
         --config="$(PATH_ROOT)/testo.php" \
@@ -122,35 +130,45 @@ test-testo: ##@Testing Testo - unit tests (tests/Unit)
 		--log-junit="$(PATH_BUILD)/testo-junit.xml"
 
 
-test-bench: ##@Testing Testo - every benchmark (load + mapping, ~25 min)
-	$(call title,"Testo - all benchmarks")
-	@$(VENDOR_BIN)/testo \
-        --config="$(PATH_ROOT)/testo.php" \
-        --type=bench \
-		--log-junit="$(PATH_BUILD)/testo-bench-junit.xml" \
-		-vvv
+# Benchmark files by group. Each file runs in its own testo process: one process
+# for several files carries state from file to file and skews the numbers, pair
+# ratios included. Groups use separate databases, so `make -j3 test-bench` runs
+# them side by side in ~11 min; the groups then share CPU and disk, fsync-bound
+# steps swing by up to 30% and pair ratios by up to 7 points, so reference
+# numbers come from a sequential run.
+BENCH_LOAD    = LoadBenchWrite LoadBenchDto LoadBenchArray LoadBenchMigration
+BENCH_MAPPING = MappingBenchHydration MappingBenchQuery MappingBenchRelations MappingBenchSort
+BENCH_INDEX   = IndexBench
+
+# Run benchmark files one process each, report per file, fail if any file fails
+define bench_files
+    @status=0; for name in $(1); do \
+        $(VENDOR_BIN)/testo \
+            --config="$(PATH_ROOT)/testo.php" \
+            --type=bench \
+            --path="$(PATH_TESTS)/Bench/$$name.php" \
+            --log-html="$(PATH_BUILD)/testo-bench-$$name.html" \
+            -vvv || status=1; \
+    done; exit $$status
+endef
 
 
-test-bench-load: ##@Testing Testo - load benchmarks (50 tables x 100k rows = 5M, ~883 MiB in temp, ~15 min)
+test-bench: test-bench-load test-bench-mapping test-bench-index ##@Testing Testo - every benchmark, one process per file (~20 min; -j3 ~11 min, rougher numbers)
+
+
+test-bench-load: ##@Testing Testo - load benchmarks (10 tables x 100k rows = 1M, ~177 MiB in temp, ~6 min)
 	$(call title,"Testo - load benchmarks")
-	@$(VENDOR_BIN)/testo \
-        --config="$(PATH_ROOT)/testo.php" \
-        --type=bench \
-        --path="$(PATH_TESTS)/Bench/LoadBenchWrite.php" \
-        --path="$(PATH_TESTS)/Bench/LoadBenchDto.php" \
-        --path="$(PATH_TESTS)/Bench/LoadBenchArray.php" \
-		-vvv
+	$(call bench_files,$(BENCH_LOAD))
 
 
-test-bench-mapping: ##@Testing Testo - array vs DTO across filter/sort/relation modes (1 table x 100k, ~51 MiB, ~10 min)
+test-bench-mapping: ##@Testing Testo - array vs DTO across filter/sort/relation modes (1 table x 100k, ~51 MiB, ~11 min)
 	$(call title,"Testo - mapping benchmarks")
-	@$(VENDOR_BIN)/testo \
-        --config="$(PATH_ROOT)/testo.php" \
-        --type=bench \
-        --path="$(PATH_TESTS)/Bench/MappingBenchHydration.php" \
-        --path="$(PATH_TESTS)/Bench/MappingBenchQuery.php" \
-        --path="$(PATH_TESTS)/Bench/MappingBenchRelations.php" \
-		-vvv
+	$(call bench_files,$(BENCH_MAPPING))
+
+
+test-bench-index: ##@Testing Testo - index paths planned to change: unique, FK, composite, size, count, stale stamp (14 tables, ~2.5 min)
+	$(call title,"Testo - index benchmarks")
+	$(call bench_files,$(BENCH_INDEX))
 
 
 #### PHP-CS-Fixer #####################################################################

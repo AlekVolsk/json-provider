@@ -27,6 +27,7 @@ return (new PhpCsFixer\Config())
         'final_internal_class' => false,
         'ordered_class_elements' => true,
         'yoda_style' => false,
+        'error_suppression' => ['mute_deprecation_error' => false],
         'no_superfluous_phpdoc_tags' => true,
         'single_line_empty_body' => false,
         'phpdoc_to_comment' => true,
