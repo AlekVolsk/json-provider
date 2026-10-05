@@ -284,6 +284,45 @@ final class IndexSortedLookupTest
         Assert::same($this->ids($db, 'n', '=', 42), [43]);
     }
 
+    /**
+     * Offsets that describe another file under the same inode — the data
+     * file rewritten in place with a line made longer and its counters
+     * committed, as an older engine leaves it when the inode is handed out
+     * again — are not extended by an append: lookups and pages answer from
+     * the data as stored.
+     */
+    #[Test]
+    public function offsetsOfAnotherFileAreNotExtended(): void
+    {
+        $db = $this->numbers(50);
+        $data = $this->dbDir . '/' . self::TABLE . '/' . self::TABLE
+            . '.ndjson';
+        $lines = explode("\n", (string)file_get_contents($data));
+        $lines[4] = '{"id": 5,"n":4}';
+        file_put_contents($data, implode("\n", $lines));
+        clearstatcache();
+        $metaPath = $this->dbDir . '/meta.json';
+        $meta = json_decode((string)file_get_contents($metaPath), true);
+        Assert::true(\is_array($meta) && \is_array($meta[self::TABLE]));
+        $meta[self::TABLE]['byteSize'] = filesize($data);
+        file_put_contents($metaPath, json_encode($meta, JSON_THROW_ON_ERROR));
+
+        $db->insert(self::TABLE, ['n' => 1000]);
+
+        foreach ([30 => 31, 42 => 43, 49 => 50, 1000 => 51] as $n => $id) {
+            Assert::same($this->ids($db, 'n', '=', $n), [$id]);
+        }
+
+        Assert::same(
+            array_column(
+                $db->table(self::TABLE)->orderBy('n')->limit(3)->offset(20)
+                    ->selectAllByArray(),
+                'n',
+            ),
+            [20, 21, 22],
+        );
+    }
+
     #[Test]
     public function generationOneKeepsNoDerivedFiles(): void
     {

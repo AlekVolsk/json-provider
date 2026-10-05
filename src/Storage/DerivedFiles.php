@@ -122,8 +122,9 @@ final class DerivedFiles
 
     /**
      * Records the offset of a line just appended to the data file, when
-     * the offsets describe the file as it was before the append; otherwise
-     * leaves them stale.
+     * the offsets describe the file as it was before the append — its
+     * inode, line count and the mark of its content up to the recorded
+     * size; otherwise leaves them stale.
      */
     public function appendLineOffset(
         string $table,
@@ -161,7 +162,11 @@ final class DerivedFiles
 
             $mark = self::fileMark($dataPath, $byteSize);
 
-            if ($mark === null) {
+            if (
+                $mark === null
+                || self::fileMark($dataPath, $header['size'])
+                    !== $header['mark']
+            ) {
                 return;
             }
 
