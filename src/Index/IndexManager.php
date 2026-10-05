@@ -475,6 +475,7 @@ final class IndexManager
                 $index,
                 $lineCount,
                 $fail,
+                $boundary['count'],
             ),
             new IndexEntryList($tail),
         ];
@@ -603,7 +604,8 @@ final class IndexManager
     /**
      * Checks the records read for lines a searchSorted() returned against
      * the entries that pointed at them: every line must yield a record, and
-     * the key built from the record must be the entry's key. A mismatch
+     * the key built from the record must be the entry's key (see
+     * RecordVerifier). A mismatch
      * means the index no longer describes the data and raises
      * INDEX_UNRELIABLE — the lookup would otherwise return wrong rows.
      *
@@ -626,22 +628,26 @@ final class IndexManager
             );
         }
 
-        [$head, $tail] = $sorted;
+        $verify = $this->recordVerifier($tableName, $sorted, $index);
 
         foreach (array_values($lines) as $i => $line) {
-            $key = $head->keyOf($line) ?? $tail->keyOf($line);
-
-            if (
-                $key === null
-                || IndexKey::build($records[$i], $index) !== $key
-            ) {
-                throw new JsonProviderServiceException(
-                    JsonProviderErrorEn::IndexRecordMismatch,
-                    $index->name,
-                    $tableName,
-                );
-            }
+            $verify->check($line, $records[$i]);
         }
+    }
+
+    /**
+     * verifyRecords() one record at a time, for a caller that reads the
+     * records as a stream. Checking that every line yielded a record is the
+     * caller's.
+     *
+     * @param array{IndexFileRegion, IndexEntryList} $sorted
+     */
+    public function recordVerifier(
+        string $tableName,
+        array $sorted,
+        IndexSchema $index,
+    ): RecordVerifier {
+        return new RecordVerifier($tableName, $index, $sorted[0], $sorted[1]);
     }
 
     /**
@@ -799,8 +805,8 @@ final class IndexManager
     }
 
     /**
-     * IN: one binary lookup per distinct value, results merged in entry
-     * order per value.
+     * IN: one lookup per distinct value in key order, each starting where
+     * the previous run ended; adjacent runs are read as one.
      *
      * @return null|array<int,int>
      */
@@ -825,16 +831,32 @@ final class IndexManager
             }
         }
 
+        $keys = array_map(strval(...), array_keys($targets));
+        sort($keys, SORT_STRING);
+        $runs = [];
+        $from = $entries->start();
+
+        foreach ($keys as $target) {
+            $lo = $entries->lowerBound($target, $from);
+            $from = $entries->upperBound($target, $lo);
+
+            if ($lo === $from) {
+                continue;
+            }
+
+            $last = array_key_last($runs);
+
+            if ($last !== null && $runs[$last][1] === $lo) {
+                $runs[$last][1] = $from;
+            } else {
+                $runs[] = [$lo, $from];
+            }
+        }
+
         $lines = [];
 
-        foreach (array_keys($targets) as $target) {
-            array_push(
-                $lines,
-                ...$entries->lines(
-                    $entries->lowerBound($target),
-                    $entries->upperBound($target),
-                ),
-            );
+        foreach ($runs as [$lo, $hi]) {
+            array_push($lines, ...$entries->lines($lo, $hi));
         }
 
         return $lines;

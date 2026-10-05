@@ -29,9 +29,9 @@ final class IndexEntryList implements SortedIndexEntries
         return \count($this->entries);
     }
 
-    public function lowerBound(string $partKey): int
+    public function lowerBound(string $partKey, int $from = 0): int
     {
-        $lo = 0;
+        $lo = $from;
         $hi = \count($this->entries);
 
         while ($lo < $hi) {
@@ -47,9 +47,9 @@ final class IndexEntryList implements SortedIndexEntries
         return $lo;
     }
 
-    public function upperBound(string $partKey): int
+    public function upperBound(string $partKey, int $from = 0): int
     {
-        $lo = 0;
+        $lo = $from;
         $hi = \count($this->entries);
 
         while ($lo < $hi) {
@@ -79,6 +79,11 @@ final class IndexEntryList implements SortedIndexEntries
         }
 
         return $lines;
+    }
+
+    public function keys(): array
+    {
+        return $this->keys;
     }
 
     public function keyOf(int $line): string | null

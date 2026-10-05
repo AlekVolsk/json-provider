@@ -146,6 +146,26 @@ final class ValueValidator
     }
 
     /**
+     * widenFloats() for one record.
+     *
+     * @param array<string,null|scalar> $record
+     *
+     * @return array<string,null|scalar>
+     */
+    public function widenRecord(TableSchema $schema, array $record): array
+    {
+        foreach ($this->floatColumns($schema) as $column) {
+            $value = $record[$column] ?? null;
+
+            if (\is_int($value)) {
+                $record[$column] = (float)$value;
+            }
+        }
+
+        return $record;
+    }
+
+    /**
      * Converts stored (UTC) temporal values of a single record back to the
      * current PHP timezone. Non-temporal values pass through untouched. Returns
      * the record unchanged when the table has no temporal columns.

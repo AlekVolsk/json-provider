@@ -82,7 +82,7 @@ LIKE is **bytewise and case-sensitive**. The only wildcard is an unescaped `%` (
 
 The ordering operators (`>`, `>=`, `<`, `<=`, `BETWEEN`) and `orderBy` compare string pairs **bytewise** by default (`ComparisonModeEnum::Binary`): `'10' < '9'`, numeric strings are not coerced, and the order matches the byte order of indexes — a range, a sort and the index path give one answer. Numbers compare numerically; `null` sorts first; `=`/`IN` stay strict `===` always.
 
-`$db->setComparisonMode(ComparisonModeEnum::Locale)` switches string pairs to the ext-intl collator (natural-language order). The mode affects **order only**: `=`/`IN`/`LIKE` remain exact and indexable, while ordering/ranges over string columns stop using indexes (the byte-ordered index disagrees with the collator) and run as full scans. Without ext-intl, `Locale` silently behaves as `Binary`; the dependency is declared in composer `suggest`.
+`$db->setComparisonMode(ComparisonModeEnum::Locale)` switches string pairs to the ext-intl collator (natural-language order). The mode affects **order only**: `=`/`IN`/`LIKE` remain exact (bytewise), and `=`/`IN` on strings stay indexable (`LIKE` is served by no index in either mode), while ordering and ranges over string columns are not done by indexes (the byte-ordered index disagrees with the collator): ordering happens in memory, and the post-filter checks ranges. Without ext-intl, `Locale` silently behaves as `Binary`; the dependency is declared in composer `suggest`.
 
 ## Ordering
 

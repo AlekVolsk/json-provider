@@ -17,7 +17,7 @@ A two-tier model:
 - **Full scan (lock-free).** A full read of the data file takes no locks. Correctness comes from atomic file replacement on rewrite (tmp + fsync + rename): a reader always sees either the complete old file or the complete new one. The snapshot corresponds to the moment the file was opened — inserts finishing later may not be included.
 - **Index-driven selects (coordinated).** An indexed select holds the table SH lock across the index and data-row reads, so a writer can never swap the files between the index lookup and the row reads — the index+data pair is always coherent. The SH section covers only the I/O and is released before decoding.
 
-`count()` and full-scan `select()` are lock-free.
+Full-scan `select()` and a `count()` answered by a full scan or from the meta counter are lock-free; a `count()` answered through an index holds the table SH lock, as an index select does.
 
 ## Writes
 

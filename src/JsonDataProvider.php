@@ -18,6 +18,7 @@ use AV\JsonProvider\Exception\JsonProviderTableException;
 use AV\JsonProvider\Exception\Locale\JsonProviderErrorEn;
 use AV\JsonProvider\Exception\Locale\LocaleInterface;
 use AV\JsonProvider\Index\IndexEntryList;
+use AV\JsonProvider\Index\IndexFileRegion;
 use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Index\IndexManager;
 use AV\JsonProvider\Mapping\DtoMap;
@@ -95,6 +96,13 @@ final class JsonDataProvider
      * OFFSET_READ_SHARE is wanted.
      */
     private const int OFFSET_READ_SHARE = 8;
+
+    /**
+     * An index lookup that finds more than this share of the table's lines
+     * is dropped for a full scan: past it, reading the found lines and
+     * checking them against the index costs more than reading every line.
+     */
+    private const float INDEX_MAX_SHARE = 0.8;
 
     private const string SCHEMA_FILE = 'information_schema.json';
 
@@ -2713,14 +2721,21 @@ final class JsonDataProvider
             }
         }
 
-        $records = $conditions === []
-            ? null
-            : $this->cache->get($this->cacheKey(
-                $tableName,
-                $this->tableVersionTag($tableName),
-            ));
+        $cached = $this->cache->get($this->cacheKey(
+            $tableName,
+            $this->tableVersionTag($tableName),
+        ));
 
-        if ($records === null && $conditions !== []) {
+        if ($cached !== null) {
+            return $conditions === []
+                ? \count($cached)
+                : \count(array_filter(
+                    $cached,
+                    $this->conditionFilter($conditions),
+                ));
+        }
+
+        if ($conditions !== []) {
             $viaIndex = $this->countViaIndex($tableName, $conditions);
 
             if ($viaIndex !== null) {
@@ -2728,16 +2743,7 @@ final class JsonDataProvider
             }
         }
 
-        $records ??= $this->readAllRaw($tableName);
-
-        if ($conditions === []) {
-            return \count($records);
-        }
-
-        return \count(array_filter(
-            $records,
-            $this->conditionFilter($conditions),
-        ));
+        return $this->countScan($tableSchema, $conditions);
     }
 
     /**
@@ -2765,12 +2771,84 @@ final class JsonDataProvider
     }
 
     /**
-     * Counts the rows matching the conditions through an index, the way a
-     * select with the same conditions reads them — the two cannot answer
-     * differently. Null when no index serves the conditions or the index
-     * is not trusted; the caller then counts a full read. Used only when
-     * the data cache holds no entry for the table's current version: a
-     * cached table is counted from memory.
+     * Counts the matching rows of a full read without holding them: each
+     * record is checked and dropped, so the memory a count takes does not
+     * grow with the table. The data cache is not filled.
+     *
+     * @param array<int,FilterCondition> $conditions
+     */
+    private function countScan(
+        TableSchema $tableSchema,
+        array $conditions,
+    ): int {
+        return iterator_count($this->scanRecords($tableSchema, $conditions));
+    }
+
+    /**
+     * The matching records of a full read, collected from the stream
+     * without an intermediate copy of the table — the full scan when no
+     * data cache is configured, so there is nothing to fill.
+     *
+     * @param array<int,FilterCondition> $conditions
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    private function scanMatching(
+        TableSchema $tableSchema,
+        array $conditions,
+    ): array {
+        $records = [];
+
+        foreach ($this->scanRecords($tableSchema, $conditions) as $record) {
+            $records[] = $record;
+        }
+
+        return $records;
+    }
+
+    /**
+     * The records of a full read matching the conditions, one at a time:
+     * widened and filtered as they stream; the stored column names are
+     * checked on the first, as a whole read checks them.
+     *
+     * @param array<int,FilterCondition> $conditions
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    private function scanRecords(
+        TableSchema $tableSchema,
+        array $conditions,
+    ): \Generator {
+        $matches = $this->conditionFilter($conditions);
+        $first = true;
+        $records = $this->ndjson->records(
+            $tableSchema->name,
+            $tableSchema->getFileName(),
+        );
+
+        foreach ($records as $line => $record) {
+            if ($first) {
+                $this->assertStoredColumnNames([$record]);
+                $first = false;
+            }
+
+            $record = $this->values->widenRecord($tableSchema, $record);
+
+            if ($matches($record)) {
+                yield $line => $record;
+            }
+        }
+    }
+
+    /**
+     * Counts the rows matching the conditions through an index: the same
+     * index, the same lookup (indexLineNumbers) and the same checks as a
+     * select with these conditions, so the two cannot answer differently
+     * — only the rows are counted as they stream instead of held. Null when
+     * no index serves the conditions or the index is not trusted; the
+     * caller then counts a full read. Used only when the data cache holds
+     * no entry for the table's current version: a cached table is counted
+     * from memory.
      *
      * @param array<int,FilterCondition> $conditions
      */
@@ -2788,30 +2866,150 @@ final class JsonDataProvider
             return null;
         }
 
-        /** @var null|array<int,array<string,null|scalar>> $records */
-        $records = $this->locks->withLocks(
+        return $this->locks->withLocks(
             [$tableName => 'sh'],
             null,
-            function () use ($tableName, $conditions): array | null {
-                $freshSchema = $this->schema->getTable($tableName);
-                $freshIndex = $this->resolveIndex(
-                    $freshSchema,
-                    [],
-                    $conditions,
+            function () use ($tableName, $conditions): int | null {
+                $tableSchema = $this->schema->getTable($tableName);
+                $index = $this->resolveIndex($tableSchema, [], $conditions);
+                $lineCount = $index === null
+                    ? null
+                    : $this->indexTrustedLineCount($tableSchema);
+
+                if ($index === null || $lineCount === null) {
+                    return null;
+                }
+
+                $sorted = $this->indexManager->openSorted(
+                    $tableName,
+                    $index,
+                    $lineCount,
                 );
 
-                return $freshIndex === null
-                    ? null
-                    : $this->selectViaIndex(
-                        $freshIndex,
-                        $freshSchema,
-                        $conditions,
-                        [],
+                if ($sorted !== null) {
+                    $sorted[0]->limit($this->estimateBudget($lineCount));
+                }
+
+                $entries = $sorted !== null
+                    ? []
+                    : $this->indexManager->readIndexValidated(
+                        $tableName,
+                        $index,
+                        $lineCount,
+                        true,
                     );
+                $lines = $entries === null
+                    ? null
+                    : $this->indexLineNumbers(
+                        $tableSchema,
+                        $index,
+                        $conditions,
+                        $sorted,
+                        $entries,
+                    );
+
+                if (
+                    $lines === null
+                    || $this->tooWide($lines, $lineCount, $sorted)
+                ) {
+                    return null;
+                }
+
+                return iterator_count($this->matchingRecords(
+                    $tableSchema,
+                    $index,
+                    $conditions,
+                    $lines,
+                    $lineCount,
+                    $sorted,
+                ));
             },
         );
+    }
 
-        return $records === null ? null : \count($records);
+    /**
+     * The records matching the conditions among the data lines an index
+     * lookup found ($lines, in file order) — or among all lines when the
+     * index served no condition ($lines null) — one at a time, never held:
+     * each is widened, checked against the index entry that pointed at it
+     * when the lookup searched a sorted head (RecordVerifier), and
+     * filtered. A found line that yields no record breaks the index
+     * (INDEX_UNRELIABLE).
+     *
+     * @param array<int,FilterCondition>                  $conditions
+     * @param null|array<int,int>                         $lines
+     * @param null|array{IndexFileRegion, IndexEntryList} $sorted
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    private function matchingRecords(
+        TableSchema $tableSchema,
+        IndexSchema $index,
+        array $conditions,
+        array | null $lines,
+        int $lineCount,
+        array | null $sorted,
+    ): \Generator {
+        $matches = $this->conditionFilter($conditions);
+        $verify = $sorted === null || $lines === null
+            ? null
+            : $this->indexManager->recordVerifier(
+                $tableSchema->name,
+                $sorted,
+                $index,
+            );
+        $read = 0;
+        $records = $lines === null
+            ? $this->ndjson->records(
+                $tableSchema->name,
+                $tableSchema->getFileName(),
+            )
+            : $this->dataRecords($tableSchema, $lines, $lineCount);
+
+        foreach ($records as $line => $record) {
+            $record = $this->values->widenRecord($tableSchema, $record);
+            $read++;
+            $verify?->check($line, $record);
+
+            if ($matches($record)) {
+                yield $line => $record;
+            }
+        }
+
+        if ($verify !== null && $read !== \count($lines ?? [])) {
+            throw new JsonProviderServiceException(
+                JsonProviderErrorEn::IndexLinesMissing,
+                $index->name,
+                $tableSchema->name,
+            );
+        }
+    }
+
+    /**
+     * readDataLines() as a stream keyed by line number.
+     *
+     * @param array<int,int> $lineNumbers in file order
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    private function dataRecords(
+        TableSchema $tableSchema,
+        array $lineNumbers,
+        int $lineCount,
+    ): \Generator {
+        $file = $tableSchema->getFileName();
+        $offsets = \count($lineNumbers) * self::OFFSET_READ_SHARE > $lineCount
+            ? null
+            : $this->derived->lineOffsets(
+                $tableSchema->name,
+                $this->ndjson->pathOf($tableSchema->name, $file),
+                $lineCount,
+                $lineNumbers,
+            );
+
+        return $offsets === null
+            ? $this->ndjson->records($tableSchema->name, $file, $lineNumbers)
+            : $this->ndjson->recordsAt($tableSchema->name, $file, $offsets);
     }
 
     /**
@@ -3995,6 +4193,10 @@ final class JsonDataProvider
                 $index,
                 $lineCount,
             );
+
+        if ($sorted !== null) {
+            $sorted[0]->limit($this->estimateBudget($lineCount));
+        }
         $entries = $sorted !== null
             ? []
             : $this->indexManager->readIndexValidated(
@@ -4046,6 +4248,103 @@ final class JsonDataProvider
             );
         }
 
+        $lineNumbers = $this->indexLineNumbers(
+            $tableSchema,
+            $index,
+            $conditions,
+            $sorted,
+            $entries,
+        );
+
+        if ($this->tooWide($lineNumbers, $lineCount, $sorted)) {
+            return null;
+        }
+
+        $records = [];
+        $matching = $this->matchingRecords(
+            $tableSchema,
+            $index,
+            $conditions,
+            $lineNumbers,
+            $lineCount,
+            $sorted,
+        );
+
+        foreach ($matching as $record) {
+            $records[] = $record;
+        }
+
+        if ($ordering !== []) {
+            $this->sortByOrdering($records, $ordering);
+        }
+
+        return $records;
+    }
+
+    /**
+     * Whether an index lookup found too large a share of the table to be
+     * worth reading through the index (INDEX_MAX_SHARE): its sorted head
+     * stopped reading runs over budget (indexBudget()), or the lines found
+     * exceed the share.
+     *
+     * @param null|array<int,int>                         $lines
+     * @param null|array{IndexFileRegion, IndexEntryList} $sorted
+     */
+    private function tooWide(
+        array | null $lines,
+        int $lineCount,
+        array | null $sorted,
+    ): bool {
+        return ($sorted !== null && $sorted[0]->overBudget())
+            || ($lines !== null
+                && \count($lines) > $this->indexBudget($lineCount));
+    }
+
+    /**
+     * The cap on the entries a lookup's runs are estimated to hold before
+     * it stops reading them (IndexFileRegion::limit()): the budget with a
+     * tenth on top, as the estimate is rough — the lines found decide.
+     */
+    private function estimateBudget(int $lineCount): int
+    {
+        $budget = $this->indexBudget($lineCount);
+
+        return $budget + intdiv($budget, 10);
+    }
+
+    /**
+     * The most lines an index lookup may find and still be read through
+     * the index (INDEX_MAX_SHARE of the table).
+     */
+    private function indexBudget(int $lineCount): int
+    {
+        return (int)floor($lineCount * self::INDEX_MAX_SHARE);
+    }
+
+    /**
+     * The data lines an index narrows the conditions to, in file order: by
+     * the prefix of its leading fields when the conditions fix two or more
+     * of them (indexPrefix), otherwise by the first condition it can serve.
+     * Null when it serves none.
+     *
+     * @param array<int,FilterCondition>                  $conditions
+     * @param null|array{IndexFileRegion, IndexEntryList} $sorted
+     * @param array<int,array{key:string,line:int}>       $entries    the
+     *                                                                whole
+     *                                                                index
+     *                                                                when
+     *                                                                $sorted
+     *                                                                is null
+     *
+     * @return null|array<int,int>
+     */
+    private function indexLineNumbers(
+        TableSchema $tableSchema,
+        IndexSchema $index,
+        array $conditions,
+        array | null $sorted,
+        array $entries,
+    ): array | null {
         $lineNumbers = null;
         $prefix = $this->indexPrefix($tableSchema, $index, $conditions);
 
@@ -4095,38 +4394,7 @@ final class JsonDataProvider
             sort($lineNumbers);
         }
 
-        $records = $this->values->widenFloats(
-            $tableSchema,
-            $lineNumbers !== null
-                ? $this->readDataLines($tableSchema, $lineNumbers, $lineCount)
-                : $this->ndjson->read(
-                    $tableSchema->name,
-                    $tableSchema->getFileName(),
-                ),
-        );
-
-        if ($sorted !== null && $lineNumbers !== null) {
-            $this->indexManager->verifyRecords(
-                $tableSchema->name,
-                $sorted,
-                $index,
-                $lineNumbers,
-                $records,
-            );
-        }
-
-        if ($conditions !== []) {
-            $records = array_values(array_filter(
-                $records,
-                $this->conditionFilter($conditions),
-            ));
-        }
-
-        if ($ordering !== []) {
-            $this->sortByOrdering($records, $ordering);
-        }
-
-        return $records;
+        return $lineNumbers;
     }
 
     /**
@@ -4144,13 +4412,20 @@ final class JsonDataProvider
         array $ordering,
         int | null $keep = null,
     ): array {
-        $records = $this->readAllRaw($tableName);
+        if ($this->cache instanceof NullCache) {
+            $records = $this->scanMatching(
+                $this->schema->getTable($tableName),
+                $conditions,
+            );
+        } else {
+            $records = $this->readAllRaw($tableName);
 
-        if ($conditions !== []) {
-            $records = array_values(array_filter(
-                $records,
-                $this->conditionFilter($conditions),
-            ));
+            if ($conditions !== []) {
+                $records = array_values(array_filter(
+                    $records,
+                    $this->conditionFilter($conditions),
+                ));
+            }
         }
 
         if ($ordering !== []) {

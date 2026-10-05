@@ -70,6 +70,32 @@ final class IndexKey
     }
 
     /**
+     * A string equal for two records exactly when they hold the same
+     * values, of the same types, in the index's fields — so a key built
+     * for one serves the other. Cheaper than build(): no encoding, floats
+     * are taken bit for bit, every part is self-delimiting.
+     *
+     * @param array<string,null|scalar> $record
+     */
+    public static function valuesTag(array $record, IndexSchema $schema): string
+    {
+        $tag = '';
+
+        foreach ($schema->fields as $fieldSchema) {
+            $value = $record[$fieldSchema->field] ?? null;
+            $tag .= match (true) {
+                $value === null   => 'n',
+                \is_int($value)   => 'i' . $value . ';',
+                \is_float($value) => 'f' . pack('e', $value),
+                \is_bool($value)  => $value ? 't' : 'u',
+                default           => 's' . \strlen($value) . ':' . $value,
+            };
+        }
+
+        return $tag;
+    }
+
+    /**
      * Builds a single-part key from one value for first-component search.
      *
      * @param null|array{0:scalar,1:scalar}|scalar $value

@@ -37,7 +37,7 @@ $all   = $db->readAll('products');
 ```
 
 - `select(table, conditions = [], ordering = [], limit = null, offset = 0, distinctFields = [])` — an array of records. The pipeline is the builder's: filter → sort → distinct → offset/limit; an index is used when one exists and can be trusted. A negative `limit` → `InvalidLimit`, a negative `offset` → `InvalidOffset`.
-- `count(table, conditions = [])` — the number of records. With no conditions it answers from the meta counter without reading data, when that counter is reliable. With conditions it counts from the row cache when it holds the table's current version, otherwise through an index that serves the conditions, as a select with the same conditions does (see [Caching](16-caching.md)); without such an index it reads the whole table. There is no distinct here — to count distinct values use the builder: `$db->table('t')->distinct('f')->count()`.
+- `count(table, conditions = [])` — the number of records. With no conditions it answers from the meta counter without reading data, when that counter is reliable. With conditions it counts from the row cache when it holds the table's current version, otherwise through an index that serves the conditions, as a select with the same conditions does (see [Caching](16-caching.md)); without such an index it streams through the table without holding rows in memory. There is no distinct here — to count distinct values use the builder: `$db->table('t')->distinct('f')->count()`.
 - `readAll(table)` — every record of the table, no filters or pagination, through the cache.
 
 ## Writing

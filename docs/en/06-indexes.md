@@ -16,11 +16,15 @@ Before using an index the reader checks an O(1) gate: the committed `byteSize` i
 
 After a rebuild an index file is sorted by key as a whole; appends put new entries into an unsorted tail. A generation-2 database keeps derived files next to it (see [storage format](23-storage-format.md#derived-files)): the boundary of the sorted head of each index file and the offsets of the data file's lines. With them a lookup does not read the index file whole:
 
-- the head — a binary search right over the file's text: a step is a seek into the middle of the range and one line, about log2(n) lines per bound, plus the lines of the range found;
+- the head — a binary search right over the file's text: a step is a seek into the middle of the range and one line, about log2(n) lines per bound; the run found is read in one piece. The values of an `IN` are searched in key order, each search starting where the previous run ended, and adjacent runs are read together;
 - the tail is read whole and searched in memory; once the tail holds more than 1024 entries, the next insert rewrites the index file sorted;
 - the data lines found are read by seeking to their offsets while at most one line in eight of the table is wanted, and in one pass over the file otherwise.
 
+Data rows stream through: each is decoded, checked against the index entry, tested against the conditions and dropped at once when it does not match. `count()` holds no rows at all; a select holds only its result.
+
 A lookup of one row in a table of 100k rows costs a fraction of a millisecond and barely depends on the table size.
+
+When a lookup finds more than 80% of the table's rows, the index is dropped and the query runs as a full scan: that many rows are cheaper to read in a row than through the index with its checks. The lookup estimates the width of what it found from the runs of the head before reading them and stops a plainly wide lookup at once; the exact number of rows found decides. A numeric range bound is taken with a margin — the run includes the values equal to the bound, and the post-filter drops the extra ones — so `n < 8` on a column whose values `0…9` hold equal shares finds 90% of the rows, not 80%.
 
 The derived files carry the inode, size and content mark of the file they describe. When these do not match — another version rewrote the file, a process died between writing the data and the update, the file was replaced — the lookup reads and checks the index file whole. A stale derived file never yields wrong rows. Ordering by an index without conditions and FK probes always read the index whole.
 
@@ -28,7 +32,7 @@ The derived files carry the inode, size and content mark of the file they descri
 
 An index read whole is checked whole: the entry count equals `lineCount`, the lines form a permutation with no duplicates or gaps, every key is syntactically well-formed.
 
-A search over the head checks what it reads: every entry read is a `{key, line}` pair with a well-formed key and a line number inside the data file; the keys on the search path come in order; head and tail together hold exactly `lineCount` entries; no data line is found twice; the key built from every row returned equals the key of the index entry that pointed at it. Damage off the search path — a broken entry far from the key looked for — is invisible to such a search; `validate()` and `validateTable()`, which read the index file whole, find it.
+A search over the head checks what it reads: every entry read is a `{key, line}` pair with a line number inside the data file; the key of the entry a binary search stops at is well-formed, and the keys of the run found are checked against the rows (a key built from a row is well-formed by construction); the keys on the search path come in order; head and tail together hold exactly `lineCount` entries; no data line is found twice; the key built from every row returned equals the key of the index entry that pointed at it. Damage off the search path — a broken entry far from the key looked for — is invisible to such a search; `validate()` and `validateTable()`, which read the index file whole, find it.
 
 Any violation is a **loud** `JsonProviderServiceException`: a structurally corrupt index never silently serves wrong rows. The same full checks run in `validateTable()`, and `repairTable()` rebuilds and stamps.
 
@@ -58,7 +62,7 @@ Without an index the cost of an insert grows with the table: the whole table is 
 
 ## Operators that can use an index
 
-A composite index searches by a key prefix: the `=` values of its leading fields in a row and, when present, a range on the next field — one run of the index file. Conditions on fields past the prefix, `IN` and `LIKE` included, are not served by the index — the post-filter checks them; `IN` works on the first field only. A select without `orderBy` returns rows in file order whether or not an index was used.
+A composite index searches by a key prefix: the `=` values of its leading fields in a row and, when present, a range on the next field — one run of the index file. Conditions on fields past the prefix, `IN` included, are not served by the index — the post-filter checks them; `IN` works on the first field only, while `LIKE` and negations (`NOT`) are not served on any field. A select without `orderBy` returns rows in file order whether or not an index was used.
 
 Indexes are added and dropped on a live table via `addIndex()`/`dropIndex()` — the file is built from current data before the schema is published; see [Schema mutations](12-schema-mutations.md). Names with the `_fk_` prefix are reserved for engine-managed FK backing indexes.
 
@@ -68,11 +72,13 @@ Indexes are added and dropped on a live table via `addIndex()`/`dropIndex()` —
 >=  ✓
 <   ✓  range up to boundary
 <=  ✓
-BETWEEN ✓  (null or non-scalar bounds → full scan)
+BETWEEN ✓  (null or non-scalar bounds — not served by the index)
 IN  ✓  (an empty list is an authoritative zero rows)
-LIKE ✗  always full scan
-NOT *   ✗  always full scan
+LIKE ✗  not served by the index
+NOT *   ✗  not served by the index
 ```
+
+A condition the index does not serve is checked by the post-filter: when the query has another condition the index serves, the select still goes through the index, otherwise it runs as a full scan.
 
 ## Naming and reserved names
 

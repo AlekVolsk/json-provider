@@ -59,15 +59,9 @@ final class NdjsonStorage
                 continue;
             }
 
-            $row = [];
+            $row = self::record($item, $raw);
 
-            foreach ($item as $key => $val) {
-                if (\is_string($key) && (\is_scalar($val) || $val === null)) {
-                    $row[$key] = $val;
-                }
-            }
-
-            if ($row === []) {
+            if ($row === null) {
                 continue;
             }
 
@@ -118,15 +112,9 @@ final class NdjsonStorage
                 continue;
             }
 
-            $row = [];
+            $row = self::record($item, $raw);
 
-            foreach ($item as $key => $val) {
-                if (\is_string($key) && (\is_scalar($val) || $val === null)) {
-                    $row[$key] = $val;
-                }
-            }
-
-            if ($row === []) {
+            if ($row === null) {
                 $broken[] = ['line' => $lineNumber, 'raw' => $raw];
 
                 continue;
@@ -198,21 +186,14 @@ final class NdjsonStorage
             return null;
         }
 
-        $item = json_decode(trim($raw), true);
+        $text = trim($raw);
+        $item = json_decode($text, true);
 
         if (!\is_array($item)) {
             return null;
         }
 
-        $row = [];
-
-        foreach ($item as $key => $val) {
-            if (\is_string($key) && (\is_scalar($val) || $val === null)) {
-                $row[$key] = $val;
-            }
-        }
-
-        return $row === [] ? null : $row;
+        return self::record($item, $text);
     }
 
     /**
@@ -264,15 +245,9 @@ final class NdjsonStorage
                 continue;
             }
 
-            $row = [];
+            $row = self::record($item, $raw);
 
-            foreach ($item as $key => $val) {
-                if (\is_string($key) && (\is_scalar($val) || $val === null)) {
-                    $row[$key] = $val;
-                }
-            }
-
-            if ($row === []) {
+            if ($row === null) {
                 continue;
             }
 
@@ -308,8 +283,90 @@ final class NdjsonStorage
         string $fileName,
         array $offsets,
     ): array {
+        return array_values(iterator_to_array(
+            $this->recordsAt($tableName, $fileName, $offsets),
+        ));
+    }
+
+    /**
+     * The records of the file one at a time, keyed by line number — what
+     * read() returns, without holding them: a caller that counts or
+     * filters keeps only what it needs. With $lines (sorted line numbers)
+     * only those lines are decoded, and the walk stops after the last.
+     *
+     * @param null|array<int,int> $lines
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    public function records(
+        string $tableName,
+        string $fileName,
+        array | null $lines = null,
+    ): \Generator {
+        $path = $this->resolvePath($tableName, $fileName);
+        $this->ensureFileExists($path);
+        $wanted = $lines === null ? null : array_flip($lines);
+        $last = $lines === null ? null : max([-1, ...$lines]);
+        $handle = fopen($path, 'r');
+
+        if ($handle === false) {
+            throw new JsonProviderIoException(
+                JsonProviderErrorEn::FileNotReadable,
+                $path,
+            );
+        }
+
+        try {
+            $number = -1;
+
+            while (($raw = fgets($handle)) !== false) {
+                $number++;
+
+                if ($wanted !== null && !isset($wanted[$number])) {
+                    if ($number >= $last) {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                $text = rtrim($raw, "\n");
+
+                if ($text === '') {
+                    continue;
+                }
+
+                $row = self::record(json_decode($text, true), $text);
+
+                if ($row !== null) {
+                    yield $number => $row;
+                }
+
+                if ($number === $last) {
+                    break;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * The records at the given byte offsets one at a time, keyed by line
+     * number, in the order of $offsets; an offset that does not start a
+     * decodable record yields nothing.
+     *
+     * @param array<int,int> $offsets line number => byte offset
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    public function recordsAt(
+        string $tableName,
+        string $fileName,
+        array $offsets,
+    ): \Generator {
         if ($offsets === []) {
-            return [];
+            return;
         }
 
         $path = $this->resolvePath($tableName, $fileName);
@@ -323,40 +380,22 @@ final class NdjsonStorage
             );
         }
 
-        $records = [];
-
         try {
-            foreach ($offsets as $offset) {
+            foreach ($offsets as $line => $offset) {
                 fseek($handle, $offset);
                 $raw = fgets($handle);
-                $item = \is_string($raw)
-                    ? json_decode(rtrim($raw, "\n"), true)
-                    : null;
+                $text = \is_string($raw) ? rtrim($raw, "\n") : '';
+                $row = $text === ''
+                    ? null
+                    : self::record(json_decode($text, true), $text);
 
-                if (!\is_array($item)) {
-                    continue;
-                }
-
-                $row = [];
-
-                foreach ($item as $key => $val) {
-                    if (
-                        \is_string($key)
-                        && (\is_scalar($val) || $val === null)
-                    ) {
-                        $row[$key] = $val;
-                    }
-                }
-
-                if ($row !== []) {
-                    $records[] = $row;
+                if ($row !== null) {
+                    yield $line => $row;
                 }
             }
         } finally {
             fclose($handle);
         }
-
-        return $records;
     }
 
     /**
@@ -455,15 +494,7 @@ final class NdjsonStorage
             return null;
         }
 
-        $row = [];
-
-        foreach ($item as $key => $val) {
-            if (\is_string($key) && (\is_scalar($val) || $val === null)) {
-                $row[$key] = $val;
-            }
-        }
-
-        return $row === [] ? null : $row;
+        return self::record($item, $line);
     }
 
     /**
@@ -1111,6 +1142,56 @@ final class NdjsonStorage
                 $dir,
             );
         }
+    }
+
+    /**
+     * A decoded line as a record, or null when the line did not decode to
+     * an array or no field of it is usable. A line that is one flat JSON
+     * object whose keys stay strings is taken as decoded, without looking
+     * at its fields (flat()); any other has every field checked and only
+     * those with a string key and a scalar or null value kept.
+     *
+     * @return null|array<string,null|scalar>
+     */
+    private static function record(mixed $item, string $raw): array | null
+    {
+        if (!\is_array($item) || $item === []) {
+            return null;
+        }
+
+        if (self::flat($raw, $item)) {
+            return $item;
+        }
+
+        $row = [];
+
+        foreach ($item as $key => $val) {
+            if (\is_string($key) && (\is_scalar($val) || $val === null)) {
+                $row[$key] = $val;
+            }
+        }
+
+        return $row === [] ? null : $row;
+    }
+
+    /**
+     * Whether the text of a decoded line proves the record shape: it opens
+     * an object and holds no other "[" or "{", so no value nests, and no
+     * key starts with a digit, a minus or an escape, so no key decodes to
+     * an integer. A structural `{"` or `,"` precedes a key only — inside a
+     * string every quote is escaped. A line this cannot prove goes through
+     * the field check instead.
+     *
+     * @param array<mixed> $item the line decoded
+     *
+     * @phpstan-assert-if-true array<string,null|scalar> $item
+     */
+    private static function flat(string $raw, array $item): bool
+    {
+        return $item !== []
+            && ($raw[0] ?? '') === '{'
+            && strcspn($raw, '[{', 1) === \strlen($raw) - 1
+            && preg_match('/[{,]"[-\d\\\]/', $raw) === 0;
     }
 
     /**

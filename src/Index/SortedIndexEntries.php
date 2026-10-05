@@ -26,14 +26,16 @@ interface SortedIndexEntries
     public function end(): int;
 
     /**
-     * Position of the first entry whose key is >= $partKey.
+     * Position of the first entry whose key is >= $partKey, searching from
+     * $from — a position at or before that entry.
      */
-    public function lowerBound(string $partKey): int;
+    public function lowerBound(string $partKey, int $from = 0): int;
 
     /**
-     * Position past the run of entries whose key starts with $partKey.
+     * Position past the run of entries whose key starts with $partKey,
+     * searching from $from — a position at or before the end of the run.
      */
-    public function upperBound(string $partKey): int;
+    public function upperBound(string $partKey, int $from = 0): int;
 
     /**
      * Data line numbers of the entries in [$from, $to).
@@ -41,6 +43,13 @@ interface SortedIndexEntries
      * @return list<int>
      */
     public function lines(int $from, int $to): array;
+
+    /**
+     * The keys of the entries lines() returned, by data line.
+     *
+     * @return array<int,string>
+     */
+    public function keys(): array;
 
     /**
      * The key of the entry pointing at a data line that lines() returned,
