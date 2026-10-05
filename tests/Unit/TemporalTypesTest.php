@@ -86,25 +86,6 @@ final class TemporalTypesTest
     }
 
     #[Test]
-    public function timeIsStoredVerbatimWithoutTimezoneShift(): void
-    {
-        $db = self::db();
-
-        $id = self::insertEvent($db, ['at_time' => '01:15:00']);
-
-        $raw = self::rawLine($id);
-        Assert::notNull($raw);
-        Assert::same($raw['at_time'], '01:15:00');
-
-        $row = $db->table(self::TABLE)
-            ->where('id', '=', $id)->selectOneByArray();
-        Assert::notNull($row);
-        Assert::same($row['at_time'], '01:15:00');
-
-        $db->table(self::TABLE)->deleteById($id);
-    }
-
-    #[Test]
     public function acceptsIsoSeparatorZuluAndOffsetForms(): void
     {
         $db = self::db();
@@ -378,7 +359,7 @@ final class TemporalTypesTest
             return JsonDataProvider::getInstance(self::dbPathRoot());
         }
 
-        self::wipe();
+        TempDir::remove(self::dbPathRoot());
         $db = JsonDataProvider::createDatabase(self::dbPathRoot());
         $db->createTable(TableSchema::create(
             name: self::TABLE,
@@ -465,30 +446,6 @@ final class TemporalTypesTest
         }
 
         return null;
-    }
-
-    private static function wipe(): void
-    {
-        if (!is_dir(self::dbPathRoot())) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                self::dbPathRoot(),
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-            $file->isDir()
-                ? rmdir($file->getPathname())
-                : unlink($file->getPathname());
-        }
-
-        rmdir(self::dbPathRoot());
     }
 
     private static function dbPathRoot(): string

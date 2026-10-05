@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\JsonDataProvider;
-use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Relations\FkEngine;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
@@ -13,6 +12,7 @@ use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -211,12 +211,12 @@ final class LockPlanTest
      */
     private function plan(string $operation, string $table): array
     {
-        $engine = (new \ReflectionMethod(JsonDataProvider::class, 'fkEngine'))
-            ->invoke($this->db);
-        $registry = (new \ReflectionProperty(JsonDataProvider::class, 'schema'))
-            ->getValue($this->db);
+        $engine = EngineAccess::call(
+            EngineAccess::part($this->db, 'writer'),
+            'fkEngine',
+        );
+        $registry = EngineAccess::context($this->db)->schema;
         Assert::true($engine instanceof FkEngine);
-        Assert::true($registry instanceof SchemaRegistry);
         $schema = $registry->getTable($table);
 
         $plan = match ($operation) {

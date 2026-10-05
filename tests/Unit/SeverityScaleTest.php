@@ -41,7 +41,7 @@ final class SeverityScaleTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->logger = new SpyLogger();
@@ -77,7 +77,7 @@ final class SeverityScaleTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -357,33 +357,6 @@ final class SeverityScaleTest
         \assert(\is_array($meta) && \is_array($meta[$table]));
         $meta[$table]['lineCount'] = 'one';
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT));
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

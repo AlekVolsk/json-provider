@@ -55,7 +55,7 @@ final class BackupRestoreTest
             }
         }
 
-        $this->removeDir(self::adoptDirRoot());
+        TempDir::remove(self::adoptDirRoot());
     }
 
     #[Test]
@@ -652,33 +652,6 @@ final class BackupRestoreTest
         }
 
         return $members;
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     /**

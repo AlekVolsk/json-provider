@@ -1,6 +1,6 @@
 # Изменение схемы — reorder, migrate, индексы, unique, rename, drop
 
-Структуру уже существующей таблицы можно менять дальше: колонки — `migrateColumns`/`reorderColumns`/`renameColumn`, индексы — `addIndex`/`dropIndex`, unique-ограничения — `addUniqueConstraint`/`dropUniqueConstraint`, имя таблицы — `renameTable`, плюс несколько read-only-хелперов, чтобы посмотреть, что зарегистрировано.
+Структуру уже существующей таблицы можно менять дальше: колонки — `migrateColumns`/`reorderColumns`/`renameColumn`, индексы — `addIndex`/`dropIndex`, unique-ограничения — `addUniqueConstraint`/`dropUniqueConstraint`, имя таблицы — `renameTable`, плюс read-only-хелперы, чтобы посмотреть, что зарегистрировано, и сверить таблицу с желаемой схемой.
 
 Все DDL-операции выполняются под эксклюзивной блокировкой базы и затронутых таблиц и первым шагом перечитывают схему с диска — конкурентные изменения схемы из других процессов не теряются, а гонка одноимённого `createTable` честно завершается `TableAlreadyExists` у проигравшего.
 
@@ -159,4 +159,44 @@ Read-only-хелперы, чтобы посмотреть, что зарегис
 $db->hasTable('users');       // bool — зарегистрирована ли таблица?
 $db->tableNames();            // list<string> — имена всех зарегистрированных таблиц
 $db->columnNames('users');    // list<string> — колонки в порядке схемы (id первым)
+$db->getTableSchema('users'); // TableSchema — схема таблицы, как она объявлена
 ```
+
+`getTableSchema()` возвращает схему в том виде, в каком её принимает `createTable()`: колонки с типами, PK-индекс (`isPrimary`), пользовательские индексы, unique-ограничения и комментарии. Служебных индексов связей (`_fk_*`) в ней нет: их заводит `addRelation()`, а связи перечисляет `relations()`. Пользовательский индекс, который связь взяла опорой, — обычный объявленный индекс и в схеме остаётся. Таблица, созданная по прочитанной схеме и получившая те же связи, повторяет исходную. Счётчики, размеры файлов и другие сведения меты таблицы в схему не входят.
+
+## diffTable — сверка с желаемой схемой
+
+`diffTable()` сравнивает таблицу с желаемой `TableSchema` и возвращает отчёт `TableDiff`. Сам метод ничего не меняет и данных не читает — только схему.
+
+```php
+$diff = $db->diffTable(TableSchema::create(
+    name: 'users',
+    columns: ['email' => ColumnTypes::STRING, 'name' => ColumnTypes::STRING],
+    indexes: [new IndexSchema('idx_users_name', [
+        new IndexFieldSchema('name', SortDirectionEnum::ASC),
+    ])],
+    uniqueConstraints: [new UniqueConstraint('uq_users_email', ['email'])],
+));
+
+$diff->isEmpty();                  // bool — таблица уже такая
+$diff->addedColumns;               // имя => тип, в порядке желаемой схемы
+$diff->droppedColumns;             // имя => тип
+$diff->retypedColumns;             // имя => ['current' => тип, 'desired' => тип]
+$diff->columnOrderChanged;         // общие колонки стоят в другом порядке
+$diff->addedIndexes;               // list<IndexSchema>
+$diff->droppedIndexes;             // list<IndexSchema>
+$diff->changedIndexes;             // list<['current' => IndexSchema, 'desired' => IndexSchema]>
+$diff->addedUniqueConstraints;     // list<UniqueConstraint>
+$diff->droppedUniqueConstraints;   // list<UniqueConstraint>
+$diff->changedUniqueConstraints;   // list<['current' => …, 'desired' => …]>
+```
+
+Как сопоставляется:
+
+- колонки — по имени; смена типа, в том числе перевод в nullable, попадает в `retypedColumns`;
+- индексы — по имени без учёта регистра, как их файлы; индекс изменён, если отличается имя, поля или их направления;
+- unique-ограничения — по имени; ограничение изменено, если отличается набор полей: порядок полей на смысл ограничения не влияет;
+- PK-индекс и служебные индексы связей не сравниваются ни с одной стороны — ими владеет движок;
+- комментарии не сравниваются.
+
+Отчёт сам не применяется: приведение — цепочка изменений схемы, каждое под своей блокировкой и со своей записью, и атомарной она не будет. Порядок, при котором ни один шаг не упрётся в проверки: снять удаляемые и изменённые индексы и ограничения (`dropIndex`, `dropUniqueConstraint`), привести колонки (`migrateColumns` — добавленные, удалённые и порядок), затем добавить новые и изменённые индексы и ограничения (`addIndex`, `addUniqueConstraint`). Смену типа `migrateColumns` не выполняет — см. [рецепт](#смена-типа-колонки--рецепт). По имени не отличить переименованный индекс от удалённого и добавленного другого: переименование придёт удалением и добавлением. Сверку уместно делать при развёртывании, а не на каждом запросе.

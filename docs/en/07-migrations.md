@@ -115,7 +115,7 @@ foreach ((new InitialMigration())->tables() as $schema) {
 }
 ```
 
-Later migrations rarely just create tables. To evolve or remove an existing one — add/drop/reorder columns, or drop the table outright — see [Schema mutations](12-schema-mutations.md); `hasTable()` / `columnNames()` help keep such steps idempotent.
+Later migrations rarely just create tables. To evolve or remove an existing one — add/drop/reorder columns, or drop the table outright — see [Schema mutations](12-schema-mutations.md); `hasTable()` / `columnNames()` help keep such steps idempotent, and `diffTable()` shows what separates a table from a desired schema.
 
 ## Versioned migrations
 

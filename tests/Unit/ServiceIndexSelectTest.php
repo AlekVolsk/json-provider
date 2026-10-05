@@ -7,12 +7,12 @@ namespace AV\JsonProvider\Tests\Unit;
 use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\JsonTable;
-use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -213,11 +213,7 @@ final class ServiceIndexSelectTest
      */
     private function serviceIndexes(): array
     {
-        $registry = (new \ReflectionProperty(
-            JsonDataProvider::class,
-            'schema',
-        ))->getValue($this->db);
-        Assert::true($registry instanceof SchemaRegistry);
+        $registry = EngineAccess::context($this->db)->schema;
         $registry->reload();
         $names = [];
 

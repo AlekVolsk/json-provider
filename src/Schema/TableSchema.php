@@ -183,6 +183,27 @@ final class TableSchema
     }
 
     /**
+     * The schema as declared: the same without the service indexes of
+     * relations, which the engine provisions with them.
+     *
+     * @internal
+     */
+    public function withoutServiceIndexes(): self
+    {
+        return new self(
+            name: $this->name,
+            uniqueConstraints: $this->uniqueConstraints,
+            columns: $this->columns,
+            indexes: array_values(array_filter(
+                $this->indexes,
+                static fn (IndexSchema $index): bool => !$index->isService,
+            )),
+            tableComment: $this->tableComment,
+            columnComment: $this->columnComment,
+        );
+    }
+
+    /**
      * Returns the physical NDJSON file name for this table inside its
      * subdirectory. Format: `<table-name>.ndjson`. The subdirectory is added by
      * NdjsonStorage.

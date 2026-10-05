@@ -6,6 +6,7 @@ namespace AV\JsonProvider\Tests\Unit;
 
 use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Storage\TableLockManager;
+use AV\JsonProvider\Tests\Support\ChildPhp;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Expect;
@@ -26,14 +27,14 @@ final class LockManagerTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::tmpDirRoot());
+        TempDir::remove(self::tmpDirRoot());
         mkdir(self::tmpDirRoot(), 0755, true);
     }
 
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::tmpDirRoot());
+        TempDir::remove(self::tmpDirRoot());
     }
 
     #[Test]
@@ -787,7 +788,7 @@ final class LockManagerTest
             echo "done\n";
             PHP;
 
-        $child = $this->spawnPhp($code, [
+        $child = ChildPhp::spawn($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
             self::tmpDirRoot(),
         ]);
@@ -808,7 +809,7 @@ final class LockManagerTest
             $this->releaseHolder($holder);
             $holder = null;
 
-            $stdout = $this->drainAndClose($child);
+            $stdout = ChildPhp::drain($child);
             Assert::string($stdout)->contains('inside');
             Assert::string($stdout)->contains('done');
         } finally {
@@ -927,7 +928,7 @@ final class LockManagerTest
             ['users' => 'ex'],
             null,
             function () use ($manager, $code): void {
-                $child = $this->spawnPhp($code, [
+                $child = ChildPhp::spawn($code, [
                     \dirname(__DIR__, 2) . '/vendor/autoload.php',
                     self::tmpDirRoot(),
                 ]);
@@ -949,7 +950,7 @@ final class LockManagerTest
         $this->pendingChild = null;
         stream_set_blocking($child['pipes'][1], true);
 
-        $stdout = $this->drainAndClose($child);
+        $stdout = ChildPhp::drain($child);
         Assert::string($stdout)->contains('entered');
         Assert::string($stdout)->contains('done');
     }
@@ -1031,7 +1032,7 @@ final class LockManagerTest
         $readers = [];
 
         for ($i = 0; $i < 6; $i++) {
-            $readers[] = $this->spawnPhp($code, [
+            $readers[] = ChildPhp::spawn($code, [
                 \dirname(__DIR__, 2) . '/vendor/autoload.php',
                 self::tmpDirRoot(),
                 'busy',
@@ -1138,7 +1139,7 @@ final class LockManagerTest
             fgets(STDIN);
             PHP;
 
-        $child = $this->spawnPhp($code, [$path, $mode]);
+        $child = ChildPhp::spawn($code, [$path, $mode]);
         $line = fgets($child['pipes'][1]);
 
         if ($line === false || !str_contains($line, 'locked')) {
@@ -1175,7 +1176,7 @@ final class LockManagerTest
             );
             PHP;
 
-        $child = $this->spawnPhp($code, [
+        $child = ChildPhp::spawn($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
             self::tmpDirRoot(),
             $table,
@@ -1192,26 +1193,6 @@ final class LockManagerTest
     }
 
     /**
-     * @param list<string> $args
-     *
-     * @return array{proc: resource, pipes: array<int,resource>}
-     */
-    private function spawnPhp(string $code, array $args): array
-    {
-        $cmd = array_merge([PHP_BINARY, '-r', $code, '--'], $args);
-        $pipes = [];
-        $proc = proc_open($cmd, [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ], $pipes);
-
-        \assert(\is_resource($proc));
-
-        return ['proc' => $proc, 'pipes' => $pipes];
-    }
-
-    /**
      * @param array{proc: resource, pipes: array<int,resource>} $child
      */
     private function releaseHolder(array $child): void
@@ -1220,49 +1201,6 @@ final class LockManagerTest
         fclose($child['pipes'][1]);
         fclose($child['pipes'][2]);
         proc_close($child['proc']);
-    }
-
-    /**
-     * Closes stdin (letting the child finish) and returns its full stdout.
-     *
-     * @param array{proc: resource, pipes: array<int,resource>} $child
-     */
-    private function drainAndClose(array $child): string
-    {
-        fclose($child['pipes'][0]);
-        $stdout = stream_get_contents($child['pipes'][1]);
-        fclose($child['pipes'][1]);
-        fclose($child['pipes'][2]);
-        proc_close($child['proc']);
-
-        return $stdout === false ? '' : $stdout;
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function tmpDirRoot(): string

@@ -31,7 +31,7 @@ final class CacheFaultToleranceTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->logger = new SpyLogger();
@@ -49,7 +49,7 @@ final class CacheFaultToleranceTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -118,33 +118,6 @@ final class CacheFaultToleranceTest
             1,
             'flushDb must degrade silently and log once',
         );
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

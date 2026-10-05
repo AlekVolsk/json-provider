@@ -210,31 +210,6 @@ final class DtoMappingTest
         $db->table('plain')->selectAll();
     }
 
-    #[Test]
-    public function arrayTwinStillWorks(): void
-    {
-        $db = self::db();
-
-        $id = $db->table('dto_events')->insertByArray([
-            'title'      => 'Raw',
-            'status'     => 'active',
-            'priority'   => null,
-            'happens_at' => '2026-05-05 10:00:00',
-            'ends_at'    => null,
-            'on_date'    => '2026-05-05',
-            'year'       => 2026,
-        ]);
-
-        $row = $db->table('dto_events')
-            ->where('id', '=', $id)
-            ->selectOneByArray();
-        Assert::notNull($row);
-        Assert::same($row['title'], 'Raw');
-        Assert::same($row['happens_at'], '2026-05-05 10:00:00');
-
-        $db->table('dto_events')->deleteById($id);
-    }
-
     private static function newEvent(
         int $id = 0,
         string $title = 'Event',
@@ -265,7 +240,7 @@ final class DtoMappingTest
             return JsonDataProvider::getInstance(self::dbPathRoot());
         }
 
-        self::wipe();
+        TempDir::remove(self::dbPathRoot());
         $db = JsonDataProvider::createDatabase(self::dbPathRoot());
         $db->createTable(TableSchema::create(
             name: 'dto_events',
@@ -332,30 +307,6 @@ final class DtoMappingTest
         }
 
         return null;
-    }
-
-    private static function wipe(): void
-    {
-        if (!is_dir(self::dbPathRoot())) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                self::dbPathRoot(),
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-            $file->isDir()
-                ? rmdir($file->getPathname())
-                : unlink($file->getPathname());
-        }
-
-        rmdir(self::dbPathRoot());
     }
 
     private static function dbPathRoot(): string

@@ -19,13 +19,12 @@ use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
 /**
- * Tests for the database-level relational integrity checks
- * (bi-fk-unique-integrity-checks): stored FK values without a matching
- * parent key are reported as fk_orphan (contextual severity), unique
- * constraint violations in the stored data as unique_duplicate; both are
- * report-only — repair never rewrites data to make them disappear.
- * Declaration-level breakage reachable only through hand-edits (missing
- * table or column, base type mismatch) is reported instead of silently
+ * Tests for the database-level relational integrity checks: stored FK values
+ * without a matching parent key are reported as fk_orphan (contextual
+ * severity), unique constraint violations in the stored data as
+ * unique_duplicate; both are report-only — repair never rewrites data to make
+ * them disappear. Declaration-level breakage reachable only through hand-edits
+ * (missing table or column, base type mismatch) is reported instead of silently
  * skipping the relation.
  */
 final class FkUniqueIntegrityTest
@@ -37,7 +36,7 @@ final class FkUniqueIntegrityTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -66,7 +65,7 @@ final class FkUniqueIntegrityTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -296,33 +295,6 @@ final class FkUniqueIntegrityTest
             $path,
             json_encode($mutate($schema), JSON_PRETTY_PRINT),
         );
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

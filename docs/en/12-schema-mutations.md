@@ -1,6 +1,6 @@
 # Schema mutations — reorder, migrate, indexes, unique, rename, drop
 
-Once a table exists its structure can still evolve: columns via `migrateColumns`/`reorderColumns`/`renameColumn`, indexes via `addIndex`/`dropIndex`, unique constraints via `addUniqueConstraint`/`dropUniqueConstraint`, the table name via `renameTable`, plus a few read-only helpers to inspect what is registered.
+Once a table exists its structure can still evolve: columns via `migrateColumns`/`reorderColumns`/`renameColumn`, indexes via `addIndex`/`dropIndex`, unique constraints via `addUniqueConstraint`/`dropUniqueConstraint`, the table name via `renameTable`, plus read-only helpers to inspect what is registered and to check a table against a desired schema.
 
 All DDL operations run under exclusive locks on the database and the affected tables, and re-read the schema from disk as their first step — concurrent schema changes from other processes are never lost, and a race of same-name `createTable` calls honestly ends with `TableAlreadyExists` for the loser.
 
@@ -159,4 +159,44 @@ Read-only helpers to see what is registered — handy when writing idempotent mi
 $db->hasTable('users');       // bool — is the table registered?
 $db->tableNames();            // list<string> — all registered table names
 $db->columnNames('users');    // list<string> — columns in schema order (id first)
+$db->getTableSchema('users'); // TableSchema — the table's schema as declared
 ```
+
+`getTableSchema()` returns the schema in the form `createTable()` takes: the columns with their types, the PK index (`isPrimary`), user indexes, unique constraints and comments. The service indexes of relations (`_fk_*`) are not in it: `addRelation()` provisions them, and `relations()` lists the relations. A user index a relation took as its backing is an ordinary declared index and stays in the schema. A table created from the schema read back and given the same relations repeats the original. Counters, file sizes and the rest of the table's meta are not part of the schema.
+
+## diffTable — checking against a desired schema
+
+`diffTable()` compares a table with a desired `TableSchema` and returns a `TableDiff` report. The method itself changes nothing and reads no data — only the schema.
+
+```php
+$diff = $db->diffTable(TableSchema::create(
+    name: 'users',
+    columns: ['email' => ColumnTypes::STRING, 'name' => ColumnTypes::STRING],
+    indexes: [new IndexSchema('idx_users_name', [
+        new IndexFieldSchema('name', SortDirectionEnum::ASC),
+    ])],
+    uniqueConstraints: [new UniqueConstraint('uq_users_email', ['email'])],
+));
+
+$diff->isEmpty();                  // bool — the table already matches
+$diff->addedColumns;               // name => type, in the desired order
+$diff->droppedColumns;             // name => type
+$diff->retypedColumns;             // name => ['current' => type, 'desired' => type]
+$diff->columnOrderChanged;         // the columns both have stand in another order
+$diff->addedIndexes;               // list<IndexSchema>
+$diff->droppedIndexes;             // list<IndexSchema>
+$diff->changedIndexes;             // list<['current' => IndexSchema, 'desired' => IndexSchema]>
+$diff->addedUniqueConstraints;     // list<UniqueConstraint>
+$diff->droppedUniqueConstraints;   // list<UniqueConstraint>
+$diff->changedUniqueConstraints;   // list<['current' => …, 'desired' => …]>
+```
+
+How things are matched:
+
+- columns by name; a type change, a switch to nullable included, lands in `retypedColumns`;
+- indexes by name regardless of letter case, as their files are; an index is changed when its name, fields or their directions differ;
+- unique constraints by name; a constraint is changed when its set of fields differs: the order of the fields does not change what it constrains;
+- the PK index and the service indexes of relations are compared on neither side — the engine owns them;
+- comments are not compared.
+
+The report is not applied by itself: bringing a table in line is a chain of schema changes, each under its own lock and with its own write, and the chain is not atomic. An order in which no step trips a guard: drop the dropped and changed indexes and constraints (`dropIndex`, `dropUniqueConstraint`), align the columns (`migrateColumns` — the added, the dropped and the order), then add the new and changed indexes and constraints (`addIndex`, `addUniqueConstraint`). `migrateColumns` does not change types — see the [recipe](#changing-a-columns-type--recipe). A name cannot tell a renamed index from one dropped and another added: a rename comes as a drop and an add. Run the check at deploy time, not on every request.

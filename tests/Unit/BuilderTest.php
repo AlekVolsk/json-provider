@@ -126,7 +126,13 @@ final class BuilderTest
             ->where('in_stock', '=', true)
             ->count();
 
-        Assert::int($countActive)->lessThanOrEqual($countAll);
+        Assert::same(
+            $countActive,
+            $tbl->where('category_id', '=', 1)
+                ->where('in_stock', '=', true)
+                ->count(),
+        );
+        Assert::int($countActive)->lessThan($countAll);
     }
 
     #[Test]

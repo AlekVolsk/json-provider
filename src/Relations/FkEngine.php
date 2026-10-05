@@ -903,14 +903,13 @@ final class FkEngine
 
     /**
      * Validates a cascade-on-update patch value against the child column
-     * through the same encoder as insert/update (dv-cascade-validation-
-     * point): TYPE_MISMATCH, NULL_NOT_ALLOWED, NON_FINITE_FLOAT and
-     * INVALID_UTF8 fire before anything is written. Temporal columns are
-     * the exception: the value is already the canonical stored UTC form
-     * produced when the root patch was encoded (the executable-edge check
-     * guarantees the base types match), and running it through the
-     * encoder again would treat it as local time and shift it a second
-     * time.
+     * through the same encoder as insert/update: TYPE_MISMATCH,
+     * NULL_NOT_ALLOWED, NON_FINITE_FLOAT and INVALID_UTF8 fire before anything
+     * is written. Temporal columns are the exception: the value is already the
+     * canonical stored UTC form produced when the root patch was encoded (the
+     * executable-edge check guarantees the base types match), and running it
+     * through the encoder again would treat it as local time and shift it a
+     * second time.
      */
     private function encodeCascadePatchValue(
         RelationSchema $relation,

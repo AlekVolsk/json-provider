@@ -22,9 +22,9 @@ use AV\JsonProvider\Query\SortDirectionEnum;
  *
  * Service indexes (isService=true) are engine-managed FK backing indexes:
  * they carry the reserved "_fk_" name prefix, are maintained by the
- * regular index write machinery, but are invisible to query planning
- * (resolveIndex skips them) and cannot be created or dropped through the
- * public index DDL — relation DDL owns their lifecycle.
+ * regular index write machinery and serve query planning like user
+ * indexes, but cannot be created or dropped through the public index
+ * DDL — relation DDL owns their lifecycle.
  */
 final class IndexSchema
 {

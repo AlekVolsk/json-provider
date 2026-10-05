@@ -15,6 +15,7 @@ use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Storage\StorageManifest;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -64,8 +65,11 @@ final class UniqueIndexCheckTest
     public function insertsMatchFullCheckOfTwin(): void
     {
         $db = $this->database();
-        (new \ReflectionProperty(JsonDataProvider::class, 'indexTailLimit'))
-            ->setValue($db, 16);
+        EngineAccess::set(
+            EngineAccess::part($db, 'store'),
+            'indexTailLimit',
+            16,
+        );
         mt_srand(20261005);
         $refused = 0;
 

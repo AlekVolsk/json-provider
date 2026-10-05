@@ -36,7 +36,7 @@ final class ImportRecordsTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -58,7 +58,7 @@ final class ImportRecordsTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -304,11 +304,6 @@ final class ImportRecordsTest
         \assert(\is_array($meta) && \is_array($meta[$table]));
 
         return $meta[$table];
-    }
-
-    private function removeDir(string $path): void
-    {
-        TempDir::remove($path);
     }
 
     private static function dbPathRoot(): string

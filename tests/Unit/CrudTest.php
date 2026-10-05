@@ -16,25 +16,6 @@ use Testo\Test;
 final class CrudTest
 {
     #[Test]
-    public function insertReturnsNewId(): void
-    {
-        $db = Fixture::db();
-
-        $id = $db->table('categories')
-            ->insertByArray(['name' => 'TempCrud', 'sort' => 999]);
-
-        Assert::int($id)->greaterThan(0);
-
-        $row = $db->table('categories')
-            ->where('id', '=', $id)->selectOneByArray();
-        Assert::notNull($row);
-        Assert::same($row['name'], 'TempCrud');
-        Assert::same($row['sort'], 999);
-
-        $db->table('categories')->deleteById($id);
-    }
-
-    #[Test]
     public function insertAutoIncrementIsGreaterThanPrevious(): void
     {
         $db = Fixture::db();

@@ -10,6 +10,7 @@ use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Tests\Support\CacheKeys;
+use AV\JsonProvider\Tests\Support\ChildPhp;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -36,7 +37,7 @@ final class ConcurrencyUniqueTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->cache = new InMemoryCache();
@@ -56,7 +57,7 @@ final class ConcurrencyUniqueTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -76,7 +77,7 @@ final class ConcurrencyUniqueTest
         $children = [];
 
         for ($i = 0; $i < 8; $i++) {
-            $children[] = $this->spawnPhp($code, [
+            $children[] = ChildPhp::spawn($code, [
                 \dirname(__DIR__, 2) . '/vendor/autoload.php',
                 $this->dbDir,
                 self::TABLE,
@@ -88,7 +89,7 @@ final class ConcurrencyUniqueTest
         $violations = 0;
 
         foreach ($children as $child) {
-            $out = $this->drainAndClose($child);
+            $out = ChildPhp::drain($child);
 
             if (str_starts_with($out, 'OK:')) {
                 $wins++;
@@ -161,14 +162,14 @@ final class ConcurrencyUniqueTest
             echo "done\n";
             PHP;
 
-        $child = $this->spawnPhp($code, [
+        $child = ChildPhp::spawn($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
             $this->dbDir,
             self::TABLE,
             $codeValue,
         ]);
 
-        $stdout = $this->drainAndClose($child);
+        $stdout = ChildPhp::drain($child);
         Assert::string($stdout)->contains('done');
     }
 
@@ -201,67 +202,6 @@ final class ConcurrencyUniqueTest
     {
         return $this->dbDir . '/' . self::TABLE . '/' . self::TABLE
             . '.ndjson';
-    }
-
-    /**
-     * @param list<string> $args
-     *
-     * @return array{proc: resource, pipes: array<int,resource>}
-     */
-    private function spawnPhp(string $code, array $args): array
-    {
-        $cmd = array_merge([PHP_BINARY, '-r', $code, '--'], $args);
-        $pipes = [];
-        $proc = proc_open($cmd, [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ], $pipes);
-
-        \assert(\is_resource($proc));
-
-        return ['proc' => $proc, 'pipes' => $pipes];
-    }
-
-    /**
-     * @param array{proc: resource, pipes: array<int,resource>} $child
-     */
-    private function drainAndClose(array $child): string
-    {
-        fclose($child['pipes'][0]);
-        $stdout = stream_get_contents($child['pipes'][1]);
-        fclose($child['pipes'][1]);
-        fclose($child['pipes'][2]);
-        proc_close($child['proc']);
-
-        return $stdout === false ? '' : $stdout;
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

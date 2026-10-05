@@ -9,6 +9,7 @@ JsonProvider/
     ├── JsonDataProvider.php       # singleton facade — public API entry point
     ├── JsonTable.php              # query builder
     ├── JsonFilter.php             # immutable conditions bag
+    ├── Engine/                    # internal parts of the engine behind the facade: reads, writes, schema changes, maintenance
     ├── Schema/                    # value objects: TableSchema, ColumnTypes, IndexSchema, ...
     ├── Storage/                   # low-level I/O: NdjsonStorage, JsonStorage, locks, StorageManifest, BrokenRecordPolicyEnum
     ├── Registry/                  # SchemaRegistry, MetaRegistry
@@ -26,4 +27,4 @@ JsonProvider/
         └── Format/                # TableFreshness — the table stamp; StorageStatus, MigrationReport
 ```
 
-You will normally interact only with `JsonDataProvider`, `JsonTable`, `JsonFilter`, the schema value objects, the DTO mapping attributes and the exception types. Storage, registry, the relations engine and the service classes are accessible but are not the day-to-day surface.
+You will normally interact only with `JsonDataProvider`, `JsonTable`, `JsonFilter`, the schema value objects, the DTO mapping attributes and the exception types. Storage, registry, the relations engine and the service classes are accessible but are not the day-to-day surface. The `Engine` classes are marked `@internal`: they are not public API, and their make-up and signatures change with no regard for compatibility.

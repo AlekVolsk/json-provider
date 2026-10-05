@@ -16,14 +16,12 @@ use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
 /**
- * Tests for the present-null emitter (bi-present-null-emitter) and the
- * typed back-fill of missing columns (dv-normalize-defaults +
- * bi-repairer-column-defaults): a present null in a non-nullable column
- * is a report-only warning that no rewrite ever masks with a default; a
- * MISSING column is back-filled with the type's zero value on every
- * normalization path (update rewrite, repair, restore) — never with a
- * blind null; ghost keys of raw stored lines never leak into query
- * results.
+ * Tests for the present-null finding and the typed back-fill of missing
+ * columns: a present null in a non-nullable column is a report-only warning
+ * that no rewrite ever masks with a default; a MISSING column is back-filled
+ * with the type's zero value on every normalization path (update rewrite,
+ * repair, restore) — never with a blind null; ghost keys of raw stored lines
+ * never leak into query results.
  */
 final class PresentNullDefaultsTest
 {
@@ -36,7 +34,7 @@ final class PresentNullDefaultsTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -57,7 +55,7 @@ final class PresentNullDefaultsTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -424,33 +422,6 @@ final class PresentNullDefaultsTest
         $lines = explode("\n", trim((string)file_get_contents($path)));
         $lines[$line] = (string)json_encode($row);
         file_put_contents($path, implode("\n", $lines) . "\n");
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

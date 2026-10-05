@@ -18,6 +18,7 @@ use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -340,11 +341,7 @@ final class CompositeFkBackingTest
 
     private function registry(): SchemaRegistry
     {
-        $registry = (new \ReflectionProperty(
-            JsonDataProvider::class,
-            'schema',
-        ))->getValue($this->db);
-        Assert::true($registry instanceof SchemaRegistry);
+        $registry = EngineAccess::context($this->db)->schema;
         $registry->reload();
 
         return $registry;

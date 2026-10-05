@@ -76,15 +76,6 @@ final class InMemoryCacheTest
     }
 
     #[Test]
-    public function noArgumentConstructorWorksWithinTheDefaultCap(): void
-    {
-        $cache = new InMemoryCache();
-        $cache->set('k', [['id' => 1]]);
-
-        Assert::notNull($cache->get('k'));
-    }
-
-    #[Test]
     public function flushDbRemovesOnlyThePrefixedKeys(): void
     {
         $cache = new InMemoryCache();

@@ -15,6 +15,7 @@ use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
 use AV\JsonProvider\Storage\JsonStorage;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -38,7 +39,7 @@ final class FkBackingIndexTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -56,7 +57,7 @@ final class FkBackingIndexTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -525,11 +526,7 @@ final class FkBackingIndexTest
         string $table,
         string $name,
     ): IndexSchema | null {
-        $registry = (new \ReflectionProperty(
-            JsonDataProvider::class,
-            'schema',
-        ))->getValue($this->db);
-        \assert($registry instanceof \AV\JsonProvider\Registry\SchemaRegistry);
+        $registry = EngineAccess::context($this->db)->schema;
         $registry->reload();
 
         foreach ($registry->getTable($table)->indexes as $index) {
@@ -574,39 +571,8 @@ final class FkBackingIndexTest
         $schema['relations'][] = $entry;
         $storage->write('information_schema.json', $schema);
 
-        $registry = (new \ReflectionProperty(
-            JsonDataProvider::class,
-            'schema',
-        ))->getValue($this->db);
-        \assert($registry instanceof \AV\JsonProvider\Registry\SchemaRegistry);
+        $registry = EngineAccess::context($this->db)->schema;
         $registry->reload();
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

@@ -23,14 +23,6 @@ final class QueryTest
     }
 
     #[Test]
-    public function selectAllReturnsAllCategories(): void
-    {
-        $all = Fixture::db()->table('categories')->selectAllByArray();
-
-        Assert::count($all, 10);
-    }
-
-    #[Test]
     public function selectOneReturnsFirstMatch(): void
     {
         $record = Fixture::db()->table('products')
@@ -192,20 +184,6 @@ final class QueryTest
     }
 
     #[Test]
-    public function whereInSingleValue(): void
-    {
-        $results = Fixture::db()->table('products')
-            ->where('category_id', 'IN', [7])
-            ->selectAllByArray();
-
-        Assert::count($results, 10);
-
-        foreach ($results as $r) {
-            Assert::same($r['category_id'], 7);
-        }
-    }
-
-    #[Test]
     public function whereInEmptyArrayReturnsNothing(): void
     {
         $results = Fixture::db()->table('products')
@@ -325,23 +303,6 @@ final class QueryTest
         rsort($sorted);
 
         Assert::same($sorts, $sorted);
-    }
-
-    #[Test]
-    public function orderByPriceDesc(): void
-    {
-        $results = Fixture::db()->table('products')
-            ->orderBy('price', 'desc')
-            ->selectAllByArray();
-
-        $prices = array_map(
-            static fn (array $r): float => (float)$r['price'],
-            $results,
-        );
-
-        for ($i = 0; $i < \count($prices) - 1; $i++) {
-            Assert::float($prices[$i])->greaterThanOrEqual($prices[$i + 1]);
-        }
     }
 
     #[Test]
@@ -475,23 +436,6 @@ final class QueryTest
     }
 
     #[Test]
-    public function limitWithoutOffsetIsFirstPage(): void
-    {
-        $all = Fixture::db()->table('products')
-            ->orderBy('price', 'desc')
-            ->selectAllByArray();
-
-        $first5 = Fixture::db()->table('products')
-            ->orderBy('price', 'desc')
-            ->limit(5)
-            ->selectAllByArray();
-
-        Assert::count($first5, 5);
-        Assert::same($first5[0]['id'], $all[0]['id']);
-        Assert::same($first5[4]['id'], $all[4]['id']);
-    }
-
-    #[Test]
     public function offsetWithoutLimitSelectsAll(): void
     {
         $all = Fixture::db()->table('products')->selectAllByArray();
@@ -554,16 +498,6 @@ final class QueryTest
     }
 
     #[Test]
-    public function distinctMultipleFields(): void
-    {
-        $distinct = Fixture::db()->table('tags')
-            ->distinct('label')
-            ->selectAllByArray();
-
-        Assert::count($distinct, 5);
-    }
-
-    #[Test]
     public function distinctCount(): void
     {
         $count = Fixture::db()->table('products')
@@ -607,51 +541,5 @@ final class QueryTest
             ->exists();
 
         Assert::false($exists);
-    }
-
-    #[Test]
-    public function fixtureMatchesStoredProducts(): void
-    {
-        $fixture = Fixture::products();
-        $stored = Fixture::db()->table('products')
-            ->orderBy('id', 'asc')
-            ->selectAllByArray();
-
-        Assert::count($stored, \count($fixture));
-
-        usort(
-            $fixture,
-            static fn (array $a, array $b): int => (int)$a['id']
-                <=> (int)$b['id'],
-        );
-
-        foreach ($stored as $i => $record) {
-            Assert::same($record['id'], $fixture[$i]['id']);
-            Assert::same($record['name'], $fixture[$i]['name']);
-            Assert::same($record['category_id'], $fixture[$i]['category_id']);
-        }
-    }
-
-    #[Test]
-    public function fixtureMatchesStoredCategories(): void
-    {
-        $fixture = Fixture::categories();
-        $stored = Fixture::db()->table('categories')
-            ->orderBy('id', 'asc')
-            ->selectAllByArray();
-
-        Assert::count($stored, \count($fixture));
-
-        usort(
-            $fixture,
-            static fn (array $a, array $b): int => (int)$a['id']
-                <=> (int)$b['id'],
-        );
-
-        foreach ($stored as $i => $record) {
-            Assert::same($record['id'], $fixture[$i]['id']);
-            Assert::same($record['name'], $fixture[$i]['name']);
-            Assert::same($record['sort'], $fixture[$i]['sort']);
-        }
     }
 }

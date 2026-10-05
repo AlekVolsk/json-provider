@@ -17,6 +17,7 @@ use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Schema\UniqueConstraint;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Tests\Support\Dto\LabelDto;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -604,22 +605,12 @@ final class TableManagementTest
 
     private function schemaRegistry(JsonDataProvider $db): SchemaRegistry
     {
-        $registry = (new \ReflectionProperty(JsonDataProvider::class, 'schema'))
-            ->getValue($db);
-        \assert($registry instanceof SchemaRegistry);
-
-        return $registry;
+        return EngineAccess::context($db)->schema;
     }
 
     private function dtoRegistry(JsonDataProvider $db): DtoRegistry
     {
-        $registry = (new \ReflectionProperty(
-            JsonDataProvider::class,
-            'dtoRegistry',
-        ))->getValue($db);
-        \assert($registry instanceof DtoRegistry);
-
-        return $registry;
+        return EngineAccess::context($db)->dtoRegistry;
     }
 
     private function rmrf(string $path): void

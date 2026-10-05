@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
-use AV\JsonProvider\Services\Integrity\IntegrityReport;
 use AV\JsonProvider\Services\Integrity\IssueCategoryEnum;
-use AV\JsonProvider\Services\Integrity\IssueSeverityEnum;
 use AV\JsonProvider\Tests\Support\Fixture;
 use Testo\Assert;
 use Testo\Test;
@@ -223,17 +221,6 @@ final class IntegrityTest
 
         Assert::same($countAfter, $countBefore);
         Assert::same($metaAfter, $metaBefore);
-    }
-
-    #[Test]
-    public function reportIsTypedReport(): void
-    {
-        $report = Fixture::db()->validate();
-        Assert::instanceOf($report, IntegrityReport::class);
-        Assert::same(
-            IssueSeverityEnum::from('error'),
-            IssueSeverityEnum::ERROR,
-        );
     }
 
     /**

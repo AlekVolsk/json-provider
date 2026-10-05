@@ -4,17 +4,18 @@ declare(strict_types=1);
 
 namespace AV\JsonProvider\Tests\Unit;
 
+use AV\JsonProvider\Engine\IndexReader;
 use AV\JsonProvider\Index\IndexSnapshot;
 use AV\JsonProvider\JsonDataProvider;
 use AV\JsonProvider\Query\FilterCondition;
 use AV\JsonProvider\Query\FilterOperatorEnum;
 use AV\JsonProvider\Query\OrderBy;
 use AV\JsonProvider\Query\SortDirectionEnum;
-use AV\JsonProvider\Registry\SchemaRegistry;
 use AV\JsonProvider\Schema\ColumnTypes;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -143,17 +144,15 @@ final class IndexSnapshotTest
 
     private function schema(): TableSchema
     {
-        $registry = (new \ReflectionProperty(JsonDataProvider::class, 'schema'))
-            ->getValue($this->db);
-        Assert::true($registry instanceof SchemaRegistry);
-
-        return $registry->getTable(self::TABLE);
+        return EngineAccess::context($this->db)->schema->getTable(self::TABLE);
     }
 
     private function call(string $method, mixed ...$args): mixed
     {
-        return (new \ReflectionMethod(JsonDataProvider::class, $method))
-            ->invoke($this->db, ...$args);
+        $reader = EngineAccess::part($this->db, 'indexReader');
+        Assert::true($reader instanceof IndexReader);
+
+        return EngineAccess::call($reader, $method, ...$args);
     }
 
     /**

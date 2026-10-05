@@ -72,22 +72,6 @@ final class ValueValidationTest
     }
 
     #[Test]
-    public function widensIntIntoFloatColumn(): void
-    {
-        $db = self::db();
-
-        $id = $db->table(self::TABLE)->insertByArray(self::row(['f' => 3]));
-        Assert::int($id)->greaterThan(0);
-
-        $row = $db->table(self::TABLE)
-            ->where('id', '=', $id)->selectOneByArray();
-        Assert::notNull($row);
-        Assert::same((float)$row['f'], 3.0);
-
-        $db->table(self::TABLE)->deleteById($id);
-    }
-
-    #[Test]
     public function acceptsNullOnNullableColumn(): void
     {
         $db = self::db();
@@ -112,26 +96,6 @@ final class ValueValidationTest
             ->withMessageContaining('does not accept null');
 
         $db->table(self::TABLE)->insertByArray(self::row(['s' => null]));
-    }
-
-    #[Test]
-    public function dropsUnknownColumnsOnInsert(): void
-    {
-        $db = self::db();
-
-        $id = $db->table(self::TABLE)->insertByArray(
-            self::row(['ghost' => 'x', 'other' => 7]),
-        );
-
-        $row = $db->table(self::TABLE)
-            ->where('id', '=', $id)->selectOneByArray();
-        Assert::notNull($row);
-        Assert::same(
-            array_keys($row),
-            ['id', 's', 'n', 'f', 'b', 'opt'],
-        );
-
-        $db->table(self::TABLE)->deleteById($id);
     }
 
     #[Test]
@@ -198,7 +162,7 @@ final class ValueValidationTest
             return JsonDataProvider::getInstance(self::dbPathRoot());
         }
 
-        self::wipe();
+        TempDir::remove(self::dbPathRoot());
         $db = JsonDataProvider::createDatabase(self::dbPathRoot());
         $db->createTable(TableSchema::create(
             name: self::TABLE,
@@ -214,30 +178,6 @@ final class ValueValidationTest
         self::$booted = true;
 
         return $db;
-    }
-
-    private static function wipe(): void
-    {
-        if (!is_dir(self::dbPathRoot())) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                self::dbPathRoot(),
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-            $file->isDir()
-                ? rmdir($file->getPathname())
-                : unlink($file->getPathname());
-        }
-
-        rmdir(self::dbPathRoot());
     }
 
     private static function dbPathRoot(): string

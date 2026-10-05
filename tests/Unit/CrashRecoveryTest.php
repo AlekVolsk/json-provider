@@ -11,6 +11,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\JsonStorage;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -32,7 +33,7 @@ final class CrashRecoveryTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->db = JsonDataProvider::createDatabase(
             self::dbPathRoot() . '/' . uniqid('db', true),
@@ -64,7 +65,7 @@ final class CrashRecoveryTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -297,17 +298,7 @@ final class CrashRecoveryTest
 
     private function dbPath(): string
     {
-        $reflection = new \ReflectionProperty(
-            JsonDataProvider::class,
-            'dbPath',
-        );
-        $path = $reflection->getValue($this->db);
-
-        if (!\is_string($path)) {
-            throw new \RuntimeException('dbPath must be a string');
-        }
-
-        return $path;
+        return EngineAccess::context($this->db)->dbPath;
     }
 
     private function dataPath(): string
@@ -382,33 +373,6 @@ final class CrashRecoveryTest
             array_column($viaIndex, 'id'),
             array_column($fullScan, 'id'),
         );
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

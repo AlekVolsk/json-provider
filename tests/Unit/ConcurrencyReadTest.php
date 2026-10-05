@@ -10,6 +10,7 @@ use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\NdjsonStorage;
+use AV\JsonProvider\Tests\Support\ChildPhp;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -31,7 +32,7 @@ final class ConcurrencyReadTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -63,7 +64,7 @@ final class ConcurrencyReadTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -103,7 +104,7 @@ final class ConcurrencyReadTest
             echo "done\n";
             PHP;
 
-        $child = $this->spawnPhp($code, [
+        $child = ChildPhp::spawn($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
             $this->dbDir,
         ]);
@@ -137,7 +138,7 @@ final class ConcurrencyReadTest
 
             Assert::int($reads)->greaterThan(0);
         } finally {
-            $stdout = $this->drainAndClose($child);
+            $stdout = ChildPhp::drain($child);
         }
 
         Assert::string($stdout)->contains('done');
@@ -179,7 +180,7 @@ final class ConcurrencyReadTest
             echo "done\n";
             PHP;
 
-        $child = $this->spawnPhp($code, [
+        $child = ChildPhp::spawn($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
             $this->dbDir,
         ]);
@@ -208,7 +209,7 @@ final class ConcurrencyReadTest
 
             Assert::int($reads)->greaterThan(0);
         } finally {
-            $stdout = $this->drainAndClose($child);
+            $stdout = ChildPhp::drain($child);
         }
 
         Assert::string($stdout)->contains('done');
@@ -232,7 +233,7 @@ final class ConcurrencyReadTest
             echo "done\n";
             PHP;
 
-        $child = $this->spawnPhp($code, [
+        $child = ChildPhp::spawn($code, [
             \dirname(__DIR__, 2) . '/vendor/autoload.php',
             $this->dbDir,
         ]);
@@ -253,7 +254,7 @@ final class ConcurrencyReadTest
 
             Assert::int($reads)->greaterThan(0);
         } finally {
-            $stdout = $this->drainAndClose($child);
+            $stdout = ChildPhp::drain($child);
         }
 
         Assert::string($stdout)->contains('done');
@@ -298,7 +299,7 @@ final class ConcurrencyReadTest
             fgets(STDIN);
             PHP;
 
-        $child = $this->spawnPhp($code, [$path]);
+        $child = ChildPhp::spawn($code, [$path]);
         $line = fgets($child['pipes'][1]);
 
         if ($line === false || !str_contains($line, 'locked')) {
@@ -311,26 +312,6 @@ final class ConcurrencyReadTest
     }
 
     /**
-     * @param list<string> $args
-     *
-     * @return array{proc: resource, pipes: array<int,resource>}
-     */
-    private function spawnPhp(string $code, array $args): array
-    {
-        $cmd = array_merge([PHP_BINARY, '-r', $code, '--'], $args);
-        $pipes = [];
-        $proc = proc_open($cmd, [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ], $pipes);
-
-        \assert(\is_resource($proc));
-
-        return ['proc' => $proc, 'pipes' => $pipes];
-    }
-
-    /**
      * @param array{proc: resource, pipes: array<int,resource>} $child
      */
     private function releaseHolder(array $child): void
@@ -339,47 +320,6 @@ final class ConcurrencyReadTest
         fclose($child['pipes'][1]);
         fclose($child['pipes'][2]);
         proc_close($child['proc']);
-    }
-
-    /**
-     * @param array{proc: resource, pipes: array<int,resource>} $child
-     */
-    private function drainAndClose(array $child): string
-    {
-        fclose($child['pipes'][0]);
-        $stdout = stream_get_contents($child['pipes'][1]);
-        fclose($child['pipes'][1]);
-        fclose($child['pipes'][2]);
-        proc_close($child['proc']);
-
-        return $stdout === false ? '' : $stdout;
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

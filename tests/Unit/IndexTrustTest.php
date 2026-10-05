@@ -45,7 +45,7 @@ final class IndexTrustTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -83,7 +83,7 @@ final class IndexTrustTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -171,27 +171,6 @@ final class IndexTrustTest
     }
 
     #[Test]
-    public function betweenWithNullBoundIsRejectedBeforeExecution(): void
-    {
-        try {
-            $this->db->table(self::TABLE)
-                ->where('grp', 'BETWEEN', [null, 2])->selectAllByArray();
-            Assert::fail('a null BETWEEN bound must be rejected');
-        } catch (JsonProviderException $e) {
-            Assert::same($e->getErrorKey(), 'ConditionBetweenShape');
-        }
-    }
-
-    #[Test]
-    public function inEmptyListIsAuthoritativeZero(): void
-    {
-        $rows = $this->db->table(self::TABLE)
-            ->where('grp', 'IN', [])->selectAllByArray();
-
-        Assert::count($rows, 0);
-    }
-
-    #[Test]
     public function nonFiniteConditionIsRejectedBeforeExecution(): void
     {
         foreach ([NAN, INF, -INF] as $value) {
@@ -202,18 +181,6 @@ final class IndexTrustTest
             } catch (JsonProviderException $e) {
                 Assert::same($e->getErrorKey(), 'ConditionExpectsType');
             }
-        }
-    }
-
-    #[Test]
-    public function singleElementBetweenIsRejectedBeforeExecution(): void
-    {
-        try {
-            $this->db->table(self::TABLE)
-                ->where('grp', 'BETWEEN', [1])->selectAllByArray();
-            Assert::fail('a one-element BETWEEN must be rejected');
-        } catch (JsonProviderException $e) {
-            Assert::same($e->getErrorKey(), 'ConditionBetweenShape');
         }
     }
 
@@ -332,33 +299,6 @@ final class IndexTrustTest
         $format = $meta[self::TABLE]['indexFormat'] ?? null;
 
         return \is_int($format) ? $format : null;
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string

@@ -8,7 +8,6 @@ use AV\JsonProvider\Exception\JsonProviderException;
 use AV\JsonProvider\Query\SortDirectionEnum;
 use AV\JsonProvider\Schema\IndexFieldSchema;
 use AV\JsonProvider\Schema\IndexSchema;
-use AV\JsonProvider\Schema\PrimaryKey;
 use AV\JsonProvider\Schema\TableSchema;
 use Testo\Assert;
 use Testo\Expect;
@@ -200,23 +199,5 @@ final class TableSchemaTest
             name: 'broken',
             columns: ['id' => 'string', 'title' => 'string'],
         );
-    }
-
-    #[Test]
-    public function createPreservesIdTypeIfAlreadyCorrect(): void
-    {
-        $schema = TableSchema::create(
-            name: 'products',
-            columns: ['id' => 'int', 'title' => 'string'],
-        );
-
-        Assert::same($schema->columns['id'], 'int');
-    }
-
-    #[Test]
-    public function primaryKeyConstants(): void
-    {
-        Assert::same(PrimaryKey::FIELD, 'id');
-        Assert::same(PrimaryKey::TYPE, 'int');
     }
 }

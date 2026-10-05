@@ -62,6 +62,8 @@ final class StorageFormatTest
         'getColumnComment',
         'getColumnComments',
         'describeTable',
+        'getTableSchema',
+        'diffTable',
         'relations',
         'validateTable',
         'validate',

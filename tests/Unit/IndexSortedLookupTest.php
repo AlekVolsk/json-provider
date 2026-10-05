@@ -13,6 +13,7 @@ use AV\JsonProvider\Schema\IndexSchema;
 use AV\JsonProvider\Schema\TableSchema;
 use AV\JsonProvider\Storage\StorageManifest;
 use AV\JsonProvider\Tests\Support\CompatFixture;
+use AV\JsonProvider\Tests\Support\EngineAccess;
 use AV\JsonProvider\Tests\Support\EngineProcess;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
@@ -212,8 +213,11 @@ final class IndexSortedLookupTest
     public function longTailIsMergedIntoTheHead(): void
     {
         $db = $this->numbers(10);
-        (new \ReflectionProperty(JsonDataProvider::class, 'indexTailLimit'))
-            ->setValue($db, 3);
+        EngineAccess::set(
+            EngineAccess::part($db, 'store'),
+            'indexTailLimit',
+            3,
+        );
 
         for ($n = 100; $n < 103; $n++) {
             $db->insert(self::TABLE, ['n' => $n]);

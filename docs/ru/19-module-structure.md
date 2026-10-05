@@ -9,6 +9,7 @@ JsonProvider/
     ├── JsonDataProvider.php       # синглтон-фасад — точка входа в публичный API
     ├── JsonTable.php              # билдер запросов
     ├── JsonFilter.php             # иммутабельный набор условий
+    ├── Engine/                    # внутренние части движка за фасадом: чтение, запись, изменения схемы, обслуживание
     ├── Schema/                    # value-объекты: TableSchema, ColumnTypes, IndexSchema, ...
     ├── Storage/                   # низкоуровневый I/O: NdjsonStorage, JsonStorage, локи, StorageManifest, BrokenRecordPolicyEnum
     ├── Registry/                  # SchemaRegistry, MetaRegistry
@@ -26,4 +27,4 @@ JsonProvider/
         └── Format/                # TableFreshness — штамп таблицы; StorageStatus, MigrationReport
 ```
 
-В обычной работе вы взаимодействуете только с `JsonDataProvider`, `JsonTable`, `JsonFilter`, value-объектами схемы, атрибутами DTO-отображения и типами исключений. Storage, registry, движок связей и сервисные классы доступны, но не являются повседневной поверхностью.
+В обычной работе вы взаимодействуете только с `JsonDataProvider`, `JsonTable`, `JsonFilter`, value-объектами схемы, атрибутами DTO-отображения и типами исключений. Storage, registry, движок связей и сервисные классы доступны, но не являются повседневной поверхностью. Классы `Engine` помечены `@internal`: это не публичный API, их состав и сигнатуры меняются без оглядки на совместимость.

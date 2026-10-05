@@ -9,6 +9,7 @@ use AV\JsonProvider\Schema\ForeignKeyActionEnum;
 use AV\JsonProvider\Schema\RelationSchema;
 use AV\JsonProvider\Schema\RelationTypeEnum;
 use AV\JsonProvider\Schema\TableSchema;
+use AV\JsonProvider\Tests\Support\ChildPhp;
 use AV\JsonProvider\Tests\Support\TempDir;
 use Testo\Assert;
 use Testo\Lifecycle\AfterTest;
@@ -16,8 +17,7 @@ use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
 /**
- * Two-process tests for the backup/restore locking contract
- * (bi-backup-consistent-snapshot, bi-restore-counters-and-locks):
+ * Two-process tests for the backup/restore locking contract:
  *
  *  - export runs under the database EX lock, so a multi-table FK cascade
  *    in another process can never be captured half-applied — an archive
@@ -35,7 +35,7 @@ final class BackupConcurrencyTest
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
 
         $this->dbDir = self::dbPathRoot() . '/' . uniqid('db', true);
         $this->db = JsonDataProvider::createDatabase($this->dbDir);
@@ -65,7 +65,7 @@ final class BackupConcurrencyTest
     #[AfterTest]
     public function tearDown(): void
     {
-        $this->removeDir(self::dbPathRoot());
+        TempDir::remove(self::dbPathRoot());
     }
 
     #[Test]
@@ -92,7 +92,7 @@ final class BackupConcurrencyTest
             echo "done\n";
             PHP;
 
-        $child = $this->spawnPhp($writerCode, [
+        $child = ChildPhp::spawnReady($writerCode, [
             \dirname(__DIR__, 2),
             $this->dbDir,
         ]);
@@ -106,7 +106,7 @@ final class BackupConcurrencyTest
             usleep(20_000);
         }
 
-        $stdout = $this->drainAndClose($child);
+        $stdout = ChildPhp::drain($child);
         Assert::string($stdout)->contains('done');
 
         foreach ($archives as $archive) {
@@ -156,7 +156,7 @@ final class BackupConcurrencyTest
             echo "inserted:" . $ok . "\n";
             PHP;
 
-        $child = $this->spawnPhp($writerCode, [
+        $child = ChildPhp::spawnReady($writerCode, [
             \dirname(__DIR__, 2),
             $this->dbDir,
         ]);
@@ -164,7 +164,7 @@ final class BackupConcurrencyTest
         usleep(15_000);
         $this->db->restore($archive);
 
-        $stdout = $this->drainAndClose($child);
+        $stdout = ChildPhp::drain($child);
         Assert::string($stdout)->contains('inserted:30');
 
         $report = $this->db->validate();
@@ -223,70 +223,6 @@ final class BackupConcurrencyTest
         }
 
         return $values;
-    }
-
-    /**
-     * @param list<string> $args
-     *
-     * @return array{proc: resource, pipes: array<int,resource>}
-     */
-    private function spawnPhp(string $code, array $args): array
-    {
-        $cmd = array_merge([PHP_BINARY, '-r', $code, '--'], $args);
-        $pipes = [];
-        $proc = proc_open($cmd, [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ], $pipes);
-
-        \assert(\is_resource($proc));
-
-        $ready = fgets($pipes[1]);
-        \assert(\is_string($ready) && trim($ready) === 'ready');
-
-        return ['proc' => $proc, 'pipes' => $pipes];
-    }
-
-    /**
-     * @param array{proc: resource, pipes: array<int,resource>} $child
-     */
-    private function drainAndClose(array $child): string
-    {
-        fclose($child['pipes'][0]);
-        $stdout = stream_get_contents($child['pipes'][1]);
-        fclose($child['pipes'][1]);
-        fclose($child['pipes'][2]);
-        proc_close($child['proc']);
-
-        return $stdout === false ? '' : $stdout;
-    }
-
-    private function removeDir(string $path): void
-    {
-        if (!is_dir($path)) {
-            return;
-        }
-
-        $files = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $path,
-                \FilesystemIterator::SKIP_DOTS,
-            ),
-            \RecursiveIteratorIterator::CHILD_FIRST,
-        );
-
-        foreach ($files as $file) {
-            \assert($file instanceof \SplFileInfo);
-
-            if ($file->isDir()) {
-                rmdir($file->getPathname());
-            } else {
-                unlink($file->getPathname());
-            }
-        }
-
-        rmdir($path);
     }
 
     private static function dbPathRoot(): string
