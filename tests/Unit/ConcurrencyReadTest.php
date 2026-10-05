@@ -143,6 +143,77 @@ final class ConcurrencyReadTest
         Assert::string($stdout)->contains('done');
     }
 
+    /**
+     * An index read takes the index and the data file of one version and
+     * reads them after releasing the table lock. While a writer replaces
+     * the table with versions that move the rows the read finds — a
+     * different number of other rows before them each time — every select
+     * and count() sees one version: ten rows of one seq, and never an
+     * index entry pointing into another version.
+     */
+    #[Test]
+    public function indexedReadsKeepOneSnapshotDuringRewrites(): void
+    {
+        $code = <<<'PHP'
+            require $argv[1];
+            $db = \AV\JsonProvider\JsonDataProvider::getInstance($argv[2]);
+            $version = static function (int $v): array {
+                $rows = [];
+                for ($i = 0; $i < $v % 7; $i++) {
+                    $rows[] = ['id' => \count($rows) + 1, 'grp' => 'b',
+                        'seq' => $i];
+                }
+                for ($i = 0; $i < 10; $i++) {
+                    $rows[] = ['id' => \count($rows) + 1, 'grp' => 'a',
+                        'seq' => $v];
+                }
+                return $rows;
+            };
+            $db->importRecords('events', $version(100));
+            echo "ready\n";
+            fflush(STDOUT);
+            $deadline = microtime(true) + 3.0;
+            for ($v = 101; microtime(true) < $deadline; $v++) {
+                $db->importRecords('events', $version($v));
+            }
+            echo "done\n";
+            PHP;
+
+        $child = $this->spawnPhp($code, [
+            \dirname(__DIR__, 2) . '/vendor/autoload.php',
+            $this->dbDir,
+        ]);
+
+        $ready = fgets($child['pipes'][1]);
+        Assert::string((string)$ready)->contains('ready');
+
+        try {
+            $reads = 0;
+            $deadline = microtime(true) + 2.5;
+
+            while (microtime(true) < $deadline) {
+                $rows = $this->db->table('events')
+                    ->where('grp', '=', 'a')
+                    ->selectAllByArray();
+
+                Assert::count($rows, 10);
+                Assert::same(array_unique(array_column($rows, 'grp')), ['a']);
+                Assert::count(array_unique(array_column($rows, 'seq')), 1);
+                Assert::same(
+                    $this->db->table('events')->where('grp', '=', 'a')->count(),
+                    10,
+                );
+                $reads++;
+            }
+
+            Assert::int($reads)->greaterThan(0);
+        } finally {
+            $stdout = $this->drainAndClose($child);
+        }
+
+        Assert::string($stdout)->contains('done');
+    }
+
     #[Test]
     public function fullScansSeeCompleteSetDuringUpdateChurn(): void
     {

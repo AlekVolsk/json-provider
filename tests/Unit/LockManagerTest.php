@@ -996,6 +996,76 @@ final class LockManagerTest
         Assert::same($result, 'resynced');
     }
 
+    /**
+     * A stream of readers holding the table shared in overlapping turns
+     * does not keep a writer out: once the writer waits, readers arriving
+     * after it queue behind it at the table's turnstile.
+     */
+    #[Test]
+    public function overlappingReadersDoNotStarveWriter(): void
+    {
+        $stop = self::tmpDirRoot() . '/stop-readers';
+        $code = <<<'PHP'
+            require $argv[1];
+            $manager = new \AV\JsonProvider\Storage\TableLockManager(
+                $argv[2],
+                20.0,
+            );
+            $started = false;
+            $until = microtime(true) + 15;
+            while (!is_file($argv[4]) && microtime(true) < $until) {
+                $manager->withLocks(
+                    [$argv[3] => 'sh'],
+                    null,
+                    static function () use (&$started): void {
+                        if (!$started) {
+                            echo "reading\n";
+                            fflush(STDOUT);
+                            $started = true;
+                        }
+                        usleep(4000);
+                    },
+                );
+            }
+            PHP;
+        $readers = [];
+
+        for ($i = 0; $i < 6; $i++) {
+            $readers[] = $this->spawnPhp($code, [
+                \dirname(__DIR__, 2) . '/vendor/autoload.php',
+                self::tmpDirRoot(),
+                'busy',
+                $stop,
+            ]);
+        }
+
+        try {
+            foreach ($readers as $reader) {
+                Assert::same(
+                    trim((string)fgets($reader['pipes'][1])),
+                    'reading',
+                );
+            }
+
+            $writer = new TableLockManager(self::tmpDirRoot(), 3.0);
+            $start = microtime(true);
+            $writer->withLocks(
+                ['busy' => 'ex'],
+                null,
+                static function (): void {
+                },
+            );
+
+            Assert::true(microtime(true) - $start < 3.0);
+        } finally {
+            touch($stop);
+
+            foreach ($readers as $reader) {
+                $this->releaseHolder($reader);
+            }
+        }
+    }
+
     private function tableLockPath(string $table): string
     {
         return self::tmpDirRoot() . '/.locks/table.' . $table . '.lock';

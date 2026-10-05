@@ -36,6 +36,14 @@ use AV\JsonProvider\Schema\IdentifierRules;
  * non-empty held table-set, an SH->EX upgrade, or a database lock on top of
  * held table locks all raise LOCK_ORDER_VIOLATION.
  *
+ * A database or table lock has a turnstile, gate.<lock file>: a writer (EX)
+ * holds it while it waits for its lock and releases it once the lock is
+ * taken; a reader (SH) takes and releases it before taking its own lock.
+ * Readers arriving while a writer waits queue behind it, so a stream of
+ * overlapping readers cannot keep a lock shared forever and starve the
+ * writer. The turnstile is taken at the place of its lock in the order and
+ * held only while waiting for that same lock, so the order stays total.
+ *
  * Acquisition is non-blocking flock in a usleep loop with a single deadline
  * per frame (default 30 s) -> LOCK_TIMEOUT. flock() failing for a reason
  * other than contention -> LOCK_FAILED. After a successful flock the handle
@@ -387,11 +395,27 @@ final class TableLockManager
             );
         }
 
-        $path = $this->lockPath(self::tableLockFile($tableName));
+        $lockFile = self::tableLockFile($tableName);
 
-        if (file_exists($path)) {
-            unlink($path);
+        foreach ([$lockFile, (string)self::gateFile($lockFile)] as $file) {
+            $path = $this->lockPath($file);
+
+            if (file_exists($path)) {
+                unlink($path);
+            }
         }
+    }
+
+    /**
+     * The turnstile in front of a database or table lock: a writer holds
+     * it exclusively while it waits for its lock, a reader passes through
+     * it before taking its own, so readers arriving after a waiting writer
+     * queue behind it instead of keeping the lock shared forever. Leaf
+     * sidecar locks are short and have none.
+     */
+    private static function gateFile(string $lockFile): string | null
+    {
+        return str_starts_with($lockFile, 'svc.') ? null : 'gate.' . $lockFile;
     }
 
     private static function tableLockFile(string $tableName): string
@@ -483,6 +507,53 @@ final class TableLockManager
      * file.
      */
     private function acquire(
+        string $lockFile,
+        string $mode,
+        LocaleInterface $timeout,
+        string | null $subject,
+        int $deadline,
+    ): void {
+        $gate = self::gateFile($lockFile);
+
+        if ($gate === null) {
+            $this->acquireFile($lockFile, $mode, $timeout, $subject, $deadline);
+
+            return;
+        }
+
+        if ($mode === self::MODE_EX) {
+            $this->acquireFile(
+                $gate,
+                self::MODE_EX,
+                $timeout,
+                $subject,
+                $deadline,
+            );
+
+            try {
+                $this->acquireFile(
+                    $lockFile,
+                    $mode,
+                    $timeout,
+                    $subject,
+                    $deadline,
+                );
+            } finally {
+                $this->release($gate);
+            }
+
+            return;
+        }
+
+        $this->acquireFile($gate, self::MODE_SH, $timeout, $subject, $deadline);
+        $this->release($gate);
+        $this->acquireFile($lockFile, $mode, $timeout, $subject, $deadline);
+    }
+
+    /**
+     * Takes one lock file: non-blocking flock retried until the deadline.
+     */
+    private function acquireFile(
         string $lockFile,
         string $mode,
         LocaleInterface $timeout,

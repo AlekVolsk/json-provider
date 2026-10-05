@@ -214,8 +214,33 @@ final class NdjsonStorage
             return [];
         }
 
-        $path = $this->resolvePath($tableName, $fileName);
-        $this->ensureFileExists($path);
+        $handle = $this->open($tableName, $fileName);
+
+        try {
+            return self::readLinesFrom($handle, PHP_INT_MAX, $lineNumbers);
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * readLines() from a data file the caller holds open, reading no
+     * further than $size bytes — the file as the caller saw it, whatever
+     * is appended after.
+     *
+     * @param resource       $handle
+     * @param array<int,int> $lineNumbers 0-based line numbers
+     *
+     * @return array<int,array<string,null|scalar>>
+     */
+    public static function readLinesFrom(
+        mixed $handle,
+        int $size,
+        array $lineNumbers,
+    ): array {
+        if ($lineNumbers === []) {
+            return [];
+        }
 
         $index = [];
 
@@ -225,40 +250,11 @@ final class NdjsonStorage
 
         $result = array_fill(0, \count($lineNumbers), null);
 
-        $file = new \SplFileObject($path, 'r');
-        $file->setFlags(\SplFileObject::DROP_NEW_LINE);
+        $rows = self::recordsFrom($handle, $size, array_keys($index));
 
-        $current = 0;
-
-        foreach ($file as $lineNum => $raw) {
-            if (!isset($index[$lineNum])) {
-                continue;
-            }
-
-            if (!\is_string($raw) || $raw === '') {
-                continue;
-            }
-
-            $item = json_decode($raw, true);
-
-            if (!\is_array($item)) {
-                continue;
-            }
-
-            $row = self::record($item, $raw);
-
-            if ($row === null) {
-                continue;
-            }
-
-            foreach ($index[$lineNum] as $pos) {
+        foreach ($rows as $line => $row) {
+            foreach ($index[$line] as $pos) {
                 $result[$pos] = $row;
-            }
-
-            $current++;
-
-            if ($current === \count($index)) {
-                break;
             }
         }
 
@@ -291,8 +287,8 @@ final class NdjsonStorage
     /**
      * The records of the file one at a time, keyed by line number — what
      * read() returns, without holding them: a caller that counts or
-     * filters keeps only what it needs. With $lines (sorted line numbers)
-     * only those lines are decoded, and the walk stops after the last.
+     * filters keeps only what it needs. With $lines (line numbers) only
+     * those lines are decoded, and the walk stops after the last.
      *
      * @param null|array<int,int> $lines
      *
@@ -303,51 +299,63 @@ final class NdjsonStorage
         string $fileName,
         array | null $lines = null,
     ): \Generator {
-        $path = $this->resolvePath($tableName, $fileName);
-        $this->ensureFileExists($path);
-        $wanted = $lines === null ? null : array_flip($lines);
-        $last = $lines === null ? null : max([-1, ...$lines]);
-        $handle = fopen($path, 'r');
-
-        if ($handle === false) {
-            throw new JsonProviderIoException(
-                JsonProviderErrorEn::FileNotReadable,
-                $path,
-            );
-        }
+        $handle = $this->open($tableName, $fileName);
 
         try {
-            $number = -1;
-
-            while (($raw = fgets($handle)) !== false) {
-                $number++;
-
-                if ($wanted !== null && !isset($wanted[$number])) {
-                    if ($number >= $last) {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                $text = rtrim($raw, "\n");
-
-                if ($text === '') {
-                    continue;
-                }
-
-                $row = self::record(json_decode($text, true), $text);
-
-                if ($row !== null) {
-                    yield $number => $row;
-                }
-
-                if ($number === $last) {
-                    break;
-                }
-            }
+            yield from self::recordsFrom($handle, PHP_INT_MAX, $lines);
         } finally {
             fclose($handle);
+        }
+    }
+
+    /**
+     * records() from a data file the caller holds open, from its start
+     * and no further than $size bytes — the file as the caller saw it,
+     * whatever is appended after.
+     *
+     * @param resource            $handle
+     * @param null|array<int,int> $lines
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    public static function recordsFrom(
+        mixed $handle,
+        int $size,
+        array | null $lines = null,
+    ): \Generator {
+        $wanted = $lines === null ? null : array_flip($lines);
+        $last = $lines === null ? null : max([-1, ...$lines]);
+        $number = -1;
+        $position = 0;
+        fseek($handle, 0);
+
+        while ($position < $size && ($raw = fgets($handle)) !== false) {
+            $number++;
+            $position += \strlen($raw);
+
+            if ($wanted !== null && !isset($wanted[$number])) {
+                if ($number >= $last) {
+                    break;
+                }
+
+                continue;
+            }
+
+            $text = rtrim($raw, "\n");
+
+            if ($text === '') {
+                continue;
+            }
+
+            $row = self::record(json_decode($text, true), $text);
+
+            if ($row !== null) {
+                yield $number => $row;
+            }
+
+            if ($number === $last) {
+                break;
+            }
         }
     }
 
@@ -369,6 +377,48 @@ final class NdjsonStorage
             return;
         }
 
+        $handle = $this->open($tableName, $fileName);
+
+        try {
+            yield from self::recordsAtFrom($handle, $offsets);
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * recordsAt() from a data file the caller holds open.
+     *
+     * @param resource       $handle
+     * @param array<int,int> $offsets line number => byte offset
+     *
+     * @return \Generator<int,array<string,null|scalar>>
+     */
+    public static function recordsAtFrom(
+        mixed $handle,
+        array $offsets,
+    ): \Generator {
+        foreach ($offsets as $line => $offset) {
+            fseek($handle, $offset);
+            $raw = fgets($handle);
+            $text = \is_string($raw) ? rtrim($raw, "\n") : '';
+            $row = $text === ''
+                ? null
+                : self::record(json_decode($text, true), $text);
+
+            if ($row !== null) {
+                yield $line => $row;
+            }
+        }
+    }
+
+    /**
+     * Opens a data file of the table for reading.
+     *
+     * @return resource
+     */
+    public function open(string $tableName, string $fileName): mixed
+    {
         $path = $this->resolvePath($tableName, $fileName);
         $this->ensureFileExists($path);
         $handle = fopen($path, 'r');
@@ -380,22 +430,7 @@ final class NdjsonStorage
             );
         }
 
-        try {
-            foreach ($offsets as $line => $offset) {
-                fseek($handle, $offset);
-                $raw = fgets($handle);
-                $text = \is_string($raw) ? rtrim($raw, "\n") : '';
-                $row = $text === ''
-                    ? null
-                    : self::record(json_decode($text, true), $text);
-
-                if ($row !== null) {
-                    yield $line => $row;
-                }
-            }
-        } finally {
-            fclose($handle);
-        }
+        return $handle;
     }
 
     /**

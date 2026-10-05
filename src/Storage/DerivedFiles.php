@@ -179,22 +179,39 @@ final class DerivedFiles
 
     /**
      * The byte offsets of the given data lines, or null when the offsets
-     * do not describe the data file as it is now (inode, size and line
-     * count) or a line is out of range.
+     * do not describe the data file the caller holds open (its inode, size
+     * and mark, and the line count) or a line is out of range. The open
+     * file, not the one at the path, is what the caller reads: the path
+     * may already lead to a newer file.
      *
+     * @param resource       $data
      * @param array<int,int> $lines
      *
      * @return null|array<int,int> line number => byte offset
      */
     public function lineOffsets(
         string $table,
-        string $dataPath,
+        mixed $data,
         int $lineCount,
         array $lines,
     ): array | null {
-        return $this->enabled
-            ? $this->readOffsets($table, $dataPath, $lineCount, $lines)
-            : null;
+        if (!$this->enabled) {
+            return null;
+        }
+
+        $stat = fstat($data);
+
+        if ($stat === false) {
+            return null;
+        }
+
+        return $this->readOffsets(
+            $table,
+            ['ino' => $stat['ino'], 'size' => $stat['size']],
+            self::handleMark($data, $stat['size']),
+            $lineCount,
+            $lines,
+        );
     }
 
     /**
@@ -264,7 +281,12 @@ final class DerivedFiles
         int $lineCount,
         array $indexFiles,
     ): bool {
-        if ($this->readOffsets($table, $dataPath, $lineCount, []) === null) {
+        $stat = self::stat($dataPath);
+        $mark = $stat === null
+            ? null
+            : self::fileMark($dataPath, $stat['size']);
+
+        if ($this->readOffsets($table, $stat, $mark, $lineCount, []) === null) {
             return false;
         }
 
@@ -305,19 +327,25 @@ final class DerivedFiles
     }
 
     /**
-     * @param array<int,int> $lines
+     * The offsets of $lines when the offsets file describes the data file
+     * with $stat (inode and size) and $mark, and $lineCount lines.
+     *
+     * @param null|array{ino:int, size:int} $stat
+     * @param array<int,int>                $lines
      *
      * @return null|array<int,int>
      */
     private function readOffsets(
         string $table,
-        string $dataPath,
+        array | null $stat,
+        int | null $mark,
         int $lineCount,
         array $lines,
     ): array | null {
         $path = $this->path($table, self::OFFSETS);
-        $stat = self::stat($dataPath);
-        $handle = $stat === null || !is_file($path) ? false : fopen($path, 'r');
+        $handle = $stat === null || $mark === null || !is_file($path)
+            ? false
+            : fopen($path, 'r');
 
         if ($handle === false) {
             return null;
@@ -333,7 +361,7 @@ final class DerivedFiles
                 || $header['count'] !== $lineCount
                 || self::length($handle) !== self::HEADER
                     + $lineCount * self::ENTRY
-                || $header['mark'] !== self::fileMark($dataPath, $stat['size'])
+                || $header['mark'] !== $mark
             ) {
                 return null;
             }
@@ -508,6 +536,23 @@ final class DerivedFiles
         } finally {
             fclose($handle);
         }
+
+        return $bytes === false || \strlen($bytes) !== max(0, $length)
+            ? null
+            : crc32($bytes);
+    }
+
+    /**
+     * fileMark() of a file the caller holds open.
+     *
+     * @param resource $handle
+     */
+    private static function handleMark(mixed $handle, int $end): int | null
+    {
+        $from = max(0, $end - self::MARK_BYTES);
+        $length = $end - $from;
+        fseek($handle, $from);
+        $bytes = $length < 1 ? '' : fread($handle, $length);
 
         return $bytes === false || \strlen($bytes) !== max(0, $length)
             ? null

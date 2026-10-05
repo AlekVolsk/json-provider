@@ -15,9 +15,9 @@ The set of tables to lock for a write is derived from the schema's relations gra
 A two-tier model:
 
 - **Full scan (lock-free).** A full read of the data file takes no locks. Correctness comes from atomic file replacement on rewrite (tmp + fsync + rename): a reader always sees either the complete old file or the complete new one. The snapshot corresponds to the moment the file was opened — inserts finishing later may not be included.
-- **Index-driven selects (coordinated).** An indexed select holds the table SH lock across the index and data-row reads, so a writer can never swap the files between the index lookup and the row reads — the index+data pair is always coherent. The SH section covers only the I/O and is released before decoding.
+- **Index-driven selects (a snapshot under the lock).** Under the table SH lock an indexed select checks that the index can be trusted and opens the files: the data file and the sorted head of the index file. The index tail is read into memory; the whole index file is read into memory when its head is not recorded or the select runs in index order without conditions. Then the lock is released, and the search over the head and the row reads go through the open files, within the data file size as of the snapshot. A writer rewrites the table into new files (tmp + fsync + rename) or appends rows at the end; no version changes the bytes of the open files within the snapshot, so the index+data pair is coherent and the answer comes from the version as of the snapshot. Line offsets are used only when the derived file describes exactly the open data file; otherwise the rows are read in one pass over it.
 
-Full-scan `select()` and a `count()` answered by a full scan or from the meta counter are lock-free; a `count()` answered through an index holds the table SH lock, as an index select does.
+Full-scan `select()` and a `count()` answered by a full scan or from the meta counter are lock-free; a `count()` answered through an index takes a snapshot under the table SH lock, as an index select does.
 
 ## Writes
 
@@ -33,7 +33,7 @@ The cache layer serves reads only; keys are versioned by the table state (see [c
 
 - POSIX-only: flock over network filesystems (NFS) and Windows are not supported, see [requirements](20-requirements-dependencies.md).
 - Lock descriptors are inherited by child processes: a long-lived child spawned from inside a critical section (proc_open, exec) keeps the lock held until it exits. Do not spawn long-lived children while holding locks.
-- There is no wait queue (non-blocking flock with retries): a continuous stream of short SH readers can in theory starve an EX writer up to `JsonProviderLockException` under high load. The provider targets moderate concurrency.
+- A process waits for a lock with non-blocking flock retried every 2 ms; there is no wait queue at the OS level. So that a stream of overlapping SH readers cannot starve an EX writer, database and table locks have a turnstile — a file `gate.<lock file>` in `.locks/`. A writer holds it while it waits for its lock, and a reader passes through it before taking its own, so readers arriving after a writer wait behind it. Leaf locks have no turnstile: they are held briefly.
 - Cross-file transactionality (several tables as one atom) is not provided; see the self-healing recipe above.
-- Versions 1.0 and 1.1 take the same lock files in the same order, so during a deploy old and new processes may run side by side (see [rolling back and mixed deploys](07-migrations.md#rolling-back-and-mixed-deploys)). A writer of a build that takes no locks does not exclude them — stop such processes before upgrading.
+- Versions 1.0, 1.1 and 1.2 take the same lock files in the same order, so during a deploy old and new processes may run side by side (see [rolling back and mixed deploys](07-migrations.md#rolling-back-and-mixed-deploys)). Only 1.2 takes the turnstile: readers of 1.1 and 1.0 do not queue behind a waiting writer and hold the SH lock for the whole index read. A writer of a build that takes no locks does not exclude them — stop such processes before upgrading.
 - The storage format manifest is read once per provider instance: a long-lived process sees a format migration run by another process only after a restart.

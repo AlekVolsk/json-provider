@@ -21,6 +21,7 @@ use AV\JsonProvider\Index\IndexEntryList;
 use AV\JsonProvider\Index\IndexFileRegion;
 use AV\JsonProvider\Index\IndexKey;
 use AV\JsonProvider\Index\IndexManager;
+use AV\JsonProvider\Index\IndexSnapshot;
 use AV\JsonProvider\Mapping\DtoMap;
 use AV\JsonProvider\Mapping\DtoMapper;
 use AV\JsonProvider\Mapping\DtoRegistry;
@@ -2564,8 +2565,6 @@ final class JsonDataProvider
         $records = null;
 
         if ($index !== null) {
-            $appliedPagination = false;
-
             /**
              * The pre-lock resolution is only a hint: the schema is re-read
              * and the index re-resolved under the SH lock, so a concurrent
@@ -2580,20 +2579,20 @@ final class JsonDataProvider
              * pushed into the index path (invariant shared with
              * q-distinct-pagination — degradation must not bring it back).
              *
-             * @var null|array<int,array<string,null|scalar>> $records
+             * The SH lock covers only the snapshot (openIndexSnapshot): the
+             * index and the data file are opened under it and read after it
+             * is released, so readers hold a table only for a moment.
+             *
+             * @var null|array{IndexSchema, TableSchema, IndexSnapshot} $opened
              */
-            $records = $this->locks->withLocks(
+            $opened = $this->locks->withLocks(
                 [$tableName => 'sh'],
                 null,
                 function () use (
                     $tableName,
                     $conditions,
                     $ordering,
-                    $limit,
-                    $offset,
-                    $distinctFields,
                     $pushPagination,
-                    &$appliedPagination,
                 ): array | null {
                     $freshSchema = $this->schema->getTable($tableName);
                     $freshIndex = $this->resolveIndex(
@@ -2602,39 +2601,37 @@ final class JsonDataProvider
                         $conditions,
                         $pushPagination,
                     );
-
-                    if ($freshIndex === null) {
-                        return null;
-                    }
-
-                    if (
-                        $ordering !== []
-                        && $freshIndex->matchesOrdering($ordering)
-                        && $this->orderingIndexable($freshSchema, $ordering)
-                        && $distinctFields === []
-                    ) {
-                        $appliedPagination = true;
-
-                        return $this->selectViaIndex(
+                    $snapshot = $freshIndex === null
+                        ? null
+                        : $this->openIndexSnapshot(
                             $freshIndex,
                             $freshSchema,
-                            $conditions,
                             $ordering,
-                            $limit,
-                            $offset,
                         );
-                    }
 
-                    return $this->selectViaIndex(
-                        $freshIndex,
-                        $freshSchema,
-                        $conditions,
-                        $ordering,
-                    );
+                    return $freshIndex === null || $snapshot === null
+                        ? null
+                        : [$freshIndex, $freshSchema, $snapshot];
                 },
             );
 
-            $paginatedByIndex = $records !== null && $appliedPagination;
+            if ($opened !== null) {
+                [$freshIndex, $freshSchema, $snapshot] = $opened;
+                $appliedPagination = $ordering !== []
+                    && $freshIndex->matchesOrdering($ordering)
+                    && $this->orderingIndexable($freshSchema, $ordering)
+                    && $distinctFields === [];
+                $records = $this->selectViaIndex(
+                    $snapshot,
+                    $freshIndex,
+                    $freshSchema,
+                    $conditions,
+                    $ordering,
+                    $appliedPagination ? $limit : null,
+                    $appliedPagination ? $offset : 0,
+                );
+                $paginatedByIndex = $records !== null && $appliedPagination;
+            }
         }
 
         if ($records === null) {
@@ -2866,65 +2863,50 @@ final class JsonDataProvider
             return null;
         }
 
-        return $this->locks->withLocks(
+        /** @var null|array{IndexSchema, TableSchema, IndexSnapshot} $opened */
+        $opened = $this->locks->withLocks(
             [$tableName => 'sh'],
             null,
-            function () use ($tableName, $conditions): int | null {
+            function () use ($tableName, $conditions): array | null {
                 $tableSchema = $this->schema->getTable($tableName);
                 $index = $this->resolveIndex($tableSchema, [], $conditions);
-                $lineCount = $index === null
+                $snapshot = $index === null
                     ? null
-                    : $this->indexTrustedLineCount($tableSchema);
+                    : $this->openIndexSnapshot($index, $tableSchema, []);
 
-                if ($index === null || $lineCount === null) {
-                    return null;
-                }
-
-                $sorted = $this->indexManager->openSorted(
-                    $tableName,
-                    $index,
-                    $lineCount,
-                );
-
-                if ($sorted !== null) {
-                    $sorted[0]->limit($this->estimateBudget($lineCount));
-                }
-
-                $entries = $sorted !== null
-                    ? []
-                    : $this->indexManager->readIndexValidated(
-                        $tableName,
-                        $index,
-                        $lineCount,
-                        true,
-                    );
-                $lines = $entries === null
+                return $index === null || $snapshot === null
                     ? null
-                    : $this->indexLineNumbers(
-                        $tableSchema,
-                        $index,
-                        $conditions,
-                        $sorted,
-                        $entries,
-                    );
-
-                if (
-                    $lines === null
-                    || $this->tooWide($lines, $lineCount, $sorted)
-                ) {
-                    return null;
-                }
-
-                return iterator_count($this->matchingRecords(
-                    $tableSchema,
-                    $index,
-                    $conditions,
-                    $lines,
-                    $lineCount,
-                    $sorted,
-                ));
+                    : [$index, $tableSchema, $snapshot];
             },
         );
+
+        if ($opened === null) {
+            return null;
+        }
+
+        [$index, $tableSchema, $snapshot] = $opened;
+        $lines = $this->indexLineNumbers(
+            $tableSchema,
+            $index,
+            $conditions,
+            $snapshot->sorted,
+            $snapshot->entries,
+        );
+
+        if (
+            $lines === null
+            || $this->tooWide($lines, $snapshot->lineCount, $snapshot->sorted)
+        ) {
+            return null;
+        }
+
+        return iterator_count($this->matchingRecords(
+            $snapshot,
+            $tableSchema,
+            $index,
+            $conditions,
+            $lines,
+        ));
     }
 
     /**
@@ -2936,20 +2918,19 @@ final class JsonDataProvider
      * filtered. A found line that yields no record breaks the index
      * (INDEX_UNRELIABLE).
      *
-     * @param array<int,FilterCondition>                  $conditions
-     * @param null|array<int,int>                         $lines
-     * @param null|array{IndexFileRegion, IndexEntryList} $sorted
+     * @param array<int,FilterCondition> $conditions
+     * @param null|array<int,int>        $lines
      *
      * @return \Generator<int,array<string,null|scalar>>
      */
     private function matchingRecords(
+        IndexSnapshot $snapshot,
         TableSchema $tableSchema,
         IndexSchema $index,
         array $conditions,
         array | null $lines,
-        int $lineCount,
-        array | null $sorted,
     ): \Generator {
+        $sorted = $snapshot->sorted;
         $matches = $this->conditionFilter($conditions);
         $verify = $sorted === null || $lines === null
             ? null
@@ -2960,11 +2941,8 @@ final class JsonDataProvider
             );
         $read = 0;
         $records = $lines === null
-            ? $this->ndjson->records(
-                $tableSchema->name,
-                $tableSchema->getFileName(),
-            )
-            : $this->dataRecords($tableSchema, $lines, $lineCount);
+            ? NdjsonStorage::recordsFrom($snapshot->data, $snapshot->dataSize)
+            : $this->dataRecords($snapshot, $tableSchema, $lines);
 
         foreach ($records as $line => $record) {
             $record = $this->values->widenRecord($tableSchema, $record);
@@ -2993,23 +2971,47 @@ final class JsonDataProvider
      * @return \Generator<int,array<string,null|scalar>>
      */
     private function dataRecords(
+        IndexSnapshot $snapshot,
         TableSchema $tableSchema,
         array $lineNumbers,
-        int $lineCount,
     ): \Generator {
-        $file = $tableSchema->getFileName();
-        $offsets = \count($lineNumbers) * self::OFFSET_READ_SHARE > $lineCount
+        $offsets = $this->offsetsOf($snapshot, $tableSchema, $lineNumbers);
+
+        return $offsets === null
+            ? NdjsonStorage::recordsFrom(
+                $snapshot->data,
+                $snapshot->dataSize,
+                $lineNumbers,
+            )
+            : NdjsonStorage::recordsAtFrom($snapshot->data, $offsets);
+    }
+
+    /**
+     * The offsets of the wanted data lines in the snapshot's data file,
+     * or null when they are better read in one pass — more than one line
+     * in OFFSET_READ_SHARE is wanted — or the offsets file does not
+     * describe that file.
+     *
+     * @param array<int,int> $lineNumbers
+     *
+     * @return null|array<int,int>
+     */
+    private function offsetsOf(
+        IndexSnapshot $snapshot,
+        TableSchema $tableSchema,
+        array $lineNumbers,
+    ): array | null {
+        $wide = \count($lineNumbers) * self::OFFSET_READ_SHARE
+            > $snapshot->lineCount;
+
+        return $wide
             ? null
             : $this->derived->lineOffsets(
                 $tableSchema->name,
-                $this->ndjson->pathOf($tableSchema->name, $file),
-                $lineCount,
+                $snapshot->data,
+                $snapshot->lineCount,
                 $lineNumbers,
             );
-
-        return $offsets === null
-            ? $this->ndjson->records($tableSchema->name, $file, $lineNumbers)
-            : $this->ndjson->recordsAt($tableSchema->name, $file, $offsets);
     }
 
     /**
@@ -4143,6 +4145,7 @@ final class JsonDataProvider
      * @return null|array<int,array<string,null|scalar>>
      */
     private function selectViaIndex(
+        IndexSnapshot $snapshot,
         IndexSchema $index,
         TableSchema $tableSchema,
         array $conditions,
@@ -4151,6 +4154,7 @@ final class JsonDataProvider
         int $offset = 0,
     ): array | null {
         return $this->selectViaIndexTrusted(
+            $snapshot,
             $index,
             $tableSchema,
             $conditions,
@@ -4170,6 +4174,7 @@ final class JsonDataProvider
      * @return null|array<int,array<string,null|scalar>>
      */
     private function selectViaIndexTrusted(
+        IndexSnapshot $snapshot,
         IndexSchema $index,
         TableSchema $tableSchema,
         array $conditions,
@@ -4177,40 +4182,11 @@ final class JsonDataProvider
         int | null $limit = null,
         int $offset = 0,
     ): array | null {
-        $lineCount = $this->indexTrustedLineCount($tableSchema);
+        $lineCount = $snapshot->lineCount;
+        $sorted = $snapshot->sorted;
+        $entries = $snapshot->entries;
 
-        if ($lineCount === null) {
-            return null;
-        }
-
-        $orderedByIndex = $ordering !== []
-            && $index->matchesOrdering($ordering)
-            && $this->orderingIndexable($tableSchema, $ordering);
-        $sorted = $orderedByIndex
-            ? null
-            : $this->indexManager->openSorted(
-                $tableSchema->name,
-                $index,
-                $lineCount,
-            );
-
-        if ($sorted !== null) {
-            $sorted[0]->limit($this->estimateBudget($lineCount));
-        }
-        $entries = $sorted !== null
-            ? []
-            : $this->indexManager->readIndexValidated(
-                $tableSchema->name,
-                $index,
-                $lineCount,
-                true,
-            );
-
-        if ($entries === null) {
-            return null;
-        }
-
-        if ($orderedByIndex) {
+        if ($this->orderedByIndex($index, $tableSchema, $ordering)) {
             $lineNumbers = array_column($entries, 'line');
 
             if ($conditions === []) {
@@ -4220,11 +4196,7 @@ final class JsonDataProvider
 
                 $records = $this->values->widenFloats(
                     $tableSchema,
-                    $this->readDataLines(
-                        $tableSchema,
-                        $lineNumbers,
-                        $lineCount
-                    ),
+                    $this->readDataLines($snapshot, $tableSchema, $lineNumbers),
                 );
 
                 if (\count($records) !== \count($lineNumbers)) {
@@ -4239,12 +4211,12 @@ final class JsonDataProvider
             }
 
             return $this->readFilteredPaginated(
+                $snapshot,
                 $tableSchema,
                 $lineNumbers,
                 $conditions,
                 $offset,
                 $limit,
-                $lineCount,
             );
         }
 
@@ -4262,12 +4234,11 @@ final class JsonDataProvider
 
         $records = [];
         $matching = $this->matchingRecords(
+            $snapshot,
             $tableSchema,
             $index,
             $conditions,
             $lineNumbers,
-            $lineCount,
-            $sorted,
         );
 
         foreach ($matching as $record) {
@@ -4279,6 +4250,96 @@ final class JsonDataProvider
         }
 
         return $records;
+    }
+
+    /**
+     * Whether the query is read in the order of the index: its ordering is
+     * the index's, and the index order agrees with the comparison mode.
+     *
+     * @param array<int,OrderBy> $ordering
+     */
+    private function orderedByIndex(
+        IndexSchema $index,
+        TableSchema $tableSchema,
+        array $ordering,
+    ): bool {
+        return $ordering !== []
+            && $index->matchesOrdering($ordering)
+            && $this->orderingIndexable($tableSchema, $ordering);
+    }
+
+    /**
+     * What an index read needs from the table, taken under its SH lock to
+     * read after the lock is released (IndexSnapshot): null when the index
+     * is not trusted. A read in index order takes the index whole;
+     * otherwise its sorted head is opened for searching in place, capped
+     * by the share past which a full scan is cheaper (tooWide()), or the
+     * index is read whole when no head is recorded.
+     *
+     * @param array<int,OrderBy> $ordering
+     */
+    private function openIndexSnapshot(
+        IndexSchema $index,
+        TableSchema $tableSchema,
+        array $ordering,
+    ): IndexSnapshot | null {
+        $lineCount = $this->indexTrustedLineCount($tableSchema);
+
+        if ($lineCount === null) {
+            return null;
+        }
+
+        $sorted = $this->orderedByIndex($index, $tableSchema, $ordering)
+            ? null
+            : $this->indexManager->openSorted(
+                $tableSchema->name,
+                $index,
+                $lineCount,
+            );
+
+        if ($sorted !== null) {
+            $sorted[0]->limit($this->estimateBudget($lineCount));
+        }
+
+        $entries = $sorted !== null
+            ? []
+            : $this->indexManager->readIndexValidated(
+                $tableSchema->name,
+                $index,
+                $lineCount,
+                true,
+            );
+
+        return $entries === null
+            ? null
+            : $this->dataSnapshot($tableSchema, $lineCount, $sorted, $entries);
+    }
+
+    /**
+     * Opens the data file for an IndexSnapshot, at its size now.
+     *
+     * @param null|array{IndexFileRegion, IndexEntryList} $sorted
+     * @param array<int,array{key:string,line:int}>       $entries
+     */
+    private function dataSnapshot(
+        TableSchema $tableSchema,
+        int $lineCount,
+        array | null $sorted,
+        array $entries,
+    ): IndexSnapshot {
+        $data = $this->ndjson->open(
+            $tableSchema->name,
+            $tableSchema->getFileName(),
+        );
+        $stat = fstat($data);
+
+        return new IndexSnapshot(
+            $lineCount,
+            $data,
+            $stat === false ? 0 : $stat['size'],
+            $sorted,
+            $entries,
+        );
     }
 
     /**
@@ -4506,12 +4567,12 @@ final class JsonDataProvider
      * @return array<int,array<string,null|scalar>>
      */
     private function readFilteredPaginated(
+        IndexSnapshot $snapshot,
         TableSchema $tableSchema,
         array $lineNumbers,
         array $conditions,
         int $offset,
         int | null $limit,
-        int $lineCount,
     ): array {
         if ($limit === 0) {
             return [];
@@ -4519,7 +4580,7 @@ final class JsonDataProvider
 
         $records = $this->values->widenFloats(
             $tableSchema,
-            $this->readDataLines($tableSchema, $lineNumbers, $lineCount),
+            $this->readDataLines($snapshot, $tableSchema, $lineNumbers),
         );
         $result = [];
         $skipped = 0;
@@ -4977,9 +5038,10 @@ final class JsonDataProvider
         }
 
         sort($lines);
+        $snapshot = $this->dataSnapshot($tableSchema, $lineCount, $sorted, []);
         $records = $this->values->widenFloats(
             $tableSchema,
-            $this->readDataLines($tableSchema, $lines, $lineCount),
+            $this->readDataLines($snapshot, $tableSchema, $lines),
         );
         $this->indexManager->verifyRecords(
             $tableSchema->name,
@@ -5655,23 +5717,21 @@ final class JsonDataProvider
      * @return array<int,array<string,null|scalar>>
      */
     private function readDataLines(
+        IndexSnapshot $snapshot,
         TableSchema $tableSchema,
         array $lineNumbers,
-        int $lineCount,
     ): array {
-        $file = $tableSchema->getFileName();
-        $offsets = \count($lineNumbers) * self::OFFSET_READ_SHARE > $lineCount
-            ? null
-            : $this->derived->lineOffsets(
-                $tableSchema->name,
-                $this->ndjson->pathOf($tableSchema->name, $file),
-                $lineCount,
-                $lineNumbers,
-            );
+        $offsets = $this->offsetsOf($snapshot, $tableSchema, $lineNumbers);
 
         return $offsets === null
-            ? $this->ndjson->readLines($tableSchema->name, $file, $lineNumbers)
-            : $this->ndjson->readLinesAt($tableSchema->name, $file, $offsets);
+            ? NdjsonStorage::readLinesFrom(
+                $snapshot->data,
+                $snapshot->dataSize,
+                $lineNumbers,
+            )
+            : array_values(iterator_to_array(
+                NdjsonStorage::recordsAtFrom($snapshot->data, $offsets),
+            ));
     }
 
     /**
